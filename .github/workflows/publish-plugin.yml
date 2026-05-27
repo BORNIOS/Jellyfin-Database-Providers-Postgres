@@ -34,6 +34,12 @@ jobs:
         with:
           python-version: '3.x'
 
+      - name: .NET diagnostics
+        run: |
+          dotnet --info
+          dotnet --list-sdks
+          dotnet nuget list source
+
       - name: Determine plugin version
         id: version
         run: |
@@ -46,8 +52,22 @@ jobs:
             exit 1
           fi
 
-      - name: Restore dependencies
-        run: dotnet restore Jellyfin.Database.Providers.Postgres.csproj
+      - name: Restore dependencies (with retry)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "Restore attempt ${attempt}/3"
+            if dotnet restore Jellyfin.Database.Providers.Postgres.csproj --verbosity normal; then
+              exit 0
+            fi
+            if [[ "$attempt" -lt 3 ]]; then
+              echo "Restore failed; retrying in 10s..."
+              sleep 10
+            fi
+          done
+          echo "dotnet restore failed after 3 attempts" >&2
+          exit 1
 
       - name: Build plugin
         run: dotnet build Jellyfin.Database.Providers.Postgres.csproj -c Release /p:ContinuousIntegrationBuild=true /p:Version=$VERSION
