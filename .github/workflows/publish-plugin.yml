@@ -1,0 +1,120 @@
+name: Publish Jellyfin PostgreSQL Plugin
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish when running manually (example: 1.0.0.0)'
+        required: true
+        type: string
+
+jobs:
+  build:
+    name: Build and Package Plugin
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Determine plugin version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "VERSION=${GITHUB_REF#refs/tags/}" >> "$GITHUB_ENV"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.version }}" ]]; then
+            echo "VERSION=${{ github.event.inputs.version }}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION input is required for manual runs." >&2
+            exit 1
+          fi
+
+      - name: Restore dependencies
+        run: dotnet restore Jellyfin.Database.Providers.Postgres.csproj
+
+      - name: Build plugin
+        run: dotnet build Jellyfin.Database.Providers.Postgres.csproj -c Release /p:ContinuousIntegrationBuild=true /p:Version=$VERSION
+
+      - name: Publish plugin output
+        run: dotnet publish Jellyfin.Database.Providers.Postgres.csproj -c Release -o ./publish_out /p:Version=$VERSION
+
+      - name: Package plugin ZIP
+        run: |
+          mkdir -p release
+          cd publish_out
+          zip -j ../release/Jellyfin.Database.Providers.Postgres.zip \
+            Jellyfin.Database.Providers.Postgres.dll \
+            Npgsql.dll \
+            Npgsql.EntityFrameworkCore.PostgreSQL.dll
+          cd ..
+
+      - name: Generate release metadata and manifest
+        run: python .github/scripts/generate_release_metadata.py
+
+      - name: Commit manifest update
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [[ -n "${{ secrets.RELEASE_PAT }}" ]]; then
+            git remote set-url origin "https://x-access-token:${{ secrets.RELEASE_PAT }}@github.com/${{ github.repository }}.git"
+          fi
+          git fetch origin main
+          git checkout main
+          git pull --ff-only origin main
+          git add manifest.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Update manifest version to $VERSION [ci skip]"
+            git push origin HEAD:main
+          else
+            echo "Manifest already up to date"
+          fi
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jellyfin-postgres-plugin
+          path: release/
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download packaged release
+        uses: actions/download-artifact@v4
+        with:
+          name: jellyfin-postgres-plugin
+          path: release_artifact
+
+      - name: Create GitHub release with ZIP asset
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            release_artifact/Jellyfin.Database.Providers.Postgres.zip
+            release_artifact/manifest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
