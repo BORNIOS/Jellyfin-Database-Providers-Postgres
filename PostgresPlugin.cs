@@ -20,6 +20,8 @@ namespace Jellyfin.Database.Providers.Postgres;
 public class PostgresPlugin : BasePlugin<PluginConfiguration>, IHasWebPages
 {
     private static PostgresPlugin? _instance;
+    private const string PluginDisplayName = "PostgreSQL Database Provider";
+    private const string PluginAssemblyName = "Jellyfin.Database.Providers.Postgres.dll";
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PostgresPlugin"/> class.
@@ -39,7 +41,7 @@ public class PostgresPlugin : BasePlugin<PluginConfiguration>, IHasWebPages
     public override Guid Id => new Guid("a2b5f3e8-4c1d-4f7a-9e6b-8d0c2f1a3b5e");
 
     /// <inheritdoc/>
-    public override string Name => "PostgreSQL Database Provider";
+    public override string Name => PluginDisplayName;
 
     /// <inheritdoc/>
     public override string Description => "Provides PostgreSQL as the Jellyfin database backend via EF Core + Npgsql.";
@@ -80,8 +82,11 @@ public class PostgresPlugin : BasePlugin<PluginConfiguration>, IHasWebPages
         xml.AppendLine("  <DatabaseType>PLUGIN_PROVIDER</DatabaseType>");
         xml.AppendLine("  <LockingBehavior>NoLock</LockingBehavior>");
         xml.AppendLine("  <CustomProviderOptions>");
-        xml.AppendLine("    <PluginName>Jellyfin.Database.Providers.Postgres</PluginName>");
-        xml.AppendLine("    <PluginAssembly>Jellyfin.Database.Providers.Postgres.dll</PluginAssembly>");
+        // Jellyfin resolves custom providers by matching PluginName against the plugin folder prefix.
+        // Installed repository plugins land in folders like "PostgreSQL Database Provider_1.0.0.0",
+        // so the display name must be written here instead of the assembly/namespace name.
+        xml.AppendLine(CultureInfo.InvariantCulture, $"    <PluginName>{PluginDisplayName}</PluginName>");
+        xml.AppendLine(CultureInfo.InvariantCulture, $"    <PluginAssembly>{PluginAssemblyName}</PluginAssembly>");
         xml.AppendLine(CultureInfo.InvariantCulture, $"    <ConnectionString>{escapedConnStr}</ConnectionString>");
         xml.AppendLine("    <Options>");
         xml.AppendLine("      <CustomDatabaseOption>");
