@@ -1,5 +1,7 @@
 # Solucion PostgreSQL para Jellyfin
 
+![Logo del plugin PostgreSQL](Resources/logo.png)
+
 Solucion lista para produccion para usar PostgreSQL como backend de Jellyfin por medio de PLUGIN_PROVIDER.
 
 [![Jellyfin 10.11.x](https://img.shields.io/badge/Jellyfin-10.11.x-blue?style=flat-square)](https://jellyfin.org)

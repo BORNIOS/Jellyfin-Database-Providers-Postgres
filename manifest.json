@@ -6,6 +6,7 @@
     "overview": "Use PostgreSQL as Jellyfin's database backend",
     "owner": "BORNIOS",
     "category": "Database",
+    "imageUrl": "https://raw.githubusercontent.com/BORNIOS/Jellyfin-Database-Providers-Postgres/v1.0.0/Resources/logo.png",
     "versions": [
       {
         "version": "1.0.0",

@@ -15,6 +15,10 @@ def main() -> None:
         "https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/"
         f"releases/download/v{version}/{asset_name}"
     )
+    image_url = (
+        "https://raw.githubusercontent.com/BORNIOS/Jellyfin-Database-Providers-Postgres/"
+        f"v{version}/Resources/logo.png"
+    )
     release_dir = Path("release")
     zip_path = release_dir / asset_name
 
@@ -31,6 +35,7 @@ def main() -> None:
             "overview": "Use PostgreSQL as Jellyfin's database backend",
             "owner": "BORNIOS",
             "category": "Database",
+            "imageUrl": image_url,
             "versions": [
                 {
                     "version": version,

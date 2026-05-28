@@ -1,5 +1,7 @@
 # PostgreSQL Solution for Jellyfin
 
+![PostgreSQL plugin logo](Resources/logo.png)
+
 Production-ready PostgreSQL backend solution for Jellyfin through PLUGIN_PROVIDER.
 
 [![Jellyfin 10.11.x](https://img.shields.io/badge/Jellyfin-10.11.x-blue?style=flat-square)](https://jellyfin.org)
