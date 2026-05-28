@@ -98,27 +98,43 @@ jobs:
           name: jellyfin-postgres-plugin
           path: release/
 
-      - name: Commit manifest update (best effort)
+      - name: Commit manifest update via GitHub API
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
         run: |
-          set +e
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          if [[ -n "${{ secrets.RELEASE_PAT }}" ]]; then
-            git remote set-url origin "https://x-access-token:${{ secrets.RELEASE_PAT }}@github.com/${{ github.repository }}.git"
-          fi
-          git fetch origin main
-          git checkout main
-          git pull --ff-only origin main
-          git add manifest.json
-          if ! git diff --cached --quiet; then
-            git commit -m "Update manifest version to $TAG_VERSION [ci skip]"
-            if ! git push origin HEAD:main; then
-              echo "Manifest push failed; continuing because release artifact is already uploaded."
-            fi
+          set -euo pipefail
+
+          # Read the newly-generated manifest and encode it as base64 for the API.
+          CONTENT=$(base64 -w 0 manifest.json)
+
+          # Get the current blob SHA of manifest.json on main — required by the API to
+          # perform an update (prevents accidental overwrites).
+          BLOB_SHA=$(curl -sf \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/contents/manifest.json" \
+            | jq -r '.sha')
+
+          # Update the file atomically via the Contents API. This never has git merge
+          # conflicts regardless of concurrent CI runs or manual pushes.
+          HTTP_STATUS=$(curl -s -o /tmp/api_response.json -w "%{http_code}" \
+            -X PUT \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/contents/manifest.json" \
+            -d "{
+              \"message\": \"Update manifest to ${TAG_VERSION} [ci skip]\",
+              \"content\": \"${CONTENT}\",
+              \"sha\": \"${BLOB_SHA}\"
+            }")
+
+          if [[ "$HTTP_STATUS" -ge 200 && "$HTTP_STATUS" -lt 300 ]]; then
+            echo "manifest.json updated on main (HTTP ${HTTP_STATUS})"
           else
-            echo "Manifest already up to date"
+            echo "GitHub API returned HTTP ${HTTP_STATUS}:"
+            cat /tmp/api_response.json
+            exit 1
           fi
-          exit 0
 
   release:
     name: Create GitHub Release
