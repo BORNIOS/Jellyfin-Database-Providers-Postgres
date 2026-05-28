@@ -92,8 +92,15 @@ jobs:
       - name: Generate release metadata and manifest
         run: python .github/scripts/generate_release_metadata.py
 
-      - name: Commit manifest update
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jellyfin-postgres-plugin
+          path: release/
+
+      - name: Commit manifest update (best effort)
         run: |
+          set +e
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           if [[ -n "${{ secrets.RELEASE_PAT }}" ]]; then
@@ -105,16 +112,13 @@ jobs:
           git add manifest.json
           if ! git diff --cached --quiet; then
             git commit -m "Update manifest version to $TAG_VERSION [ci skip]"
-            git push origin HEAD:main
+            if ! git push origin HEAD:main; then
+              echo "Manifest push failed; continuing because release artifact is already uploaded."
+            fi
           else
             echo "Manifest already up to date"
           fi
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: jellyfin-postgres-plugin
-          path: release/
+          exit 0
 
   release:
     name: Create GitHub Release
