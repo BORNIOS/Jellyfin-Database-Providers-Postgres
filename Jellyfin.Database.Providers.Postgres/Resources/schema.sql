@@ -525,7 +525,7 @@ CREATE INDEX "IX_ItemDisplayPreferences_UserId" ON "ItemDisplayPreferences" ("Us
 
 CREATE INDEX "IX_ItemValues_Type_CleanValue" ON "ItemValues" ("Type", "CleanValue");
 
-CREATE UNIQUE INDEX "IX_ItemValues_Type_Value" ON "ItemValues" ("Type", "Value");
+CREATE INDEX "IX_ItemValues_Type_Value" ON "ItemValues" ("Type", "Value");
 
 CREATE INDEX "IX_ItemValuesMap_ItemId" ON "ItemValuesMap" ("ItemId");
 

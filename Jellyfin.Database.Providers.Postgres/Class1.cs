@@ -106,6 +106,7 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 		// Self-heal migration history if schema was pre-created but __EFMigrationsHistory
 		// does not contain the initial migration marker.
 		TryRepairInitialMigrationHistory(effectiveConnectionString);
+		TryMitigateItemValuesIndexContention(effectiveConnectionString);
 
 		_logger.LogWarning("PostgreSQL provider initialized for Jellyfin. Session timezone for SQL clients: {Timezone}. All DateTime values persisted as strict UTC (no legacy timestamp behavior).", connBuilder.Timezone);
 	}
@@ -199,6 +200,60 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 		catch (Exception ex)
 		{
 			_logger.LogWarning(ex, "Could not repair PostgreSQL migration history automatically. Startup will continue.");
+		}
+	}
+
+	private void TryMitigateItemValuesIndexContention(string connectionString)
+	{
+		try
+		{
+			using var conn = new NpgsqlConnection(connectionString);
+			conn.Open();
+
+			using (var hasTableCmd = new NpgsqlCommand(
+				"SELECT to_regclass('public.\"ItemValues\"') IS NOT NULL;",
+				conn))
+			{
+				var hasItemValuesTable = Convert.ToBoolean(hasTableCmd.ExecuteScalar(), CultureInfo.InvariantCulture);
+				if (!hasItemValuesTable)
+				{
+					return;
+				}
+			}
+
+			bool hasUniqueIndex;
+			using (var uniqueCheckCmd = new NpgsqlCommand(@"
+				SELECT COALESCE(i.indisunique, FALSE)
+				FROM pg_class c
+				JOIN pg_namespace n ON n.oid = c.relnamespace
+				JOIN pg_index i ON i.indexrelid = c.oid
+				WHERE n.nspname = 'public'
+				  AND c.relname = 'IX_ItemValues_Type_Value'
+				LIMIT 1;", conn))
+			{
+				var scalar = uniqueCheckCmd.ExecuteScalar();
+				hasUniqueIndex = scalar is not null && Convert.ToBoolean(scalar, CultureInfo.InvariantCulture);
+			}
+
+			if (hasUniqueIndex)
+			{
+				using var dropAndCreateCmd = new NpgsqlCommand(@"
+					DROP INDEX IF EXISTS ""IX_ItemValues_Type_Value"";
+					CREATE INDEX IF NOT EXISTS ""IX_ItemValues_Type_Value"" ON ""ItemValues"" (""Type"", ""Value"");", conn);
+				dropAndCreateCmd.ExecuteNonQuery();
+				_logger.LogWarning("Mitigation applied: converted IX_ItemValues_Type_Value from UNIQUE to non-unique to reduce runtime collisions during concurrent library refresh.");
+			}
+			else
+			{
+				using var ensureIndexCmd = new NpgsqlCommand(
+					"CREATE INDEX IF NOT EXISTS \"IX_ItemValues_Type_Value\" ON \"ItemValues\" (\"Type\", \"Value\");",
+					conn);
+				ensureIndexCmd.ExecuteNonQuery();
+			}
+		}
+		catch (Exception ex)
+		{
+			_logger.LogWarning(ex, "Could not apply ItemValues index contention mitigation automatically. Startup will continue.");
 		}
 	}
 

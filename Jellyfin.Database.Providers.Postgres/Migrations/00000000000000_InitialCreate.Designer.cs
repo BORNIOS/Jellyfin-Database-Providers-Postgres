@@ -731,8 +731,7 @@ namespace Jellyfin.Database.Providers.Postgres.Migrations
 
                     b.HasIndex("Type", "CleanValue");
 
-                    b.HasIndex("Type", "Value")
-                        .IsUnique();
+                    b.HasIndex("Type", "Value");
 
                     b.ToTable("ItemValues");
                 });

@@ -956,8 +956,7 @@ namespace Jellyfin.Database.Providers.Postgres.Migrations
             migrationBuilder.CreateIndex(
                 name: "IX_ItemValues_Type_Value",
                 table: "ItemValues",
-                columns: new[] { "Type", "Value" },
-                unique: true);
+                columns: new[] { "Type", "Value" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_ItemValuesMap_ItemId",
