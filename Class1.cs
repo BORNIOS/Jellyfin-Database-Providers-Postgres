@@ -67,13 +67,29 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 
 		// Npgsql 6+ enforces DateTimeKind.Utc strictly. Jellyfin stores DateTimes without
 		// explicit UTC kind — this switch restores legacy permissive behavior.
+		// With legacy mode, Npgsql reads `timestamptz` columns by applying the PostgreSQL
+		// session timezone and returning DateTime with Kind=Local. Without an explicit timezone
+		// the PostgreSQL default is UTC, which causes activity-log timestamps (and all other
+		// DateTimes) to appear in UTC instead of server local time. We fix this by injecting
+		// the server's local IANA timezone into the connection string so PostgreSQL converts
+		// stored UTC values to local time before handing them back to Npgsql.
 		AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
 
 		var customOptions = customProviderOptions.Options;
 		var commandTimeout = GetOption(customOptions, "command-timeout", e => int.Parse(e, CultureInfo.InvariantCulture), () => 60);
 
+		// Build a connection string that includes the server's local IANA timezone, unless the
+		// caller already specified one. This ensures timestamps are returned in local time.
+		var connBuilder = new NpgsqlConnectionStringBuilder(customProviderOptions.ConnectionString);
+		if (string.IsNullOrEmpty(connBuilder.Timezone))
+		{
+			connBuilder.Timezone = GetLocalIanaTimezone();
+		}
+
+		var effectiveConnectionString = connBuilder.ConnectionString;
+
 		options.UseNpgsql(
-			customProviderOptions.ConnectionString,
+			effectiveConnectionString,
 			npgsqlOptions =>
 			{
 				// Must use simple assembly name, not FullName (which includes version/token).
@@ -87,9 +103,9 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 
 		// Self-heal migration history if schema was pre-created but __EFMigrationsHistory
 		// does not contain the initial migration marker.
-		TryRepairInitialMigrationHistory(customProviderOptions.ConnectionString);
+		TryRepairInitialMigrationHistory(effectiveConnectionString);
 
-		_logger.LogInformation("PostgreSQL provider initialized for Jellyfin.");
+		_logger.LogInformation("PostgreSQL provider initialized for Jellyfin (timezone: {Timezone}).", connBuilder.Timezone);
 	}
 
 	private void TryRepairInitialMigrationHistory(string connectionString)
@@ -138,6 +154,30 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 		{
 			_logger.LogWarning(ex, "Could not repair PostgreSQL migration history automatically. Startup will continue.");
 		}
+	}
+
+	/// <summary>
+	/// Returns the server's local timezone as a PostgreSQL-compatible IANA name.
+	/// On Windows, converts from Windows timezone ID to IANA. Falls back to "UTC".
+	/// </summary>
+	private static string GetLocalIanaTimezone()
+	{
+		var localTz = TimeZoneInfo.Local;
+
+		// On Linux/macOS the Id is already an IANA name (contains '/').
+		if (localTz.Id.Contains('/', StringComparison.Ordinal))
+		{
+			return localTz.Id;
+		}
+
+		// On Windows, try to convert the Windows timezone ID to IANA.
+		if (TimeZoneInfo.TryConvertWindowsIdToIanaId(localTz.Id, out var ianaId)
+			&& !string.IsNullOrEmpty(ianaId))
+		{
+			return ianaId;
+		}
+
+		return "UTC";
 	}
 
 	/// <inheritdoc/>
