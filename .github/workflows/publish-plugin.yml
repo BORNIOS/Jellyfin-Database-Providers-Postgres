@@ -44,13 +44,17 @@ jobs:
         id: version
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            echo "VERSION=${GITHUB_REF#refs/tags/}" >> "$GITHUB_ENV"
+            TAG_VERSION="${GITHUB_REF#refs/tags/}"
           elif [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.version }}" ]]; then
-            echo "VERSION=${{ github.event.inputs.version }}" >> "$GITHUB_ENV"
+            TAG_VERSION="${{ github.event.inputs.version }}"
           else
             echo "VERSION input is required for manual runs." >&2
             exit 1
           fi
+
+          PACKAGE_VERSION="${TAG_VERSION#v}"
+          echo "TAG_VERSION=${TAG_VERSION}" >> "$GITHUB_ENV"
+          echo "VERSION=${PACKAGE_VERSION}" >> "$GITHUB_ENV"
 
       - name: Restore dependencies (with retry)
         shell: bash
@@ -100,7 +104,7 @@ jobs:
           git pull --ff-only origin main
           git add manifest.json
           if ! git diff --cached --quiet; then
-            git commit -m "Update manifest version to $VERSION [ci skip]"
+            git commit -m "Update manifest version to $TAG_VERSION [ci skip]"
             git push origin HEAD:main
           else
             echo "Manifest already up to date"
