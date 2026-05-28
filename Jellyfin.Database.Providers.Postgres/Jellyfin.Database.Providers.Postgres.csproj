@@ -3,12 +3,14 @@
   <PropertyGroup>
     <!-- Must match the running Jellyfin binary (net9.0 / jellyfin 10.11.10) -->
     <TargetFramework>net9.0</TargetFramework>
+    <RootNamespace>Jellyfin.Database.Providers.Postgres</RootNamespace>
+    <AssemblyName>Jellyfin.Database.Providers.Postgres</AssemblyName>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <Version>1.0.0.0</Version>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
-    <!-- Ensure NuGet packages (Npgsql, SQLite) are copied to output for plugin deployment -->
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
 
@@ -19,10 +21,16 @@
 
   <ItemGroup>
     <!-- Jellyfin 10.11.10 public NuGet packages (same as what the deployed binary was compiled against) -->
-    <PackageReference Include="Jellyfin.Database.Implementations" Version="10.11.10" />
-    <PackageReference Include="MediaBrowser.Common" Version="4.10.0.1-beta" />
+    <PackageReference Include="Jellyfin.Database.Implementations" Version="10.11.10">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+    <PackageReference Include="MediaBrowser.Common" Version="4.10.0.1-beta">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
     <!-- Jellyfin.Controller = NuGet package ID for MediaBrowser.Controller (ISystemManager lives here) -->
-    <PackageReference Include="Jellyfin.Controller" Version="10.11.10" />
+    <PackageReference Include="Jellyfin.Controller" Version="10.11.10">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
 
     <!-- EF Core 9.x + Npgsql (matching what the binary ships: EF 9.0.11) -->
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.4" />

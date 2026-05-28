@@ -1,109 +1,131 @@
-# PostgreSQL Solution for Jellyfin
+# PostgreSQL for Jellyfin
 
-![PostgreSQL plugin logo](Resources/logo.png)
+![PostgreSQL plugin logo](Jellyfin.Database.Providers.Postgres/Resources/logo.png)
 
-Production-ready PostgreSQL backend solution for Jellyfin through PLUGIN_PROVIDER.
+Use PostgreSQL as Jellyfin's database backend without modifying Jellyfin core.
 
 [![Jellyfin 10.11.x](https://img.shields.io/badge/Jellyfin-10.11.x-blue?style=flat-square)](https://jellyfin.org)
 [![Release](https://img.shields.io/github/v/release/BORNIOS/Jellyfin-Database-Providers-Postgres?style=flat-square)](https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/BORNIOS/Jellyfin-Database-Providers-Postgres/total?style=flat-square&color=00A4DC&label=downloads)](https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/releases)
+[![Discord](https://img.shields.io/badge/Discord-Jellyfin_Community-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.jellyfin.org)
+[![Reddit](https://img.shields.io/badge/Reddit-r%2Fjellyfin-FF4500?style=flat-square&logo=reddit&logoColor=white)](https://www.reddit.com/r/jellyfin)
 
 Language: [Español](README.md) | [English](README.en.md)
 
----
+## What it solves
 
-## Executive Summary
-
-This repository delivers a concrete infrastructure solution:
-
-- Replace SQLite with PostgreSQL in Jellyfin.
-- Keep Jellyfin core untouched.
-- Deploy and operate with a repository manifest that Jellyfin can consume directly.
-
-## Why this solution
-
-- Better operational scalability for larger libraries and concurrent workloads.
-- Built-in backup and restore from the plugin dashboard using pg_dump/psql.
-- Predictable release path using signed release assets and manifest-driven install.
+- Better behavior with large libraries and concurrent use.
+- Backup and restore from plugin UI (pg_dump/psql).
+- Controlled switch between PostgreSQL and SQLite.
 
 ## Compatibility
 
 | Component | Version |
 | --- | --- |
 | Jellyfin | 10.11.10 |
-| .NET runtime in host | 9.0.x |
-| EF Core | 9.0.x |
-| Npgsql EF provider | 9.0.4 |
 | PostgreSQL | 13+ (recommended 16/17) |
 
-## Install from Manifest (recommended)
+## Install
 
-This is the official and supported install path.
+### Option A: plugin repository (recommended)
 
-1. Open Jellyfin Admin.
-1. Go to Plugins -> Plugin Repositories.
-1. Add a new repository with this URL:
+1. In Jellyfin: Admin -> Plugins -> Plugin Repositories.
+2. Add this URL:
 
 ```text
 https://raw.githubusercontent.com/BORNIOS/Jellyfin-Database-Providers-Postgres/main/manifest.json
 ```
 
-1. Save, refresh plugin catalog, and install PostgreSQL Database Provider.
+3. Save, refresh catalog, install PostgreSQL Database Provider.
+4. Restart Jellyfin.
 
-## Manual install from release ZIP
+### Option B: manual ZIP install
 
-1. Download latest ZIP from releases.
-1. Extract plugin files into your Jellyfin plugins directory.
-1. Restart Jellyfin.
-1. Configure the plugin from the Jellyfin dashboard.
+1. Download latest release ZIP.
+2. Extract to Jellyfin plugin directory.
+3. Restart Jellyfin.
 
-## Manual database.xml example
+## How to migrate from SQLite to PostgreSQL
 
-```xml
-<DatabaseConfigurationOptions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
-  <DatabaseType>PLUGIN_PROVIDER</DatabaseType>
-  <LockingBehavior>NoLock</LockingBehavior>
-  <CustomProviderOptions>
-    <PluginName>Jellyfin.Database.Providers.Postgres</PluginName>
-    <PluginAssembly>Jellyfin.Database.Providers.Postgres.dll</PluginAssembly>
-    <ConnectionString>Host=127.0.0.1;Port=5432;Database=jellyfin;Username=jellyfin;Password=CHANGE_ME;Pooling=true;Maximum Pool Size=200</ConnectionString>
-    <Options>
-      <CustomDatabaseOption>
-        <Key>command-timeout</Key>
-        <Value>60</Value>
-      </CustomDatabaseOption>
-      <CustomDatabaseOption>
-        <Key>EnableSensitiveDataLogging</Key>
-        <Value>False</Value>
-      </CustomDatabaseOption>
-    </Options>
-  </CustomProviderOptions>
-</DatabaseConfigurationOptions>
+Installing the plugin does not migrate data by itself.
+
+1. Create an empty PostgreSQL database (for example `jellyfin`).
+2. Run SQLite -> PostgreSQL migration using Jellyfin.SqliteToPostgres.Migrator.
+3. Validate key row counts (for example `UserData`, `Users`, `TypedBaseItems`).
+4. In plugin settings, set your PostgreSQL connection string.
+5. Activate PostgreSQL from the plugin UI (writes `database.xml` and restarts Jellyfin).
+
+Example connection string:
+
+```text
+Host=127.0.0.1;Port=5432;Database=jellyfin;Username=jellyfin;Password=CHANGE_ME;Pooling=true;Maximum Pool Size=200
 ```
 
-## Release model
+## How to activate PostgreSQL
 
-- Single source of truth for client installation: manifest.json.
-- CI builds ZIP, regenerates manifest with checksum and source URL, and publishes both in release assets.
+From plugin UI:
 
-## Operational notes
+1. Set connection string and timeout.
+2. Save settings.
+3. Click Activate PostgreSQL.
+4. Confirm restart.
 
-- Migration from SQLite is not automatic.
-- Use Jellyfin.SqliteToPostgres.Migrator before switching.
-- The plugin can create backups and restore .sql/.zip files from the Maintenance tab.
-- You can also schedule backup runs through Jellyfin Scheduled Tasks.
+Expected result:
 
-## Backup and restore in the plugin
+- `database.xml` is configured as `PLUGIN_PROVIDER`.
+- Jellyfin starts with `Jellyfin.Database.Providers.Postgres.dll`.
 
-1. Open the Configuration tab and save these values first:
-1. Default backup directory.
-1. pg_dump path (optional, recommended on Windows when not in PATH).
-1. psql path (optional, recommended on Windows when not in PATH).
-1. Default ZIP compression behavior.
-1. Save configuration.
-1. Go to Maintenance to run manual backup or restore a `.sql` / `.zip` backup.
+## How to rollback to SQLite
 
-Notes:
-- Configuration is the single place for binary paths (pg_dump/psql) and default backup directory.
-- Maintenance is task execution only, without duplicated path fields.
-- Scheduled tasks use the persisted configuration (including binary paths).
-- If binary paths are empty, the plugin resolves `pg_dump` and `psql` from system PATH.
+From plugin UI:
+
+1. Click Deactivate PostgreSQL / Revert to SQLite.
+2. Plugin removes `database.xml`.
+3. Restart Jellyfin.
+
+When rollback makes sense:
+
+- PostgreSQL connectivity problem.
+- Maintenance window or incomplete migration.
+- You need fast service recovery while fixing PG.
+
+## Backup and restore
+
+In plugin Configuration:
+
+1. Set default backup directory.
+2. Optional on Windows: set `pg_dump` and `psql` paths if not in PATH.
+3. Set default compression.
+
+In plugin Maintenance:
+
+1. Run manual backup (`.sql` or `.zip`).
+2. Run restore from backup.
+3. Optionally schedule recurring backups in Jellyfin Scheduled Tasks.
+
+## Quick post-switch checks
+
+- Login works with existing users.
+- Playback progress/activity continues to update.
+- No PostgreSQL connection errors in Jellyfin logs.
+
+## Short FAQ
+
+Q: I installed the plugin but data was not migrated.
+
+A: Expected. First run SQLite -> PostgreSQL migrator, then activate PostgreSQL in plugin UI.
+
+Q: Can I edit `database.xml` manually.
+
+A: Yes, but plugin UI is recommended to reduce configuration mistakes.
+
+Q: Migration fails or gives odd results on retries.
+
+A: On large databases or repeated migrations, enable --truncate to reset destination tables before insert.
+
+## Community
+
+Questions or feedback? Open an issue or join the Jellyfin community:
+
+[![Discord](https://img.shields.io/badge/Discord-Join_the_community-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.jellyfin.org)
+[![Reddit](https://img.shields.io/badge/Reddit-r%2Fjellyfin-FF4500?style=for-the-badge&logo=reddit&logoColor=white)](https://www.reddit.com/r/jellyfin)

@@ -1,14 +1,63 @@
 import hashlib
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+def _extract_scalar(text: str, key: str) -> str:
+    match = re.search(rf'^{re.escape(key)}:\s*"?([^"\n]+)"?\s*$', text, flags=re.MULTILINE)
+    if not match:
+        raise ValueError(f"Missing '{key}' in build.yaml")
+    return match.group(1).strip()
+
+
+def _extract_block(text: str, key: str) -> str:
+    pattern = rf'^{re.escape(key)}:\s*>\s*$'
+    match = re.search(pattern, text, flags=re.MULTILINE)
+    if not match:
+        raise ValueError(f"Missing block '{key}: >' in build.yaml")
+
+    lines = text[match.end():].splitlines()
+    block_lines: list[str] = []
+    for line in lines:
+        if not line.strip():
+            if block_lines:
+                break
+            continue
+
+        if line.startswith("  "):
+            block_lines.append(line.strip())
+            continue
+
+        break
+
+    if not block_lines:
+        raise ValueError(f"Block '{key}' is empty in build.yaml")
+
+    return " ".join(block_lines)
+
+
+def load_build_metadata(path: Path) -> dict:
+    text = path.read_text(encoding="utf-8")
+    return {
+        "name": _extract_scalar(text, "name"),
+        "guid": _extract_scalar(text, "guid"),
+        "targetAbi": _extract_scalar(text, "targetAbi"),
+        "overview": _extract_scalar(text, "overview"),
+        "owner": _extract_scalar(text, "owner"),
+        "category": _extract_scalar(text, "category"),
+        "description": _extract_block(text, "description"),
+    }
 
 
 def main() -> None:
     version = os.environ.get("VERSION", "0.0.0")
     if version.startswith("v"):
         version = version[1:]
+
+    build_meta = load_build_metadata(Path("build.yaml"))
 
     asset_name = "Jellyfin.Database.Providers.Postgres.zip"
     source_url = (
@@ -17,7 +66,7 @@ def main() -> None:
     )
     image_url = (
         "https://raw.githubusercontent.com/BORNIOS/Jellyfin-Database-Providers-Postgres/"
-        f"v{version}/Resources/logo.png"
+        f"v{version}/Jellyfin.Database.Providers.Postgres/Resources/logo.png"
     )
     release_dir = Path("release")
     zip_path = release_dir / asset_name
@@ -30,7 +79,7 @@ def main() -> None:
     new_version_entry = {
         "version": version,
         "changelog": "",
-        "targetAbi": "10.11.10.0",
+        "targetAbi": build_meta["targetAbi"],
         "sourceUrl": source_url,
         "checksum": checksum,
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -57,12 +106,12 @@ def main() -> None:
 
     manifest = [
         {
-            "guid": "a2b5f3e8-4c1d-4f7a-9e6b-8d0c2f1a3b5e",
-            "name": "PostgreSQL Database Provider",
-            "description": "Provides PostgreSQL as the Jellyfin database backend via PLUGIN_PROVIDER.",
-            "overview": "Use PostgreSQL as Jellyfin's database backend",
-            "owner": "BORNIOS",
-            "category": "Database",
+            "guid": build_meta["guid"],
+            "name": build_meta["name"],
+            "description": build_meta["description"],
+            "overview": build_meta["overview"],
+            "owner": build_meta["owner"],
+            "category": build_meta["category"],
             "imageUrl": image_url,
             "versions": all_versions,
         }

@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to publish when running manually (example: 1.0.0.0)'
-        required: true
+        description: 'Optional: version to validate against csproj on manual runs (example: 1.0.0.0)'
+        required: false
         type: string
 
 jobs:
@@ -42,17 +42,37 @@ jobs:
 
       - name: Determine plugin version
         id: version
+        shell: bash
         run: |
+          CSPROJ_VERSION=$(python - <<'PY'
+          import re
+          from pathlib import Path
+          text = Path("Jellyfin.Database.Providers.Postgres/Jellyfin.Database.Providers.Postgres.csproj").read_text(encoding="utf-8")
+          match = re.search(r"<Version>\s*([^<\s]+)\s*</Version>", text)
+          if not match:
+              raise SystemExit("Missing <Version> in Jellyfin.Database.Providers.Postgres/Jellyfin.Database.Providers.Postgres.csproj")
+          print(match.group(1))
+          PY
+          )
+
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             TAG_VERSION="${GITHUB_REF#refs/tags/}"
-          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.version }}" ]]; then
-            TAG_VERSION="${{ github.event.inputs.version }}"
+            PACKAGE_VERSION="${TAG_VERSION#v}"
+            if [[ "${PACKAGE_VERSION}" != "${CSPROJ_VERSION}" ]]; then
+              echo "Tag version (${PACKAGE_VERSION}) does not match csproj <Version> (${CSPROJ_VERSION})." >&2
+              echo "Update Jellyfin.Database.Providers.Postgres/Jellyfin.Database.Providers.Postgres.csproj first, then tag v${CSPROJ_VERSION}." >&2
+              exit 1
+            fi
           else
-            echo "VERSION input is required for manual runs." >&2
-            exit 1
+            PACKAGE_VERSION="${CSPROJ_VERSION}"
+            TAG_VERSION="v${PACKAGE_VERSION}"
+            if [[ -n "${{ github.event.inputs.version }}" && "${{ github.event.inputs.version }}" != "${PACKAGE_VERSION}" ]]; then
+              echo "Manual input version (${{ github.event.inputs.version }}) does not match csproj <Version> (${PACKAGE_VERSION})." >&2
+              exit 1
+            fi
           fi
 
-          PACKAGE_VERSION="${TAG_VERSION#v}"
+          echo "Resolved version from csproj: ${PACKAGE_VERSION}"
           echo "TAG_VERSION=${TAG_VERSION}" >> "$GITHUB_ENV"
           echo "VERSION=${PACKAGE_VERSION}" >> "$GITHUB_ENV"
 
@@ -62,7 +82,7 @@ jobs:
           set -euo pipefail
           for attempt in 1 2 3; do
             echo "Restore attempt ${attempt}/3"
-            if dotnet restore Jellyfin.Database.Providers.Postgres.csproj --verbosity normal; then
+            if dotnet restore Jellyfin.Database.Providers.Postgres/Jellyfin.Database.Providers.Postgres.csproj --verbosity normal; then
               exit 0
             fi
             if [[ "$attempt" -lt 3 ]]; then
@@ -74,10 +94,10 @@ jobs:
           exit 1
 
       - name: Build plugin
-        run: dotnet build Jellyfin.Database.Providers.Postgres.csproj -c Release /p:ContinuousIntegrationBuild=true /p:Version=$VERSION
+        run: dotnet build Jellyfin.Database.Providers.Postgres/Jellyfin.Database.Providers.Postgres.csproj -c Release /p:ContinuousIntegrationBuild=true /p:Version=$VERSION
 
       - name: Publish plugin output
-        run: dotnet publish Jellyfin.Database.Providers.Postgres.csproj -c Release -o ./publish_out /p:Version=$VERSION
+        run: dotnet publish Jellyfin.Database.Providers.Postgres/Jellyfin.Database.Providers.Postgres.csproj -c Release -o ./publish_out /p:Version=$VERSION
 
       - name: Package plugin ZIP
         run: |

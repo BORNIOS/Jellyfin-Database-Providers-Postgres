@@ -1,9 +1,36 @@
-bin/
-obj/
+# Build artifacts
+[Bb]in/
+[Oo]bj/
 publish_out/
 release/
-*.user
-*.suo
-*.vs/
+artifacts/
+
+# IDE/editor state
+.vs/
 .vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Logs and diagnostics
 *.log
+*.tmp
+*.temp
+*.cache
+
+# Test and coverage output
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+
+# NuGet/package output
+packages/
+*.nupkg
+*.snupkg
+
+# OS-specific noise
+.DS_Store
+Thumbs.db

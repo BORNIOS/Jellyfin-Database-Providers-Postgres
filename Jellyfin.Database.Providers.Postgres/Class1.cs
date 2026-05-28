@@ -1,13 +1,16 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.DbConfiguration;
 using MediaBrowser.Common.Configuration;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
@@ -22,6 +25,7 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 	private const string InitialMigrationId = "00000000000000_InitialCreate";
 	private const string InitialMigrationProductVersion = "9.0.11";
 
+	private readonly IApplicationPaths? _applicationPaths;
 	private readonly ILogger<PostgresDatabaseProvider> _logger;
 
 	/// <summary>
@@ -31,7 +35,7 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 	/// <param name="logger">A logger.</param>
 	public PostgresDatabaseProvider(IApplicationPaths? applicationPaths, ILogger<PostgresDatabaseProvider> logger)
 	{
-		// applicationPaths is intentionally unused; nullable to allow design-time instantiation.
+		_applicationPaths = applicationPaths;
 		_logger = logger;
 	}
 
@@ -65,21 +69,19 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 			throw new InvalidOperationException("CustomProviderOptions.ConnectionString is required for Jellyfin-Postgres.");
 		}
 
-		// Npgsql 6+ enforces DateTimeKind.Utc strictly. Jellyfin stores DateTimes without
-		// explicit UTC kind — this switch restores legacy permissive behavior.
-		// With legacy mode, Npgsql reads `timestamptz` columns by applying the PostgreSQL
-		// session timezone and returning DateTime with Kind=Local. Without an explicit timezone
-		// the PostgreSQL default is UTC, which causes activity-log timestamps (and all other
-		// DateTimes) to appear in UTC instead of server local time. We fix this by injecting
-		// the server's local IANA timezone into the connection string so PostgreSQL converts
-		// stored UTC values to local time before handing them back to Npgsql.
-		AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
+		// Do NOT enable Npgsql.EnableLegacyTimestampBehavior.
+		// That switch causes Npgsql to apply the PostgreSQL session timezone when reading
+		// timestamptz columns, returning DateTimeKind.Local. Jellyfin then double-converts
+		// those values back to UTC before serializing, causing the dashboard to show UTC
+		// timestamps (+7 h shift on UTC-7 servers). The correct approach is strict UTC:
+		// store as UTC, let the UI/browser render in local time.
 
 		var customOptions = customProviderOptions.Options;
 		var commandTimeout = GetOption(customOptions, "command-timeout", e => int.Parse(e, CultureInfo.InvariantCulture), () => 60);
 
-		// Build a connection string that includes the server's local IANA timezone, unless the
-		// caller already specified one. This ensures timestamps are returned in local time.
+		// Inject the host timezone into the connection string so that raw SQL clients
+		// (psql, pgAdmin) display timestamps in local time. Npgsql uses binary protocol
+		// and ignores this for its own reads, so it does NOT affect C# DateTime values.
 		var connBuilder = new NpgsqlConnectionStringBuilder(customProviderOptions.ConnectionString);
 		if (string.IsNullOrEmpty(connBuilder.Timezone))
 		{
@@ -105,59 +107,11 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 		// does not contain the initial migration marker.
 		TryRepairInitialMigrationHistory(effectiveConnectionString);
 
-		_logger.LogInformation("PostgreSQL provider initialized for Jellyfin (timezone: {Timezone}).", connBuilder.Timezone);
-	}
-
-	private void TryRepairInitialMigrationHistory(string connectionString)
-	{
-		try
-		{
-			using var conn = new NpgsqlConnection(connectionString);
-			conn.Open();
-
-			// If there are no core tables, this is likely a clean DB and no repair is needed.
-			using (var hasActivityCmd = new NpgsqlCommand(
-				"SELECT to_regclass('public.\"ActivityLogs\"') IS NOT NULL;",
-				conn))
-			{
-				var hasActivityTable = Convert.ToBoolean(hasActivityCmd.ExecuteScalar(), CultureInfo.InvariantCulture);
-				if (!hasActivityTable)
-				{
-					return;
-				}
-			}
-
-			using (var createHistoryCmd = new NpgsqlCommand(@"
-				CREATE TABLE IF NOT EXISTS ""__EFMigrationsHistory"" (
-					""MigrationId"" character varying(150) NOT NULL,
-					""ProductVersion"" character varying(32) NOT NULL,
-					CONSTRAINT ""PK___EFMigrationsHistory"" PRIMARY KEY (""MigrationId"")
-				);", conn))
-			{
-				createHistoryCmd.ExecuteNonQuery();
-			}
-
-			using (var insertCmd = new NpgsqlCommand(
-				"INSERT INTO \"__EFMigrationsHistory\" (\"MigrationId\", \"ProductVersion\") VALUES (@id, @ver) ON CONFLICT (\"MigrationId\") DO NOTHING;",
-				conn))
-			{
-				insertCmd.Parameters.AddWithValue("id", InitialMigrationId);
-				insertCmd.Parameters.AddWithValue("ver", InitialMigrationProductVersion);
-				var affected = insertCmd.ExecuteNonQuery();
-				if (affected > 0)
-				{
-					_logger.LogWarning("Detected existing PostgreSQL schema without migration marker. Inserted {MigrationId} into __EFMigrationsHistory.", InitialMigrationId);
-				}
-			}
-		}
-		catch (Exception ex)
-		{
-			_logger.LogWarning(ex, "Could not repair PostgreSQL migration history automatically. Startup will continue.");
-		}
+		_logger.LogWarning("PostgreSQL provider initialized for Jellyfin. Session timezone for SQL clients: {Timezone}. All DateTime values persisted as strict UTC (no legacy timestamp behavior).", connBuilder.Timezone);
 	}
 
 	/// <summary>
-	/// Returns the server's local timezone as a PostgreSQL-compatible IANA name.
+	/// Returns the host timezone as a PostgreSQL-compatible IANA name.
 	/// On Windows, converts from Windows timezone ID to IANA. Falls back to "UTC".
 	/// </summary>
 	private static string GetLocalIanaTimezone()
@@ -178,6 +132,125 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 		}
 
 		return "UTC";
+	}
+
+	private void TryRepairInitialMigrationHistory(string connectionString)
+	{
+		try
+		{
+			using var conn = new NpgsqlConnection(connectionString);
+			conn.Open();
+
+			// Always ensure __EFMigrationsHistory exists before any Jellyfin migration stage
+			// runs. Jellyfin's PreInitialisation code migrations try to INSERT completion markers
+			// into this table before EF Core's CoreInitialisation stage has a chance to create it.
+			// On a fresh PostgreSQL schema (e.g. switching from SQLite on an existing install),
+			// the table won't exist yet and every PreInitialisation migration would crash with
+			// 42P01. Creating it here (idempotent) is safe: EF Core will use it normally.
+			using (var createHistoryCmd = new NpgsqlCommand(@"
+				CREATE TABLE IF NOT EXISTS ""__EFMigrationsHistory"" (
+					""MigrationId"" character varying(150) NOT NULL,
+					""ProductVersion"" character varying(32) NOT NULL,
+					CONSTRAINT ""PK___EFMigrationsHistory"" PRIMARY KEY (""MigrationId"")
+				);", conn))
+			{
+				createHistoryCmd.ExecuteNonQuery();
+			}
+
+			// If core tables are absent this is a completely fresh schema.
+			// EF Core's InitialCreate migration will populate __EFMigrationsHistory itself
+			// during CoreInitialisation — no need to stamp it here.
+			using (var hasActivityCmd = new NpgsqlCommand(
+				"SELECT to_regclass('public.\"ActivityLogs\"') IS NOT NULL;",
+				conn))
+			{
+				var hasActivityTable = Convert.ToBoolean(hasActivityCmd.ExecuteScalar(), CultureInfo.InvariantCulture);
+				if (!hasActivityTable)
+				{
+					var importedMigrations = TryImportMigrationHistoryFromSqlite(conn);
+					if (importedMigrations > 0)
+					{
+						_logger.LogWarning("PostgresDatabaseProvider: Fresh PostgreSQL schema detected. Imported {ImportedMigrations} migration history rows from SQLite.", importedMigrations);
+					}
+					else
+					{
+						_logger.LogWarning("PostgresDatabaseProvider: Fresh PostgreSQL schema detected. __EFMigrationsHistory created; EF Core will apply InitialCreate during CoreInitialisation.");
+					}
+
+					return;
+				}
+			}
+
+			// Schema already exists (pre-created outside EF Core migrations).
+			// Insert the InitialCreate marker so EF Core does not try to re-run it.
+			using (var insertCmd = new NpgsqlCommand(
+				"INSERT INTO \"__EFMigrationsHistory\" (\"MigrationId\", \"ProductVersion\") VALUES (@id, @ver) ON CONFLICT (\"MigrationId\") DO NOTHING;",
+				conn))
+			{
+				insertCmd.Parameters.AddWithValue("id", InitialMigrationId);
+				insertCmd.Parameters.AddWithValue("ver", InitialMigrationProductVersion);
+				var affected = insertCmd.ExecuteNonQuery();
+				if (affected > 0)
+				{
+					_logger.LogWarning("Detected existing PostgreSQL schema without migration marker. Inserted {MigrationId} into __EFMigrationsHistory.", InitialMigrationId);
+				}
+			}
+		}
+		catch (Exception ex)
+		{
+			_logger.LogWarning(ex, "Could not repair PostgreSQL migration history automatically. Startup will continue.");
+		}
+	}
+
+	private int TryImportMigrationHistoryFromSqlite(NpgsqlConnection postgresConnection)
+	{
+		try
+		{
+			if (_applicationPaths is null)
+			{
+				return 0;
+			}
+
+			var sqlitePath = Path.Combine(_applicationPaths.DataPath, "jellyfin.db");
+			if (!File.Exists(sqlitePath))
+			{
+				return 0;
+			}
+
+			var sqliteBuilder = new SqliteConnectionStringBuilder
+			{
+				DataSource = sqlitePath,
+				Mode = SqliteOpenMode.ReadOnly
+			};
+
+			using var sqliteConnection = new SqliteConnection(sqliteBuilder.ToString());
+			sqliteConnection.Open();
+
+			using var selectCommand = sqliteConnection.CreateCommand();
+			selectCommand.CommandText = "SELECT \"MigrationId\", \"ProductVersion\" FROM \"__EFMigrationsHistory\" ORDER BY \"MigrationId\";";
+
+			using var reader = selectCommand.ExecuteReader();
+			var inserted = 0;
+			while (reader.Read())
+			{
+				var migrationId = reader.GetString(0);
+				var productVersion = reader.IsDBNull(1) ? InitialMigrationProductVersion : reader.GetString(1);
+
+				using var insertCommand = new NpgsqlCommand(
+					"INSERT INTO \"__EFMigrationsHistory\" (\"MigrationId\", \"ProductVersion\") VALUES (@id, @ver) ON CONFLICT (\"MigrationId\") DO NOTHING;",
+					postgresConnection);
+				insertCommand.Parameters.AddWithValue("id", migrationId);
+				insertCommand.Parameters.AddWithValue("ver", productVersion);
+				inserted += insertCommand.ExecuteNonQuery();
+			}
+
+			return inserted;
+		}
+		catch (Exception ex)
+		{
+			_logger.LogWarning(ex, "Could not import migration history from SQLite.");
+			return 0;
+		}
 	}
 
 	/// <inheritdoc/>
@@ -203,6 +276,44 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 	public void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
 	{
 		ArgumentNullException.ThrowIfNull(configurationBuilder);
+
+		// Npgsql 6+ requires DateTimeKind.Utc for timestamptz columns.
+		// Jellyfin has code paths that produce DateTimeKind.Unspecified or DateTimeKind.Local.
+		// These converters normalize every DateTime to Utc on both reads and writes,
+		// preventing InvalidCastException and ensuring correct UTC round-trips.
+		configurationBuilder.Properties<DateTime>()
+			.HaveConversion<UtcDateTimeConverter>();
+		configurationBuilder.Properties<DateTime?>()
+			.HaveConversion<NullableUtcDateTimeConverter>();
+	}
+
+	private sealed class UtcDateTimeConverter : ValueConverter<DateTime, DateTime>
+	{
+		public UtcDateTimeConverter()
+			: base(
+				// WRITE: convert Local → UTC; for Utc/Unspecified just relabel as Utc.
+				// SpecifyKind does NOT shift the clock — it only sets Kind — which is correct
+				// for Unspecified values that are already UTC (Jellyfin uses DateTime.UtcNow).
+				v => v.Kind == DateTimeKind.Local
+					? v.ToUniversalTime()
+					: DateTime.SpecifyKind(v, DateTimeKind.Utc),
+				// READ: Npgsql v6+ already returns DateTimeKind.Utc from timestamptz.
+				// SpecifyKind here is belt-and-suspenders for any edge case.
+				v => DateTime.SpecifyKind(v, DateTimeKind.Utc))
+		{
+		}
+	}
+
+	private sealed class NullableUtcDateTimeConverter : ValueConverter<DateTime?, DateTime?>
+	{
+		public NullableUtcDateTimeConverter()
+			: base(
+				v => v == null ? v : (DateTime?)(v.Value.Kind == DateTimeKind.Local
+					? v.Value.ToUniversalTime()
+					: DateTime.SpecifyKind(v.Value, DateTimeKind.Utc)),
+				v => v == null ? v : (DateTime?)DateTime.SpecifyKind(v.Value, DateTimeKind.Utc))
+		{
+		}
 	}
 
 	/// <inheritdoc />

@@ -155,7 +155,11 @@ public sealed class MigrationService : IDisposable
         IApplicationPaths? applicationPaths,
         CancellationToken ct)
     {
-        AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
+        // Do NOT enable Npgsql.EnableLegacyTimestampBehavior.
+        // With legacy mode ON, Npgsql returns DateTimeKind.Local on reads (applying the
+        // PostgreSQL session timezone) and accepts Unspecified on writes. Without it,
+        // Npgsql v6+ requires DateTimeKind.Utc for timestamptz — which is exactly what we
+        // produce below by normalizing every parsed timestamp to DateTimeKind.Utc.
 
         if (!File.Exists(sqlitePath))
         {
@@ -697,16 +701,41 @@ public sealed class MigrationService : IDisposable
                     }
                     else if (pgType is "timestamp without time zone" or "timestamp with time zone")
                     {
-                        if (DateTime.TryParse(strVal, CultureInfo.InvariantCulture,
-                            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var dtVal))
+                        // RoundtripKind preserves kind information when present (Z/+00:00) and
+                        // accepts plain values without timezone. Do NOT combine with Assume/Adjust flags.
+                        if (DateTime.TryParse(strVal, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var dtVal))
                         {
-                            param.NpgsqlDbType = pgType == "timestamp with time zone"
-                                ? NpgsqlDbType.TimestampTz : NpgsqlDbType.Timestamp;
-                            param.Value = dtVal;
+                            var isTimestampTz = pgType == "timestamp with time zone";
+                            if (isTimestampTz)
+                            {
+                                // Npgsql requires UTC for timestamptz parameters.
+                                // Unspecified values from SQLite are treated as already-UTC values.
+                                if (dtVal.Kind == DateTimeKind.Unspecified)
+                                    dtVal = DateTime.SpecifyKind(dtVal, DateTimeKind.Utc);
+                                else if (dtVal.Kind == DateTimeKind.Local)
+                                    dtVal = dtVal.ToUniversalTime();
+
+                                param.NpgsqlDbType = NpgsqlDbType.TimestampTz;
+                                param.Value = dtVal;
+                            }
+                            else
+                            {
+                                // Keep clock time for "timestamp without time zone".
+                                if (dtVal.Kind != DateTimeKind.Unspecified)
+                                    dtVal = DateTime.SpecifyKind(dtVal, DateTimeKind.Unspecified);
+
+                                param.NpgsqlDbType = NpgsqlDbType.Timestamp;
+                                param.Value = dtVal;
+                            }
                         }
                         else
-                        { param.NpgsqlDbType = NpgsqlDbType.Timestamp; param.Value = DBNull.Value;
-                          Log($"  [WARN] {pgTable}.{column.Name}: timestamp esperado, valor '{strVal}' → NULL"); }
+                        {
+                            param.NpgsqlDbType = pgType == "timestamp with time zone"
+                                ? NpgsqlDbType.TimestampTz
+                                : NpgsqlDbType.Timestamp;
+                            param.Value = DBNull.Value;
+                            Log($"  [WARN] {pgTable}.{column.Name}: timestamp esperado, valor '{strVal}' → NULL");
+                        }
                     }
                     else if (pgType is "ARRAY")
                     {
@@ -737,6 +766,12 @@ public sealed class MigrationService : IDisposable
         {
             var inserted = await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
             await tx.CommitAsync().ConfigureAwait(false);
+            // ON CONFLICT DO NOTHING returns the count of rows actually inserted.
+            // Any row whose PK already exists in PostgreSQL is silently skipped — log it
+            // so users can diagnose partial migrations or re-migrations.
+            var skipped = rows.Count - inserted;
+            if (skipped > 0)
+                Log($"  [SKIP] {pgTable}: {skipped} fila(s) omitidas (PK ya existe), {inserted} insertadas.");
             return inserted;
         }
         catch (PostgresException pgEx)
