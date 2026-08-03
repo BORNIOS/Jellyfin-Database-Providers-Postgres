@@ -15,8 +15,11 @@ Idioma: [Español](README.md) | [English](README.en.md)
 ## Que resuelve
 
 - Mejor comportamiento con bibliotecas grandes y concurrencia.
+- **Busqueda instantanea** sub-15ms con indice GIN trigram (pg_trgm).
+- **Optimizacion automatica** de indices y autovacuum tuning en una sola accion.
 - Backups y restore desde el plugin (pg_dump/psql).
-- Cambio controlado entre PostgreSQL y SQLite.
+- Cambio controlado entre PostgreSQL y SQLite (en ambas direcciones).
+- **Exportacion PostgreSQL → SQLite** directo a `.db` sin herramientas externas.
 
 ## Compatibilidad
 
@@ -49,9 +52,11 @@ https://raw.githubusercontent.com/BORNIOS/Jellyfin-Database-Providers-Postgres/m
 
 La pagina del plugin esta separada en 3 pestanas:
 
-- ⚙️ Configuracion: conexion PostgreSQL, timeout, rutas de binarios y defaults de backup.
-- 🔄 Migracion: copia SQLite -> PostgreSQL con progreso en vivo.
-- 🛠️ Mantenimiento: VACUUM, REINDEX, backups/restore y tabla de estadisticas.
+- ⚙️ **Configuracion**: conexion PostgreSQL, pool, timeout, rutas de binarios y defaults de backup.
+- 🔄 **Migracion**: dos cards:
+  - **SQLite → PostgreSQL**: copia jellyfin.db a PostgreSQL con progreso en vivo.
+  - **PostgreSQL → SQLite**: exporta todos los datos directamente a un archivo `.db` nativo.
+- 🛠️ **Mantenimiento**: VACUUM ANALYZE, REINDEX, **Aplicar optimizaciones** (indices GIN), backups/restore y estadisticas de BD.
 
 ## Configuracion recomendada (paso a paso)
 
@@ -90,6 +95,44 @@ Al guardar, se persisten:
 - Compresion ZIP por defecto.
 - Ruta de pg_dump (opcional).
 - Ruta de psql (opcional).
+
+## Busqueda instantanea (InstantSearch)
+
+A partir de v1.0.0.1 el plugin expone un endpoint de busqueda propio que evita el ORM y consulta directamente con indice GIN trigram (pg_trgm):
+
+- Latencia tipica < 15 ms en bibliotecas medianas/grandes.
+- Soporta busqueda por nombre, path y tipo de item.
+- Fallback a `ILIKE` si los indices GIN aun no se han creado.
+- Se activa al aplicar la optimizacion de rendimiento desde Configuracion.
+
+### Activar indices GIN
+
+1. En el plugin: tab **Mantenimiento** -> **Aplicar optimizaciones**.
+2. La accion crea 9 indices GIN CONCURRENTLY y ajusta autovacuum en tablas criticas.
+3. El estado de cada indice (creado / pendiente) se muestra en la misma card.
+4. La tarea **Optimize GIN Indexes** (semanal, domingo 05:00) mantiene los indices frescos.
+5. Mientras no existan indices GIN, la busqueda cae automaticamente en `ILIKE`.
+
+## Exportar PostgreSQL → SQLite
+
+Card disponible en la pestana Migracion, debajo de "Migrar datos de SQLite a PostgreSQL".
+
+**Casos de uso:**
+- Revertir Jellyfin a SQLite sin perder datos.
+- Copia portable de seguridad de la base en formato nativo.
+- Pruebas o inspecciones locales del contenido.
+
+**Como funciona:**
+1. El plugin auto-detecta la ruta nativa de `jellyfin.db` (`{DataPath}/jellyfin.db`).
+2. Si el archivo `.db` no existe → lo crea con el schema derivado de PostgreSQL.
+3. Si el archivo ya existe → respeta las tablas y reemplaza solo el contenido (`DELETE` + `INSERT`).
+4. Los datos se escriben en transacciones de 10,000 filas con `PRAGMA journal_mode=WAL`.
+5. No requiere herramientas externas (`sqlite3`, `pg_dump`, etc.).
+
+**Pasos:**
+1. Ir a Migracion -> **Exportar PostgreSQL → SQLite**.
+2. Verificar o cambiar la ruta del `.db` destino.
+3. Iniciar exportacion y seguir el progreso en vivo.
 
 ## Como migrar de SQLite a PostgreSQL
 
@@ -179,14 +222,18 @@ Usa esta vista para detectar:
 
 Tambien aparecen en Tareas programadas de Jellyfin:
 
-- PostgreSQL Backup: diario a las 02:00 (default).
-- PostgreSQL VACUUM ANALYZE: domingo 03:00 (default).
-- PostgreSQL REINDEX DATABASE: domingo 04:00 (default).
+| Tarea | Default | Descripcion |
+|---|---|---|
+| PostgreSQL Backup | Diario 02:00 | Backup con pg_dump |
+| PostgreSQL VACUUM ANALYZE | Domingo 03:00 | Libera espacio y actualiza estadisticas |
+| PostgreSQL REINDEX DATABASE | Domingo 04:00 | Reconstruye todos los indices |
+| Optimize GIN Indexes | Domingo 05:00 | Mantiene los indices GIN trigram (v1.0.0.1) |
 
 Recomendacion de operacion:
 
 - Programa REINDEX fuera de horario pico (puede tardar varios minutos).
 - Evita solapar backup, vacuum y reindex a la misma hora.
+- Si la BD tiene escrituras intensas, ejecuta Optimize GIN Indexes antes del pico de uso semanal.
 
 ## Recomendacion sobre optimizacion de DB en Jellyfin
 

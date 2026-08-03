@@ -65,6 +65,40 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Leave empty to use psql from PATH.
     /// </summary>
     public string PgRestorePath { get; set; } = string.Empty;
+
+    // ── Connection Pool Tuning ──────────────────────────────────────────────
+
+    /// <summary>
+    /// Gets or sets the minimum number of connections kept alive in the pool.
+    /// Keeping a few connections warm avoids cold-start latency on bursts.
+    /// </summary>
+    public int MinPoolSize { get; set; } = 4;
+
+    /// <summary>
+    /// Gets or sets the maximum number of connections in the pool.
+    /// </summary>
+    public int MaxPoolSize { get; set; } = 100;
+
+    /// <summary>
+    /// Gets or sets the maximum number of statements Npgsql will auto-prepare
+    /// server-side (caches query plans). 0 disables the feature.
+    /// </summary>
+    public int MaxAutoPrepare { get; set; } = 50;
+
+    // ── Search &amp; Index Optimizations ─────────────────────────────────────
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to create pg_trgm GIN indexes at startup
+    /// for near-instant full-text search. Requires pg_trgm extension and CREATE EXTENSION
+    /// privilege. Disable if your DB user lacks that privilege.
+    /// </summary>
+    public bool EnableSearchOptimizations { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to apply aggressive autovacuum settings
+    /// on high-churn tables (UserData, ActivityLogs) to prevent bloat.
+    /// </summary>
+    public bool EnableAutovacuumTuning { get; set; } = true;
 }
 
 /// <summary>

@@ -20,6 +20,13 @@ public sealed record TableStats(
     string TableSize,
     string IndexSize);
 
+/// <summary>Status of a plugin-managed GIN trigram index.</summary>
+public sealed record GinIndexInfo(
+    string IndexName,
+    string TableName,
+    string IndexSize,
+    bool IsValid);
+
 /// <summary>
 /// Provides PostgreSQL maintenance operations: VACUUM ANALYZE, REINDEX, and table statistics.
 /// </summary>
@@ -191,6 +198,48 @@ public sealed class MaintenanceService
         await using var cmd = new NpgsqlCommand(
             "SELECT pg_size_pretty(pg_database_size(current_database()));", pg);
         return (await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false))?.ToString() ?? "unknown";
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // GIN Index Status
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns the names and sizes of all GIN indexes in the public schema that were
+    /// created by this plugin (i.e. names ending in <c>_gin_trgm</c>).
+    /// </summary>
+    public static async Task<List<GinIndexInfo>> GetGinIndexStatusAsync(
+        string connectionString, CancellationToken ct = default)
+    {
+        await using var pg = new NpgsqlConnection(connectionString);
+        await pg.OpenAsync(ct).ConfigureAwait(false);
+        await using var cmd = new NpgsqlCommand(@"
+            SELECT
+                c.relname                                       AS index_name,
+                t.relname                                       AS table_name,
+                pg_size_pretty(pg_relation_size(c.oid))        AS index_size,
+                ix.indisvalid                                   AS is_valid
+            FROM pg_class c
+            JOIN pg_index ix ON ix.indexrelid = c.oid
+            JOIN pg_class t  ON t.oid = ix.indrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public'
+              AND c.relkind = 'i'
+              AND c.relname LIKE '%_gin_trgm'
+            ORDER BY t.relname, c.relname;", pg);
+
+        var result = new List<GinIndexInfo>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            result.Add(new GinIndexInfo(
+                IndexName: reader.GetString(0),
+                TableName: reader.GetString(1),
+                IndexSize: reader.GetString(2),
+                IsValid:   reader.GetBoolean(3)));
+        }
+
+        return result;
     }
 
     // ─────────────────────────────────────────────────────────────────────────

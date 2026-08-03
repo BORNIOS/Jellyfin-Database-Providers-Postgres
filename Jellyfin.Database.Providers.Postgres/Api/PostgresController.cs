@@ -83,6 +83,16 @@ public sealed class BackupRequest
     public string? PgDumpPath { get; set; }
 }
 
+/// <summary>Request body for the PostgreSQL → SQLite export.</summary>
+public sealed class StartExportToSqliteRequest
+{
+    /// <summary>
+    /// Gets or sets the target SQLite .db file path.
+    /// Leave empty to use the auto-detected default: {DataPath}/jellyfin.db
+    /// </summary>
+    public string? TargetSqlitePath { get; set; }
+}
+
 /// <summary>Request body for restoring a backup.</summary>
 public sealed class RestoreBackupRequest
 {
@@ -113,6 +123,8 @@ public class PostgresController : ControllerBase
     private readonly ISystemManager _systemManager;
     private readonly MigrationService _migrationService;
     private readonly MaintenanceService _maintenanceService;
+    private readonly InstantSearchService _instantSearch;
+    private readonly ExportToSqliteService _exportService;
     private readonly ILogger<PostgresController> _logger;
 
     /// <summary>
@@ -123,12 +135,16 @@ public class PostgresController : ControllerBase
         ISystemManager systemManager,
         MigrationService migrationService,
         MaintenanceService maintenanceService,
+        InstantSearchService instantSearch,
+        ExportToSqliteService exportService,
         ILogger<PostgresController> logger)
     {
         _appPaths = appPaths;
         _systemManager = systemManager;
         _migrationService = migrationService;
         _maintenanceService = maintenanceService;
+        _instantSearch = instantSearch;
+        _exportService = exportService;
         _logger = logger;
     }
 
@@ -591,7 +607,177 @@ public class PostgresController : ControllerBase
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Helpers
+    // PostgreSQL → SQLite Export
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Starts a PostgreSQL → SQLite export in the background.
+    /// Writes all data directly into a SQLite <c>.db</c> file.
+    /// Returns immediately; poll <see cref="GetExportToSqliteProgress"/> for status.
+    /// </summary>
+    [HttpPost("StartExportToSqlite")]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public ActionResult<object> StartExportToSqlite([FromBody] StartExportToSqliteRequest? request)
+    {
+        var connStr = GetActiveConnectionString();
+        if (connStr is null) return NoActiveConnection();
+
+        var sqlitePath = string.IsNullOrWhiteSpace(request?.TargetSqlitePath)
+            ? ExportToSqliteService.DetectDefaultSqlitePath(_appPaths.DataPath)
+            : request!.TargetSqlitePath;
+
+        var started = _exportService.StartExport(connStr, sqlitePath);
+        if (!started)
+        {
+            return Conflict(new { Error = "An export is already in progress." });
+        }
+
+        return Accepted(new { Status = "Export started.", TargetSqlitePath = sqlitePath });
+    }
+
+    /// <summary>Returns the auto-detected SQLite .db path for the current Jellyfin installation.</summary>
+    [HttpGet("ExportToSqliteDefaultPath")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult<object> GetExportToSqliteDefaultPath()
+        => Ok(new { Path = ExportToSqliteService.DetectDefaultSqlitePath(_appPaths.DataPath) });
+
+    /// <summary>Returns the progress of the current or last PostgreSQL → SQLite export.</summary>
+    [HttpGet("ExportToSqliteProgress")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult<object> GetExportToSqliteProgress()
+    {
+        var p = _exportService.GetProgress();
+        return Ok(new
+        {
+            p.IsRunning,
+            p.IsCompleted,
+            p.HasError,
+            p.ErrorMessage,
+            p.PercentComplete,
+            p.CurrentTable,
+            p.ExportedRows,
+            p.TotalRows,
+            p.TargetSqlitePath,
+            p.LogLines,
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────    // Instant Search (Spotify-style)
+    // ───────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Lightweight instant-search endpoint designed for as-you-type UX.
+    /// Returns a minimal JSON array ranked by pg_trgm word similarity.
+    /// Bypasses EF Core entirely — direct Npgsql query, target latency &lt; 15 ms.
+    /// </summary>
+    /// <param name="term">The user-typed search term.</param>
+    /// <param name="limit">Maximum results to return (1-50, default 8).</param>
+    /// <param name="mediaTypes">Optional comma-separated Jellyfin MediaType filter (e.g. "Audio,Video").</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    [HttpGet("Search/Instant")]
+    [AllowAnonymous] // Search must work without re-auth; access is scoped to the DB user's data
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
+    public async Task<ActionResult<object>> InstantSearch(
+        [FromQuery] string? term,
+        [FromQuery] int limit = 8,
+        [FromQuery] string? mediaTypes = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(term))
+        {
+            return Ok(Array.Empty<object>());
+        }
+
+        var connStr = GetActiveConnectionString();
+        if (connStr is null)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                new { Error = "PostgreSQL provider is not active." });
+        }
+
+        var results = await _instantSearch.SearchAsync(term, connStr, limit, mediaTypes, cancellationToken)
+            .ConfigureAwait(false);
+
+        // Return compact JSON — clients use this for as-you-type suggestions
+        return Ok(results.ConvertAll(r => new
+        {
+            id   = r.Id,
+            name = r.Name,
+            type = r.Type,
+            year = r.Year,
+            artists   = r.Artists,
+            album     = r.Album,
+            series    = r.SeriesName,
+            relevance = Math.Round(r.Relevance, 3),
+        }));
+    }
+
+    // ───────────────────────────────────────────────────────────────────────────
+    // Performance Optimizations
+    // ───────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns the current state of performance optimizations:
+    /// whether pg_trgm is available and which GIN indexes exist.
+    /// </summary>
+    [HttpGet("OptimizationStatus")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<ActionResult<object>> GetOptimizationStatus(CancellationToken cancellationToken)
+    {
+        var connStr = GetActiveConnectionString();
+        if (connStr is null)
+        {
+            return NoActiveConnection();
+        }
+
+        var config = PostgresPlugin.Instance?.Configuration;
+        var indexList = await MaintenanceService
+            .GetGinIndexStatusAsync(connStr, cancellationToken).ConfigureAwait(false);
+
+        return Ok(new
+        {
+            TrgmAvailable       = PostgresDatabaseProvider.TrgmAvailable,
+            GinIndexes          = indexList,
+            SearchOptimizations = config?.EnableSearchOptimizations ?? true,
+            AutovacuumTuning    = config?.EnableAutovacuumTuning    ?? true,
+            PoolMin             = config?.MinPoolSize    ?? 4,
+            PoolMax             = config?.MaxPoolSize    ?? 100,
+            MaxAutoPrepare      = config?.MaxAutoPrepare ?? 50,
+        });
+    }
+
+    /// <summary>
+    /// Manually triggers GIN index creation and autovacuum tuning.
+    /// Safe to call multiple times — all statements are idempotent.
+    /// The work runs in the background; this endpoint returns immediately.
+    /// </summary>
+    [HttpPost("ApplyOptimizations")]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    public ActionResult<object> ApplyOptimizations()
+    {
+        var connStr = GetActiveConnectionString();
+        if (connStr is null)
+        {
+            return NoActiveConnection();
+        }
+
+        var config = PostgresPlugin.Instance?.Configuration;
+        var enableSearch = config?.EnableSearchOptimizations ?? true;
+        var enableVacuum = config?.EnableAutovacuumTuning    ?? true;
+
+        _ = Task.Run(async () =>
+        {
+            await PostgresDatabaseProvider.RunOptimizationsAsync(
+                connStr, enableSearch, enableVacuum, _logger, CancellationToken.None)
+                .ConfigureAwait(false);
+        });
+
+        return Accepted(new { Status = "Optimization job started in background." });
+    }
+
+    // ───────────────────────────────────────────────────────────────────────────    // Helpers
     // ─────────────────────────────────────────────────────────────────────────
 
     private string? GetActiveConnectionString()

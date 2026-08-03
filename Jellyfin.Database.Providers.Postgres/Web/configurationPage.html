@@ -282,6 +282,42 @@
                             </button>
                         </div>
                     </div>
+
+                    <!-- ── PostgreSQL → SQLite ─────────────────────────────────────────── -->
+                    <div class="verticalSection pg-card" style="background:rgba(18,26,48,.88); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2); margin-bottom:16px;">
+                        <h2 id="exportHeading">Exportar PostgreSQL &rarr; SQLite</h2>
+                        <p class="fieldDescription" id="exportDescription">
+                            Escribe todos los datos de PostgreSQL directamente en un archivo <code>.db</code> de SQLite.
+                            Util para recuperar la base de datos original o revertir a SQLite.
+                        </p>
+                        <div style="padding:10px 14px; border-radius:6px; background:#1a2a3a; border-left:4px solid #42a5f5; margin-bottom:16px; font-size:13px; color:#90caf9;" id="exportHint">
+                            &#128196; Si el archivo <code>.db</code> no existe, se crea con el schema derivado de PostgreSQL.
+                            Si ya existe (creado por Jellyfin), se respetan las tablas y se reemplaza solo el contenido.
+                        </div>
+                        <div class="inputContainer">
+                            <input is="emby-input" type="text" id="exportTargetPath" label="Ruta del archivo .db destino" autocomplete="off" spellcheck="false"/>
+                            <div class="fieldDescription" id="exportTargetPathHelp">Se auto-detecta la ruta nativa de Jellyfin. Puedes cambiarla antes de iniciar.</div>
+                        </div>
+                        <button is="emby-button" type="button" id="btnStartExport" class="raised button-default" style="margin-top:8px;">
+                            &#9654; Iniciar exportacion a SQLite
+                        </button>
+                    </div>
+
+                    <div id="exportProgressSection" class="verticalSection pg-card" style="display:none; background:rgba(18,26,48,.88); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2); margin-bottom:16px;">
+                        <h2 id="exportProgressHeading">Progreso de exportacion</h2>
+                        <div style="background:#333; border-radius:4px; height:20px; margin-bottom:8px; overflow:hidden;">
+                            <div id="exportProgressBar"
+                                 style="height:100%; background:linear-gradient(90deg,#1565C0,#42a5f5); border-radius:4px; width:0%; transition:width 0.4s; display:flex; align-items:center; justify-content:center; color:white; font-size:12px; font-weight:bold;">
+                                0%
+                            </div>
+                        </div>
+                        <div id="exportProgressLabel" style="font-size:13px; color:#aaa; margin-bottom:12px;"></div>
+                        <div id="exportLogBox"
+                             style="background:#0d0d0d; color:#80d8ff; font-family:monospace; font-size:12px; padding:12px; border-radius:6px; height:240px; overflow-y:auto; white-space:pre-wrap; border:1px solid #333;">
+                        </div>
+                        <div id="exportResult" style="margin-top:10px; font-size:14px; font-weight:bold;"></div>
+                    </div>
+
                 </div>
 
                 <!-- TAB 3: MANTENIMIENTO -->
@@ -327,6 +363,23 @@
                             <a id="scheduledTasksLink" href="/web/#/dashboard/tasks" style="color:#81c784; text-decoration:underline; margin-top:6px; display:inline-block;">
                                 Ir a Tareas programadas &#8594;
                             </a>
+                        </div>
+                    </div>
+
+                    <!-- ── Optimizacion de rendimiento ──────────────────────────────── -->
+                    <div class="verticalSection pg-card" style="background:rgba(18,26,48,.88); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2); margin-bottom:16px;">
+                        <h2 id="optHeading">Optimizacion de rendimiento</h2>
+                        <p class="fieldDescription" id="optDescription">Crea indices GIN trigram (pg_trgm) para busqueda instantanea y aplica ajustes de autovacuum en tablas criticas. Idempotente: se puede ejecutar varias veces sin daño.</p>
+
+                        <button is="emby-button" type="button" id="btnApplyOptimizations" class="raised button-submit" style="margin-bottom:12px;">
+                            &#9889; Aplicar optimizaciones
+                        </button>
+
+                        <div id="optResult" style="font-size:13px; margin-bottom:10px;"></div>
+
+                        <div id="optStatusSection" style="display:none;">
+                            <div id="optTrgmBadge" style="display:inline-block; padding:3px 10px; border-radius:12px; font-size:12px; margin-bottom:10px;"></div>
+                            <div id="optIndexList" style="font-size:12px; color:#a0b4d0; line-height:1.8;"></div>
                         </div>
                     </div>
 
@@ -382,6 +435,11 @@
                     button_vacuum: 'VACUUM ANALYZE',
                     button_reindex: 'REINDEX DATABASE',
                     button_refresh_stats: 'Refresh statistics',
+                    heading_opt: 'Performance optimization',
+                    desc_opt: 'Creates GIN trigram indexes (pg_trgm) for instant search and tunes autovacuum on critical tables. Idempotent — safe to run multiple times.',
+                    button_apply_opt: '\u26A1 Apply optimizations',
+                    msg_opt_running: 'Applying optimizations in background...',
+                    msg_opt_done: 'Optimization job started. GIN indexes may take a few minutes on large databases.',
                     heading_backup: 'PostgreSQL backups',
                     heading_config_backup: 'Backup and restore (persistent configuration)',
                     field_backup_directory: 'Backup directory',
@@ -394,6 +452,20 @@
                     button_create_backup: 'Create backup now',
                     button_restore_backup: 'Restore backup',
                     help_password_mask: 'Only the password is masked. Other fields are visible.',
+                    tab_export: 'Export to SQLite',
+                    heading_export: 'Export PostgreSQL \u2192 SQLite',
+                    desc_export: 'Writes all PostgreSQL data directly into a SQLite <code>.db</code> file. Useful to recover the original database or revert to SQLite.',
+                    hint_export: '&#128196; If the <code>.db</code> file does not exist, it is created from the PostgreSQL schema. If it already exists, its structure is preserved and only the data is replaced.',
+                    field_export_target_path: 'Target .db file path',
+                    help_export_target_path: 'Auto-detected native Jellyfin path. You can change it before starting.',
+                    button_start_export: 'Start export to SQLite',
+                    heading_export_progress: 'Export progress',
+                    msg_export_running: 'Export in progress...',
+                    msg_export_conflict: 'An export is already in progress.',
+                    msg_export_start_error: 'Error starting export: ',
+                    msg_export_done_prefix: 'Export completed: ',
+                    msg_export_table_prefix: 'Current table: ',
+                    msg_export_rows_prefix: 'Exported rows: ',
                     summary_advanced_options: 'Advanced options',
                     help_pool_size: 'Maximum number of connections in the Npgsql pool.',
                     desc_activate: 'When migration is complete, write <code>database.xml</code> and restart Jellyfin.',
@@ -484,6 +556,11 @@
                     button_vacuum: 'VACUUM ANALYZE',
                     button_reindex: 'REINDEX DATABASE',
                     button_refresh_stats: 'Actualizar estadisticas',
+                    heading_opt: 'Optimizacion de rendimiento',
+                    desc_opt: 'Crea indices GIN trigram (pg_trgm) para busqueda instantanea y ajusta autovacuum en tablas criticas. Idempotente: se puede ejecutar varias veces sin daño.',
+                    button_apply_opt: '\u26A1 Aplicar optimizaciones',
+                    msg_opt_running: 'Aplicando optimizaciones en segundo plano...',
+                    msg_opt_done: 'Tarea de optimizacion iniciada. Los indices GIN pueden tardar unos minutos en bases de datos grandes.',
                     heading_backup: 'Backups PostgreSQL',
                     heading_config_backup: 'Backup y Restore (configuracion persistente)',
                     field_backup_directory: 'Directorio de backup',
@@ -495,6 +572,20 @@
                     label_backup_compress_default: 'Comprimir backup en ZIP por defecto',
                     button_create_backup: 'Crear backup ahora',
                     button_restore_backup: 'Restablecer backup',
+                    tab_export: 'Exportar a SQLite',
+                    heading_export: 'Exportar PostgreSQL \u2192 SQLite',
+                    desc_export: 'Escribe todos los datos de PostgreSQL directamente en un archivo SQLite <code>.db</code>. Util para recuperar la base de datos original o revertir a SQLite.',
+                    hint_export: '&#128196; Si el archivo <code>.db</code> no existe, se crea con el schema derivado de PostgreSQL. Si ya existe, se respetan las tablas y se reemplaza solo el contenido.',
+                    field_export_target_path: 'Ruta del archivo .db destino',
+                    help_export_target_path: 'Se auto-detecta la ruta nativa de Jellyfin. Puedes cambiarla antes de iniciar.',
+                    button_start_export: 'Iniciar exportacion a SQLite',
+                    heading_export_progress: 'Progreso de exportacion',
+                    msg_export_running: 'Exportacion en progreso...',
+                    msg_export_conflict: 'Ya hay una exportacion en curso.',
+                    msg_export_start_error: 'Error al iniciar exportacion: ',
+                    msg_export_done_prefix: 'Exportacion completada: ',
+                    msg_export_table_prefix: 'Tabla actual: ',
+                    msg_export_rows_prefix: 'Filas exportadas: ',
                     help_password_mask: 'Solo la contrasena se enmascara. El resto de los campos son visibles.',
                     summary_advanced_options: 'Opciones avanzadas',
                     help_pool_size: 'Numero maximo de conexiones en el pool de Npgsql.',
@@ -666,8 +757,19 @@
                 setText('btnVacuum', t('button_vacuum', 'VACUUM ANALYZE'));
                 setText('btnReindex', t('button_reindex', 'REINDEX DATABASE'));
                 setText('btnRefreshStats', t('button_refresh_stats', 'Refresh statistics', 'ButtonRefresh'));
+                setText('optHeading', t('heading_opt', 'Performance optimization'));
+                setText('optDescription', t('desc_opt', 'Creates GIN trigram indexes (pg_trgm) for instant search and tunes autovacuum on critical tables.'));
+                setText('btnApplyOptimizations', t('button_apply_opt', '\u26A1 Apply optimizations'));
                 setText('btnCreateBackup', t('button_create_backup', 'Create backup now'));
                 setText('btnRestoreBackup', t('button_restore_backup', 'Restore backup'));
+
+                setText('exportHeading', t('heading_export', 'Export PostgreSQL \u2192 SQLite'));
+                setHtml('exportDescription', t('desc_export', 'Writes all PostgreSQL data directly into a SQLite <code>.db</code> file.'));
+                setHtml('exportHint', t('hint_export', '&#128196; If the <code>.db</code> file does not exist, it is created from the PostgreSQL schema. If it already exists, its structure is preserved and only the data is replaced.'));
+                setText('exportProgressHeading', t('heading_export_progress', 'Export progress'));
+                setText('btnStartExport', t('button_start_export', 'Start export to SQLite'));
+                setInputLabel('exportTargetPath', t('field_export_target_path', 'Target .db file path'));
+                setText('exportTargetPathHelp', t('help_export_target_path', 'Auto-detected native Jellyfin path. You can change it before starting.'));
 
                 setInputLabel('pgHost', t('field_host', 'Host', 'LabelHost'));
                 setInputLabel('pgPort', t('field_port', 'Port', 'LabelPort'));
@@ -688,7 +790,17 @@
                     tabs[1].innerHTML = '&#128260; ' + t('tab_migration', 'Migration', 'HeaderMigrate');
                     tabs[2].innerHTML = '&#128295; ' + t('tab_maintenance', 'Maintenance', 'HeaderMaintenance');
                 }
-            }
+                if (tabs.length >= 4) {
+                    tabs[3].innerHTML = '&#128194; ' + t('tab_export', 'Export to SQLite');
+                }
+
+                setText('exportHeading', t('heading_export', 'Export PostgreSQL \u2192 SQLite'));
+                setHtml('exportDescription', t('desc_export', 'Writes all PostgreSQL data directly into a SQLite <code>.db</code> file. Useful to recover the original database or revert to SQLite.'));
+                setHtml('exportHint', t('hint_export', '&#128196; If the <code>.db</code> file does not exist, it is created from the PostgreSQL schema. If it already exists, its structure is preserved and only the data is replaced.'));
+                setText('exportProgressHeading', t('heading_export_progress', 'Export progress'));
+                setText('btnStartExport', t('button_start_export', 'Start export to SQLite'));
+                setInputLabel('exportTargetPath', t('field_export_target_path', 'Target .db file path'));
+                setText('exportTargetPathHelp', t('help_export_target_path', 'Auto-detected native Jellyfin path. You can change it before starting.'));            }
 
             function parseConnStr(s) {
                 var result = {};
@@ -741,6 +853,16 @@
                     btn.classList.remove('button-default');
                     btn.classList.add('button-submit');
                     if (target === 'maintenance') loadStats();
+                    if (target === 'migration') {
+                        // Pre-fill export target path with the auto-detected native SQLite path
+                        var exportField = document.getElementById('exportTargetPath');
+                        if (exportField && !exportField.value) {
+                            apiGet('/ExportToSqliteDefaultPath')
+                                .then(function(r) { return r.json(); })
+                                .then(function(d) { if (d && d.path) exportField.value = d.path; })
+                                .catch(function() {});
+                        }
+                    }
                 });
             });
 
@@ -1057,6 +1179,163 @@
                 if (!str) return '';
                 return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
             }
+
+            // ── Performance Optimization ──────────────────────────────────────
+            function loadOptimizationStatus() {
+                apiGet('/OptimizationStatus')
+                    .then(function(r) { return r.json(); })
+                    .then(function(d) {
+                        var section = document.getElementById('optStatusSection');
+                        var badge   = document.getElementById('optTrgmBadge');
+                        var list    = document.getElementById('optIndexList');
+                        section.style.display = '';
+                        // cover both camelCase (System.Text.Json) and PascalCase serializers
+                        var trgmOk = !!(d.trgmAvailable != null ? d.trgmAvailable : d.TrgmAvailable);
+                        if (trgmOk) {
+                            badge.style.background = '#1b3a1b';
+                            badge.style.color       = '#81c784';
+                            badge.style.border      = '1px solid #388e3c';
+                            badge.textContent       = '\u2713 pg_trgm disponible';
+                        } else {
+                            badge.style.background = '#3a1b1b';
+                            badge.style.color       = '#e57373';
+                            badge.style.border      = '1px solid #c62828';
+                            badge.textContent       = '\u2717 pg_trgm no disponible';
+                        }
+                        var html = '';
+                        var indexes = d.ginIndexes != null ? d.ginIndexes : d.GinIndexes;
+                        if (Array.isArray(indexes)) {
+                            indexes.forEach(function(idx) {
+                                // GinIndexInfo.IsValid — handle both casings
+                                var valid = idx.isValid != null ? idx.isValid : idx.IsValid;
+                                var name  = idx.indexName != null ? idx.indexName : idx.IndexName;
+                                html += '<span style="color:' + (valid ? '#81c784' : '#ef9a9a') + '">'
+                                      + (valid ? '\u2713' : '\u2717') + ' '
+                                      + escapeHtml(name) + '</span><br>';
+                            });
+                        }
+                        list.innerHTML = html;
+                    })
+                    .catch(function() {});
+            }
+
+            document.getElementById('btnApplyOptimizations').addEventListener('click', function() {
+                var r = document.getElementById('optResult');
+                r.style.color   = '#a0c4ff';
+                r.textContent   = t('msg_opt_running', 'Applying optimizations in background...');
+                document.getElementById('btnApplyOptimizations').disabled = true;
+                apiPost('/ApplyOptimizations', {})
+                    .then(function(resp) { return resp.json(); })
+                    .then(function(d) {
+                        r.style.color = '#81c784';
+                        r.textContent = t('msg_opt_done', 'Optimization job started. GIN indexes may take a few minutes on large databases.');
+                        // Poll until pg_trgm is confirmed available (max ~60 s)
+                        var attempts = 0;
+                        function pollUntilReady() {
+                            attempts++;
+                            loadOptimizationStatus();
+                            if (attempts < 12) { setTimeout(pollUntilReady, 5000); }
+                        }
+                        setTimeout(pollUntilReady, 3000);
+                    })
+                    .catch(function(e) {
+                        r.style.color = '#ef9a9a';
+                        r.textContent = 'Error: ' + e;
+                    })
+                    .finally(function() {
+                        document.getElementById('btnApplyOptimizations').disabled = false;
+                    });
+            });
+
+            // ── Export to SQLite ──────────────────────────────────────────────
+            var exportPollTimer = null;
+
+            function stopExportPoll() {
+                if (exportPollTimer) { clearInterval(exportPollTimer); exportPollTimer = null; }
+            }
+
+            function updateExportProgress(d) {
+                var bar   = document.getElementById('exportProgressBar');
+                var label = document.getElementById('exportProgressLabel');
+                var log   = document.getElementById('exportLogBox');
+                var res   = document.getElementById('exportResult');
+                var hint  = document.getElementById('exportCompletedHint');
+                var msg   = document.getElementById('exportCompletedMsg');
+
+                var pct = d.percentComplete || 0;
+                bar.style.width = pct + '%';
+                bar.textContent = pct + '%';
+
+                var labelParts = [];
+                if (d.currentTable) labelParts.push(t('msg_export_table_prefix', 'Current table: ') + d.currentTable);
+                if (d.totalRows > 0) labelParts.push(t('msg_export_rows_prefix', 'Exported rows: ') + (d.exportedRows || 0).toLocaleString() + ' / ' + (d.totalRows || 0).toLocaleString());
+                label.textContent = labelParts.join('   ');
+
+                if (d.logLines && d.logLines.length) {
+                    log.textContent = d.logLines.join('\n');
+                    log.scrollTop = log.scrollHeight;
+                }
+
+                if (!d.isRunning && d.isCompleted && !d.hasError) {
+                    stopExportPoll();
+                    res.style.color = '#6bc47f';
+                    res.textContent = t('msg_export_done_prefix', 'Export completed: ') + (d.targetSqlitePath || '');
+                    document.getElementById('btnStartExport').disabled = false;
+                }
+
+                if (!d.isRunning && d.hasError) {
+                    stopExportPoll();
+                    res.style.color = '#ff7070';
+                    res.textContent = 'Error: ' + (d.errorMessage || '');
+                    document.getElementById('btnStartExport').disabled = false;
+                }
+            }
+
+            function startExportPoll() {
+                stopExportPoll();
+                exportPollTimer = setInterval(function() {
+                    apiGet('/ExportToSqliteProgress')
+                        .then(function(r) { return r.json(); })
+                        .then(function(d) { updateExportProgress(d); })
+                        .catch(function() {});
+                }, 1500);
+            }
+
+            document.getElementById('btnStartExport').addEventListener('click', function() {
+                var targetPath = document.getElementById('exportTargetPath').value.trim();
+                var res = document.getElementById('exportResult');
+                res.textContent = '';
+
+                var bar = document.getElementById('exportProgressBar');
+                bar.style.width = '0%'; bar.textContent = '0%';
+                document.getElementById('exportProgressLabel').textContent = t('msg_export_running', 'Export in progress...');
+                document.getElementById('exportLogBox').textContent = '';
+                document.getElementById('exportProgressSection').style.display = '';
+                document.getElementById('btnStartExport').disabled = true;
+
+                apiPost('/StartExportToSqlite', { targetSqlitePath: targetPath || null })
+                    .then(function(resp) {
+                        if (resp.status === 409) {
+                            res.style.color = '#f3c969';
+                            res.textContent = t('msg_export_conflict', 'An export is already in progress.');
+                            document.getElementById('btnStartExport').disabled = false;
+                            startExportPoll();
+                            return null;
+                        }
+                        return resp.json();
+                    })
+                    .then(function(d) {
+                        if (d && d.targetSqlitePath) {
+                            document.getElementById('exportTargetPath').value = d.targetSqlitePath;
+                        }
+                        if (d) startExportPoll();
+                    })
+                    .catch(function(e) {
+                        res.style.color = '#ff7070';
+                        res.textContent = t('msg_export_start_error', 'Error starting export: ') + e;
+                        document.getElementById('btnStartExport').disabled = false;
+                    });
+            });
 
             applyLocalization();
             document.getElementById('currentStatusBox').textContent = t('msg_loading', 'Loading...');

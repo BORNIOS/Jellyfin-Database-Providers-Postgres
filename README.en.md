@@ -15,8 +15,11 @@ Language: [Español](README.md) | [English](README.en.md)
 ## What it solves
 
 - Better behavior with large libraries and concurrent use.
+- **Instant search** sub-15ms with GIN trigram index (pg_trgm).
+- **Automatic optimization** of indexes and autovacuum tuning in one action.
 - Backup and restore from plugin UI (pg_dump/psql).
-- Controlled switch between PostgreSQL and SQLite.
+- Controlled switch between PostgreSQL and SQLite (both directions).
+- **PostgreSQL → SQLite export** directly to a `.db` file without external tools.
 
 ## Compatibility
 
@@ -45,21 +48,71 @@ https://raw.githubusercontent.com/BORNIOS/Jellyfin-Database-Providers-Postgres/m
 2. Extract to Jellyfin plugin directory.
 3. Restart Jellyfin.
 
+## Plugin UI overview
+
+The plugin page has 3 tabs:
+
+- ⚙️ **Configuration**: PostgreSQL connection, pool, timeout, binary paths and backup defaults.
+- 🔄 **Migration**: two cards:
+  - **SQLite → PostgreSQL**: copies jellyfin.db to PostgreSQL with live progress.
+  - **PostgreSQL → SQLite**: exports all data directly to a native `.db` file.
+- 🛠️ **Maintenance**: VACUUM ANALYZE, REINDEX, **Apply optimizations** (GIN indexes), backup/restore, and DB stats.
+
+## Instant Search (InstantSearch)
+
+Starting with v1.0.0.1, the plugin exposes a dedicated search endpoint that bypasses EF Core and queries directly using a GIN trigram index (pg_trgm):
+
+- Typical latency < 15 ms on medium and large libraries.
+- Searches by item name, path, and type.
+- Falls back to `ILIKE` if GIN indexes have not been created yet.
+- Activated when you apply the performance optimization from the Configuration tab.
+
+### Enable GIN indexes
+
+1. In the plugin: **Maintenance** tab -> **Apply optimizations**.
+2. This creates 9 GIN indexes CONCURRENTLY and tunes autovacuum on critical tables.
+3. The status of each index (created / pending) is shown in the same card.
+4. The **Optimize GIN Indexes** scheduled task (weekly, Sunday 05:00) keeps indexes fresh.
+5. While GIN indexes do not exist, search falls back to `ILIKE` automatically.
+
+## Export PostgreSQL → SQLite
+
+Card available in the Migration tab, below "Migrate data from SQLite to PostgreSQL".
+
+**Use cases:**
+- Revert Jellyfin to SQLite without losing data.
+- Portable backup of the database in native format.
+- Local inspection or testing of database contents.
+
+**How it works:**
+1. The plugin auto-detects the native `jellyfin.db` path (`{DataPath}/jellyfin.db`).
+2. If the `.db` file does not exist → it is created with the schema derived from PostgreSQL.
+3. If the `.db` file already exists → table structure is preserved; only data is replaced (`DELETE` + `INSERT`).
+4. Data is written in transactions of 10,000 rows with `PRAGMA journal_mode=WAL`.
+5. No external tools required (`sqlite3`, `pg_dump`, etc.).
+
+**Steps:**
+1. Go to Migration -> **Export PostgreSQL → SQLite**.
+2. Verify or change the target `.db` path.
+3. Start export and follow live progress.
+
 ## How to migrate from SQLite to PostgreSQL
 
 Installing the plugin does not migrate data by itself.
 
 1. Create an empty PostgreSQL database (for example `jellyfin`).
-2. Run SQLite -> PostgreSQL migration using Jellyfin.SqliteToPostgres.Migrator.
-3. Validate key row counts (for example `UserData`, `Users`, `TypedBaseItems`).
-4. In plugin settings, set your PostgreSQL connection string.
-5. Activate PostgreSQL from the plugin UI (writes `database.xml` and restarts Jellyfin).
+2. In the Configuration tab, fill in the connection and run **Test connection**.
+3. Go to Migration tab -> **Migrate data from SQLite to PostgreSQL**.
+4. Confirm the `jellyfin.db` path (auto-detected if it exists in the data directory).
+5. Adjust batch size (default 1000) and optionally enable **Truncate tables before insert**.
+6. Start migration and wait for 100% progress.
+7. Review copied rows and activate PostgreSQL.
 
-Example connection string:
+### When to use --truncate
 
-```text
-Host=127.0.0.1;Port=5432;Database=jellyfin;Username=jellyfin;Password=CHANGE_ME;Pooling=true;Maximum Pool Size=200
-```
+- Recommended when repeating a migration over an already populated PostgreSQL database.
+- Recommended on retries to avoid duplicates or stale rows.
+- Destructive on existing destination data (TRUNCATE + RESTART IDENTITY + CASCADE).
 
 ## How to activate PostgreSQL
 
@@ -103,25 +156,52 @@ In plugin Maintenance:
 2. Run restore from backup.
 3. Optionally schedule recurring backups in Jellyfin Scheduled Tasks.
 
-## Quick post-switch checks
+## Scheduled maintenance tasks
+
+Also available in Jellyfin Scheduled Tasks:
+
+| Task | Default | Description |
+|---|---|---|
+| PostgreSQL Backup | Daily 02:00 | Backup with pg_dump |
+| PostgreSQL VACUUM ANALYZE | Sunday 03:00 | Free space and update statistics |
+| PostgreSQL REINDEX DATABASE | Sunday 04:00 | Rebuild all indexes |
+| Optimize GIN Indexes | Sunday 05:00 | Keep trigram GIN indexes fresh (v1.0.0.1) |
+
+Operational recommendations:
+
+- Schedule REINDEX off-peak (can take several minutes on large databases).
+- Avoid overlapping backup, vacuum, and reindex at the same time.
+- If the database has heavy write activity, run Optimize GIN Indexes before the weekly peak.
+
+## Post-migration checklist
 
 - Login works with existing users.
 - Playback progress/activity continues to update.
+- Key row counts validated (UserData, Users, TypedBaseItems).
 - No PostgreSQL connection errors in Jellyfin logs.
+- Manual backup tested at least once.
 
 ## Short FAQ
 
 Q: I installed the plugin but data was not migrated.
 
-A: Expected. First run SQLite -> PostgreSQL migrator, then activate PostgreSQL in plugin UI.
+A: Expected. Use the Migration tab (SQLite → PostgreSQL) to copy data, then activate PostgreSQL.
 
 Q: Can I edit `database.xml` manually.
 
-A: Yes, but plugin UI is recommended to reduce configuration mistakes.
+A: Yes, but the plugin UI is recommended to reduce configuration mistakes.
 
 Q: Migration fails or gives odd results on retries.
 
-A: On large databases or repeated migrations, enable --truncate to reset destination tables before insert.
+A: On large databases or repeated migrations, enable --truncate to reset destination tables before inserting.
+
+Q: What happens if I export to SQLite and the `.db` file already exists?
+
+A: The plugin preserves the table structure and replaces only the data (DELETE + INSERT). The file is not dropped or recreated.
+
+Q: Does InstantSearch require any client changes?
+
+A: No. It is a server-side API endpoint. The plugin UI uses it internally when PostgreSQL is active and GIN indexes exist.
 
 ## Community
 

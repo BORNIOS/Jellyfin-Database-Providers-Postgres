@@ -20,8 +20,11 @@ public class PostgresServiceRegistrator : IPluginServiceRegistrator
     {
         serviceCollection.AddSingleton<MigrationService>();
         serviceCollection.AddSingleton<MaintenanceService>();
+        serviceCollection.AddSingleton<InstantSearchService>();
+        serviceCollection.AddSingleton<ExportToSqliteService>();
         serviceCollection.AddSingleton<IScheduledTask, BackupTask>();
         serviceCollection.AddSingleton<IScheduledTask, VacuumAnalyzeTask>();
         serviceCollection.AddSingleton<IScheduledTask, ReindexTask>();
+        serviceCollection.AddSingleton<IScheduledTask, OptimizeIndexesTask>();
     }
 }

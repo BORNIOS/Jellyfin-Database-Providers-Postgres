@@ -37,6 +37,7 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 	{
 		_applicationPaths = applicationPaths;
 		_logger = logger;
+		Current = this;
 	}
 
 	/// <inheritdoc/>
@@ -88,6 +89,16 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 			connBuilder.Timezone = GetLocalIanaTimezone();
 		}
 
+		// Connection pool and auto-prepare tuning — loaded from plugin config
+		var perfConfig = PostgresPlugin.Instance?.Configuration;
+		connBuilder.MinPoolSize = perfConfig?.MinPoolSize ?? 4;
+		connBuilder.MaxPoolSize = perfConfig?.MaxPoolSize ?? 100;
+		if (connBuilder.MaxAutoPrepare == 0)
+		{
+			connBuilder.MaxAutoPrepare = perfConfig?.MaxAutoPrepare ?? 50;
+			connBuilder.AutoPrepareMinUsages = 5;
+		}
+
 		var effectiveConnectionString = connBuilder.ConnectionString;
 
 		options.UseNpgsql(
@@ -107,6 +118,23 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 		// does not contain the initial migration marker.
 		TryRepairInitialMigrationHistory(effectiveConnectionString);
 		TryMitigateItemValuesIndexContention(effectiveConnectionString);
+
+		// Kick off performance index creation and autovacuum tuning in the background
+		// so they don't block Jellyfin startup. Uses CONCURRENTLY = zero downtime.
+		var enableSearch = perfConfig?.EnableSearchOptimizations ?? true;
+		var enableVacuum = perfConfig?.EnableAutovacuumTuning ?? true;
+		if (enableSearch || enableVacuum)
+		{
+			var capturedConnStr = effectiveConnectionString;
+			_ = Task.Run(async () =>
+			{
+				// Small delay — let EF Core finish its migrations before running DDL
+				await Task.Delay(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+				await TryApplyPerformanceOptimizationsAsync(
+					capturedConnStr, enableSearch, enableVacuum, CancellationToken.None)
+					.ConfigureAwait(false);
+			});
+		}
 
 		_logger.LogWarning("PostgreSQL provider initialized for Jellyfin. Session timezone for SQL clients: {Timezone}. All DateTime values persisted as strict UTC (no legacy timestamp behavior).", connBuilder.Timezone);
 	}
@@ -257,6 +285,182 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 		}
 	}
 
+	/// <summary>
+	/// Exposed for <see cref="PostgresDatabaseProvider"/> and <see cref="Tasks.OptimizeIndexesTask"/>
+	/// so the scheduled task can trigger the same work.
+	/// </summary>
+	internal static bool TrgmAvailable { get; private set; }
+
+	/// <summary>The singleton instance set when the provider is initialized by Jellyfin.</summary>
+	internal static PostgresDatabaseProvider? Current { get; private set; }
+
+	/// <summary>
+	/// Instance wrapper — delegates to the static overload using this instance's logger.
+	/// </summary>
+	internal Task TryApplyPerformanceOptimizationsAsync(
+		string connectionString,
+		bool enableSearch,
+		bool enableVacuum,
+		CancellationToken ct)
+		=> RunOptimizationsAsync(connectionString, enableSearch, enableVacuum, _logger, ct);
+
+	/// <summary>
+	/// Static entry point — safe to call without an active provider instance.
+	/// Creates pg_trgm GIN indexes for near-instant search and tunes autovacuum on hot
+	/// tables. All statements are idempotent (IF NOT EXISTS / SET).
+	/// </summary>
+	internal static async Task RunOptimizationsAsync(
+		string connectionString,
+		bool enableSearch,
+		bool enableVacuum,
+		Microsoft.Extensions.Logging.ILogger logger,
+		CancellationToken ct)
+	{
+		// DDL cannot be prepared; use a dedicated non-pooled connection
+		var maintBuilder = new NpgsqlConnectionStringBuilder(connectionString)
+		{
+			MaxAutoPrepare = 0,
+			Pooling = false,
+		};
+
+		try
+		{
+			await using var conn = new NpgsqlConnection(maintBuilder.ConnectionString);
+			await conn.OpenAsync(ct).ConfigureAwait(false);
+
+			if (enableSearch)
+			{
+				await ApplySearchIndexesAsync(conn, logger, ct).ConfigureAwait(false);
+			}
+
+			if (enableVacuum)
+			{
+				await ApplyAutovacuumTuningAsync(conn, logger, ct).ConfigureAwait(false);
+			}
+		}
+		catch (Exception ex)
+		{
+			// Never crash Jellyfin startup — optimizations are best-effort
+			logger.LogWarning(ex, "PostgreSQL performance optimizations partially failed. Server will continue normally.");
+		}
+	}
+
+	private static async Task ApplySearchIndexesAsync(NpgsqlConnection conn, Microsoft.Extensions.Logging.ILogger logger, CancellationToken ct)
+	{
+		// Step 1 — enable pg_trgm (bundled with PostgreSQL 17, needs CREATE EXTENSION privilege)
+		try
+		{
+			await using var extCmd = new NpgsqlCommand("CREATE EXTENSION IF NOT EXISTS pg_trgm;", conn);
+			await extCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+			TrgmAvailable = true;
+		}
+		catch (Exception ex)
+		{
+			logger.LogWarning(ex,
+				"Could not enable pg_trgm extension. GIN text-search indexes skipped. " +
+				"Grant CREATE EXTENSION to the Jellyfin DB user, or run: CREATE EXTENSION pg_trgm; as superuser.");
+			TrgmAvailable = false;
+			return;
+		}
+
+		// Step 2 — GIN trigram indexes on BaseItems text-search columns.
+		// CONCURRENTLY = zero exclusive lock. WHERE col IS NOT NULL = partial index (smaller + faster).
+		var ginIndexes = new (string Name, string Sql)[]
+		{
+			("IX_BaseItems_Name_gin_trgm",
+			 """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_Name_gin_trgm" ON "BaseItems" USING gin ("Name" gin_trgm_ops) WHERE "Name" IS NOT NULL;"""),
+
+			("IX_BaseItems_OriginalTitle_gin_trgm",
+			 """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_OriginalTitle_gin_trgm" ON "BaseItems" USING gin ("OriginalTitle" gin_trgm_ops) WHERE "OriginalTitle" IS NOT NULL;"""),
+
+			("IX_BaseItems_Album_gin_trgm",
+			 """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_Album_gin_trgm" ON "BaseItems" USING gin ("Album" gin_trgm_ops) WHERE "Album" IS NOT NULL;"""),
+
+			("IX_BaseItems_Artists_gin_trgm",
+			 """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_Artists_gin_trgm" ON "BaseItems" USING gin ("Artists" gin_trgm_ops) WHERE "Artists" IS NOT NULL;"""),
+
+			("IX_BaseItems_AlbumArtists_gin_trgm",
+			 """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_AlbumArtists_gin_trgm" ON "BaseItems" USING gin ("AlbumArtists" gin_trgm_ops) WHERE "AlbumArtists" IS NOT NULL;"""),
+
+			("IX_BaseItems_SeriesName_gin_trgm",
+			 """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_SeriesName_gin_trgm" ON "BaseItems" USING gin ("SeriesName" gin_trgm_ops) WHERE "SeriesName" IS NOT NULL;"""),
+
+			// ItemValues: genre / tag / studio values queried on every filter panel open
+			("IX_ItemValues_Value_gin_trgm",
+			 """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_ItemValues_Value_gin_trgm" ON "ItemValues" USING gin ("Value" gin_trgm_ops);"""),
+
+			("IX_ItemValues_CleanValue_gin_trgm",
+			 """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_ItemValues_CleanValue_gin_trgm" ON "ItemValues" USING gin ("CleanValue" gin_trgm_ops);"""),
+
+			// Peoples: actor / director search
+			("IX_Peoples_Name_gin_trgm",
+			 """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_Peoples_Name_gin_trgm" ON "Peoples" USING gin ("Name" gin_trgm_ops) WHERE "Name" IS NOT NULL;"""),
+		};
+
+		foreach (var (name, sql) in ginIndexes)
+		{
+			try
+			{
+				await using var cmd = new NpgsqlCommand(sql, conn) { CommandTimeout = 0 };
+				await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+				logger.LogDebug("PostgreSQL GIN index ensured: {IndexName}", name);
+			}
+			catch (Exception ex)
+			{
+				logger.LogWarning(ex, "Failed to create GIN index {IndexName} — skipping.", name);
+			}
+		}
+
+		logger.LogInformation("PostgreSQL GIN trigram indexes applied. Text search now uses index scans instead of sequential scans.");
+	}
+
+	private static async Task ApplyAutovacuumTuningAsync(NpgsqlConnection conn, Microsoft.Extensions.Logging.ILogger logger, CancellationToken ct)
+	{
+		// UserData: progress UPDATE fires every few seconds during playback.
+		// Default scale_factor=0.2 → autovacuum only after 20% dead tuples (100k rows → 20k dead).
+		// Dropping to 1% keeps the table tight and planner statistics fresh.
+		var statements = new[]
+		{
+			// Highest churn: progress-tick updates
+			"""
+			ALTER TABLE "UserData" SET (
+				autovacuum_vacuum_scale_factor  = 0.01,
+				autovacuum_analyze_scale_factor = 0.005,
+				autovacuum_vacuum_cost_delay    = 2
+			);
+			""",
+			// High insert volume: activity log never stops growing
+			"""
+			ALTER TABLE "ActivityLogs" SET (
+				autovacuum_vacuum_scale_factor  = 0.05,
+				autovacuum_analyze_scale_factor = 0.02
+			);
+			""",
+			// Bulk upserts during library scans
+			"""
+			ALTER TABLE "BaseItems" SET (
+				autovacuum_vacuum_scale_factor  = 0.02,
+				autovacuum_analyze_scale_factor = 0.01
+			);
+			""",
+		};
+
+		foreach (var sql in statements)
+		{
+			try
+			{
+				await using var cmd = new NpgsqlCommand(sql, conn);
+				await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+			}
+			catch (Exception ex)
+			{
+				logger.LogWarning(ex, "Autovacuum tuning statement failed (non-fatal, server continues).");
+			}
+		}
+
+		logger.LogInformation("PostgreSQL autovacuum tuning applied to high-churn tables (UserData, ActivityLogs, BaseItems).");
+	}
+
 	private int TryImportMigrationHistoryFromSqlite(NpgsqlConnection postgresConnection)
 	{
 		try
@@ -309,10 +513,28 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 	}
 
 	/// <inheritdoc/>
-	public Task RunScheduledOptimisation(CancellationToken cancellationToken)
+	public async Task RunScheduledOptimisation(CancellationToken cancellationToken)
 	{
-		_logger.LogInformation("PostgreSQL scheduled optimization is managed externally; no internal task executed.");
-		return Task.CompletedTask;
+		var connStr = PostgresPlugin.Instance?.Configuration?.ConnectionString;
+		if (string.IsNullOrWhiteSpace(connStr))
+		{
+			connStr = _applicationPaths is not null
+				? PostgresPlugin.ReadActivePgConnectionString(_applicationPaths)
+				: null;
+		}
+
+		if (string.IsNullOrWhiteSpace(connStr))
+		{
+			_logger.LogWarning("RunScheduledOptimisation: no connection string available — skipping.");
+			return;
+		}
+
+		var config = PostgresPlugin.Instance?.Configuration;
+		await TryApplyPerformanceOptimizationsAsync(
+			connStr,
+			enableSearch: config?.EnableSearchOptimizations ?? true,
+			enableVacuum: config?.EnableAutovacuumTuning ?? true,
+			cancellationToken).ConfigureAwait(false);
 	}
 
 	/// <inheritdoc/>
