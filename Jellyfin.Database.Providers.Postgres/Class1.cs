@@ -323,12 +323,19 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 		Microsoft.Extensions.Logging.ILogger logger,
 		CancellationToken ct)
 	{
-		// DDL cannot be prepared; use a dedicated non-pooled connection
+		// DDL cannot be prepared; use a dedicated non-pooled connection.
+		// IncludeErrorDetail is critical: without it, PostgresException has no Detail/Hint,
+		// making deadlocks and corruption errors impossible to diagnose.
 		var maintBuilder = new NpgsqlConnectionStringBuilder(connectionString)
 		{
 			MaxAutoPrepare = 0,
 			Pooling = false,
 		};
+
+		if (!(maintBuilder.Options ?? string.Empty).Contains("-c IncludeErrorDetail=true", StringComparison.Ordinal))
+		{
+			maintBuilder.Options = string.Concat(maintBuilder.Options ?? string.Empty, " -c IncludeErrorDetail=true");
+		}
 
 		try
 		{
@@ -408,19 +415,63 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 
 		foreach (var (name, sql) in ginIndexes)
 		{
-			try
-			{
-				await using var cmd = new NpgsqlCommand(sql, conn) { CommandTimeout = 0 };
-				await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-				logger.LogDebug("PostgreSQL GIN index ensured: {IndexName}", name);
-			}
-			catch (Exception ex)
-			{
-				logger.LogWarning(ex, "Failed to create GIN index {IndexName} — skipping.", name);
-			}
+			await TryExecuteIndexWithRetryAsync(sql, name, conn, logger, ct).ConfigureAwait(false);
 		}
 
 		logger.LogInformation("PostgreSQL GIN trigram indexes applied. Text search now uses index scans instead of sequential scans.");
+	}
+
+	/// <summary>
+	/// Executes a CREATE INDEX CONCURRENTLY statement with retry-on-deadlock.
+	/// Deadlocks (40P01) are expected when other connections hold conflicting locks
+	/// (e.g. library scans, Trakt syncs). Retries 3 times with exponential-ish backoff:
+	/// 30 s → 60 s → 120 s (total ~3.5 min). After that, logs and moves on.
+	/// </summary>
+	private static async Task<bool> TryExecuteIndexWithRetryAsync(
+		string sql,
+		string indexName,
+		NpgsqlConnection connection,
+		Microsoft.Extensions.Logging.ILogger log,
+		CancellationToken ct)
+	{
+		var delays = new[] { 30, 60, 120 };
+		for (var attempt = 0; attempt <= delays.Length; attempt++)
+		{
+			try
+			{
+				await using var cmd = new NpgsqlCommand(sql, connection) { CommandTimeout = 0 };
+				await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+				log.LogDebug("PostgreSQL index ensured: {IndexName}", indexName);
+				return true;
+			}
+			catch (PostgresException pex) when (pex.SqlState == "40P01")
+			{
+				if (attempt >= delays.Length)
+				{
+					log.LogWarning(pex,
+						"Deadlock persisted after {Attempts} retries for index {IndexName}. " +
+						"Skipping — run 'Apply Optimizations' from plugin UI later. " +
+						"PG Hint: {PgHint} Detail: {PgDetail}",
+						delays.Length + 1, indexName, pex.Hint, pex.Detail);
+					return false;
+				}
+
+				var delay = delays[attempt];
+				log.LogWarning(pex,
+					"Deadlock on {IndexName} (attempt {Attempt}/{MaxAttempts}), " +
+					"retrying in {Delay}s. PG Hint: {PgHint}",
+					indexName, attempt + 1, delays.Length + 1, delay, pex.Hint);
+				await Task.Delay(TimeSpan.FromSeconds(delay), ct).ConfigureAwait(false);
+			}
+			catch (Exception ex)
+			{
+				log.LogWarning(ex, "Failed to create index {IndexName} — skipping. Detail: {PgDetail}",
+					indexName, (ex as PostgresException)?.Detail ?? ex.Message);
+				return false;
+			}
+		}
+
+		return false;
 	}
 
 	private static async Task ApplyAutovacuumTuningAsync(NpgsqlConnection conn, Microsoft.Extensions.Logging.ILogger logger, CancellationToken ct)
@@ -463,7 +514,9 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 			}
 			catch (Exception ex)
 			{
-				logger.LogWarning(ex, "Autovacuum tuning statement failed (non-fatal, server continues).");
+				logger.LogWarning(ex,
+					"Autovacuum tuning statement failed (non-fatal, server continues). PG Detail: {PgDetail}",
+					(ex as PostgresException)?.Detail ?? ex.Message);
 			}
 		}
 
@@ -500,16 +553,7 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 
 		foreach (var (name, sql) in navIndexes)
 		{
-			try
-			{
-				await using var cmd = new NpgsqlCommand(sql, conn) { CommandTimeout = 0 };
-				await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-				logger.LogDebug("PostgreSQL navigation index ensured: {IndexName}", name);
-			}
-			catch (Exception ex)
-			{
-				logger.LogWarning(ex, "Failed to create navigation index {IndexName} — skipping.", name);
-			}
+			await TryExecuteIndexWithRetryAsync(sql, name, conn, logger, ct).ConfigureAwait(false);
 		}
 
 		logger.LogInformation("PostgreSQL navigation indexes applied. Home page, library browser and resume queries optimized.");
