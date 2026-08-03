@@ -337,6 +337,9 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 			{
 				await ApplyAutovacuumTuningAsync(conn, logger, ct).ConfigureAwait(false);
 			}
+
+			// Always apply — pure read-path wins, no config flag needed
+			await ApplyNavigationIndexesAsync(conn, logger, ct).ConfigureAwait(false);
 		}
 		catch (Exception ex)
 		{
@@ -459,6 +462,51 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 		}
 
 		logger.LogInformation("PostgreSQL autovacuum tuning applied to high-churn tables (UserData, ActivityLogs, BaseItems).");
+	}
+
+	private static async Task ApplyNavigationIndexesAsync(NpgsqlConnection conn, Microsoft.Extensions.Logging.ILogger logger, CancellationToken ct)
+	{
+		// Partial composite indexes covering the exact column order PostgreSQL needs for
+		// each home-page query pattern. WHERE IsVirtualItem=false shrinks the index to real items only.
+		var navIndexes = new (string Name, string Sql)[]
+		{
+			// Latest per library: WHERE ParentId=X AND IsVirtualItem=false ORDER BY DateCreated DESC LIMIT N
+			("IX_BaseItems_ParentId_DateCreated_Partial",
+			 """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_ParentId_DateCreated_Partial" ON "BaseItems" ("ParentId", "DateCreated" DESC) WHERE "IsVirtualItem" = false;"""),
+
+			// Latest across root library (TopParentId variant used by Jellyfin home sections)
+			("IX_BaseItems_TopParentId_DateCreated_Partial",
+			 """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_TopParentId_DateCreated_Partial" ON "BaseItems" ("TopParentId", "DateCreated" DESC) WHERE "IsVirtualItem" = false;"""),
+
+			// Type-filtered library views: WHERE Type=X AND TopParentId=Y ORDER BY DateCreated DESC
+			("IX_BaseItems_Type_TopParentId_DateCreated_Partial",
+			 """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_Type_TopParentId_DateCreated_Partial" ON "BaseItems" ("Type", "TopParentId", "DateCreated" DESC) WHERE "IsVirtualItem" = false;"""),
+
+			// Resume watching: WHERE UserId=X AND PlaybackPositionTicks>0 ORDER BY LastPlayedDate DESC
+			// The PK (ItemId, UserId, CustomDataKey) forces full scans when filtering by UserId alone.
+			("IX_UserData_UserId_LastPlayedDate_Partial",
+			 """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_UserData_UserId_LastPlayedDate_Partial" ON "UserData" ("UserId", "LastPlayedDate" DESC) WHERE "PlaybackPositionTicks" > 0;"""),
+
+			// Favorites per user (IsFavorite=true rows are a small fraction — partial index is tiny)
+			("IX_UserData_UserId_IsFavorite_Partial",
+			 """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_UserData_UserId_IsFavorite_Partial" ON "UserData" ("UserId") WHERE "IsFavorite" = true;"""),
+		};
+
+		foreach (var (name, sql) in navIndexes)
+		{
+			try
+			{
+				await using var cmd = new NpgsqlCommand(sql, conn) { CommandTimeout = 0 };
+				await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+				logger.LogDebug("PostgreSQL navigation index ensured: {IndexName}", name);
+			}
+			catch (Exception ex)
+			{
+				logger.LogWarning(ex, "Failed to create navigation index {IndexName} — skipping.", name);
+			}
+		}
+
+		logger.LogInformation("PostgreSQL navigation indexes applied. Home page, library browser and resume queries optimized.");
 	}
 
 	private int TryImportMigrationHistoryFromSqlite(NpgsqlConnection postgresConnection)
