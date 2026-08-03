@@ -8,7 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
-    <Version>1.0.0.1</Version>
+    <Version>1.1.0.0</Version>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>

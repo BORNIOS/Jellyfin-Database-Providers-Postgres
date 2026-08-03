@@ -1,7 +1,7 @@
 ---
 name: "PostgreSQL Database Provider"
 guid: "a2b5f3e8-4c1d-4f7a-9e6b-8d0c2f1a3b5e"
-version: "1.0.0.1"
+version: "1.1.0.0"
 targetAbi: "10.11.10.0"
 framework: "net9.0"
 overview: "Use PostgreSQL as Jellyfin's database backend"
