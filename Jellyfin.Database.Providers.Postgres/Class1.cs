@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.DbConfiguration;
+using Jellyfin.Database.Providers.Postgres.Services;
 using MediaBrowser.Common.Configuration;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -113,6 +114,12 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 				// retrying execution strategy. Transient resilience is handled by the connection
 				// pool and PostgreSQL's own WAL recovery.
 			});
+
+		// Home-page query cache: intercepts SELECT on BaseItems/UserData/ItemValues and
+		// serves cached DataTable results for 30 s. Reduces the ~15-query home-page fan-out
+		// to zero DB round-trips on cache hits. Benefits all clients equally (web, mobile,
+		// Roku, Xbox, Samsung, iOS, Android TV).
+		options.AddInterceptors(new HomeQueryCacheInterceptor(_logger));
 
 		// Self-heal migration history if schema was pre-created but __EFMigrationsHistory
 		// does not contain the initial migration marker.
@@ -339,8 +346,7 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 			}
 
 			// Always apply — pure read-path wins, no config flag needed
-			await ApplyNavigationIndexesAsync(conn, logger, ct).ConfigureAwait(false);
-		}
+			await ApplyNavigationIndexesAsync(conn, logger, ct).ConfigureAwait(false);		await ApplyServerMemoryTuningAsync(conn, logger, ct).ConfigureAwait(false);		}
 		catch (Exception ex)
 		{
 			// Never crash Jellyfin startup — optimizations are best-effort
@@ -507,6 +513,53 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 		}
 
 		logger.LogInformation("PostgreSQL navigation indexes applied. Home page, library browser and resume queries optimized.");
+	}
+
+	private static async Task ApplyServerMemoryTuningAsync(NpgsqlConnection conn, Microsoft.Extensions.Logging.ILogger logger, CancellationToken ct)
+	{
+		// Tune the query planner and sort memory for a typical home-media-server workload.
+		// ALTER DATABASE SET is idempotent (latest SET wins) and applies to all connections.
+		// These are planner hints + memory limits — zero extra RAM allocated on idle connections.
+		var params_ = new (string Name, string Value, string Rationale)[]
+		{
+			("work_mem",              "16MB",
+			 "Default 4MB → 16MB. Speeds up in-memory sorts (ORDER BY DateCreated DESC, RANDOM(), etc.)."),
+			("effective_cache_size",  "1GB",
+			 "Planner hint: how much OS page cache is available for PG data. Default 4GB on most installs;\n" +
+			 "  lowering to 1GB makes the planner favour index scans over seq scans for medium tables."),
+			("random_page_cost",      "1.1",
+			 "Default 4.0 → 1.1. Tells the planner that random reads cost ~ the same as sequential (SSD/NVMe).\n" +
+			 "  Critical: without this, PG avoids indexes even when they'd be faster."),
+		};
+
+		var dbNameSql = "SELECT current_database();";
+		await using var nameCmd = new NpgsqlCommand(dbNameSql, conn);
+		var dbName = (string?)await nameCmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+
+		if (string.IsNullOrEmpty(dbName))
+		{
+			logger.LogWarning("Could not determine current database name — memory tuning skipped.");
+			return;
+		}
+
+		foreach (var (name, value, rationale) in params_)
+		{
+			try
+			{
+				var sql = $"ALTER DATABASE \"{dbName}\" SET {name} = '{value}';";
+				await using var cmd = new NpgsqlCommand(sql, conn);
+				await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+				logger.LogDebug("PostgreSQL {ParamName} = {ParamValue}. {Rationale}", name, value, rationale);
+			}
+			catch (Exception ex)
+			{
+				logger.LogWarning(ex,
+					"Cannot set {ParamName} (needs superuser/owner). Server continues with PG defaults — still correct, just suboptimal.",
+					name);
+			}
+		}
+
+		logger.LogInformation("PostgreSQL server memory tuning applied (effective after next connection).");
 	}
 
 	private int TryImportMigrationHistoryFromSqlite(NpgsqlConnection postgresConnection)
