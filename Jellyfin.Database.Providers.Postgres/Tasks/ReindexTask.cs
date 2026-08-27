@@ -15,7 +15,10 @@ public class ReindexTask : IScheduledTask
 {
     private readonly MaintenanceService _maintenance;
 
-    /// <summary>Initializes a new instance of <see cref="ReindexTask"/>.</summary>
+    /// <summary>
+    /// Initializes a new instance of the <see cref="ReindexTask"/> class.
+    /// </summary>
+    /// <param name="maintenance">The maintenance service.</param>
     public ReindexTask(MaintenanceService maintenance)
         => _maintenance = maintenance;
 

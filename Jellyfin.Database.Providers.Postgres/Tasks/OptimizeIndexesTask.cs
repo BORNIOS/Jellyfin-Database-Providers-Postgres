@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Database.Providers.Postgres;
 using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Logging;
 
@@ -19,7 +20,10 @@ public sealed class OptimizeIndexesTask : IScheduledTask
 {
     private readonly ILogger<OptimizeIndexesTask> _logger;
 
-    /// <summary>Initializes a new instance of <see cref="OptimizeIndexesTask"/>.</summary>
+    /// <summary>
+    /// Initializes a new instance of the <see cref="OptimizeIndexesTask"/> class.
+    /// </summary>
+    /// <param name="logger">The logger instance.</param>
     public OptimizeIndexesTask(ILogger<OptimizeIndexesTask> logger)
     {
         _logger = logger;
@@ -45,8 +49,8 @@ public sealed class OptimizeIndexesTask : IScheduledTask
         // Run once a week on Saturday at 01:00 to pick up any missed startup run
         yield return new TaskTriggerInfo
         {
-            Type        = TaskTriggerInfoType.WeeklyTrigger,
-            DayOfWeek   = DayOfWeek.Saturday,
+            Type = TaskTriggerInfoType.WeeklyTrigger,
+            DayOfWeek = DayOfWeek.Saturday,
             TimeOfDayTicks = TimeSpan.FromHours(1).Ticks,
         };
     }
@@ -67,7 +71,7 @@ public sealed class OptimizeIndexesTask : IScheduledTask
         await PostgresDatabaseProvider.RunOptimizationsAsync(
             connStr,
             enableSearch: config?.EnableSearchOptimizations ?? true,
-            enableVacuum: config?.EnableAutovacuumTuning    ?? true,
+            enableVacuum: config?.EnableAutovacuumTuning ?? true,
             logger: _logger,
             ct: cancellationToken).ConfigureAwait(false);
 

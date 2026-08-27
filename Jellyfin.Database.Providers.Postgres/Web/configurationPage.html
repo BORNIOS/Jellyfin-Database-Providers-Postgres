@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
     <title>PostgreSQL Database Provider</title>
     <style>
@@ -291,8 +291,8 @@
                             Util para recuperar la base de datos original o revertir a SQLite.
                         </p>
                         <div style="padding:10px 14px; border-radius:6px; background:#1a2a3a; border-left:4px solid #42a5f5; margin-bottom:16px; font-size:13px; color:#90caf9;" id="exportHint">
-                            &#128196; Si el archivo <code>.db</code> no existe, se crea con el schema derivado de PostgreSQL.
-                            Si ya existe (creado por Jellyfin), se respetan las tablas y se reemplaza solo el contenido.
+                            &#128196; Si el archivo <code>.db</code> destino <strong>no existe</strong>, se crea automáticamente con el schema oficial de Jellyfin usando EF Core Migrations.<br>
+                            Si <strong>ya existe</strong>, se te preguntará si deseas sobreescribirlo o hacer un backup (<code>.bkp</code>) antes de continuar.
                         </div>
                         <div class="inputContainer">
                             <input is="emby-input" type="text" id="exportTargetPath" label="Ruta del archivo .db destino" autocomplete="off" spellcheck="false"/>
@@ -862,6 +862,21 @@
                                 .then(function(d) { if (d && d.path) exportField.value = d.path; })
                                 .catch(function() {});
                         }
+                        // Recover export status if a task is running or just finished
+                        apiGet('/ExportToSqliteProgress')
+                            .then(function(r) { return r.json(); })
+                            .then(function(raw) {
+                                var isRunning   = raw.IsRunning   !== undefined ? raw.IsRunning   : raw.isRunning;
+                                var isCompleted = raw.IsCompleted !== undefined ? raw.IsCompleted : raw.isCompleted;
+                                var hasError    = raw.HasError    !== undefined ? raw.HasError    : raw.hasError;
+                                if (isRunning || isCompleted || hasError) {
+                                    document.getElementById('exportProgressSection').style.display = '';
+                                    document.getElementById('btnStartExport').disabled = !!isRunning;
+                                    updateExportProgress(raw);
+                                    if (isRunning) startExportPoll();
+                                }
+                            })
+                            .catch(function() {});
                     }
                 });
             });
@@ -1254,13 +1269,25 @@
                 if (exportPollTimer) { clearInterval(exportPollTimer); exportPollTimer = null; }
             }
 
-            function updateExportProgress(d) {
+            function updateExportProgress(raw) {
+                // Normalize PascalCase → camelCase (ASP.NET default serialization)
+                var d = {
+                    isRunning:        raw.IsRunning        !== undefined ? raw.IsRunning        : raw.isRunning,
+                    isCompleted:      raw.IsCompleted      !== undefined ? raw.IsCompleted      : raw.isCompleted,
+                    hasError:         raw.HasError         !== undefined ? raw.HasError         : raw.hasError,
+                    percentComplete:  raw.PercentComplete  !== undefined ? raw.PercentComplete  : raw.percentComplete,
+                    currentTable:     raw.CurrentTable     !== undefined ? raw.CurrentTable     : raw.currentTable,
+                    exportedRows:     raw.ExportedRows     !== undefined ? raw.ExportedRows     : raw.exportedRows,
+                    totalRows:        raw.TotalRows        !== undefined ? raw.TotalRows        : raw.totalRows,
+                    logLines:         raw.LogLines         !== undefined ? raw.LogLines         : raw.logLines,
+                    targetSqlitePath: raw.TargetSqlitePath !== undefined ? raw.TargetSqlitePath : raw.targetSqlitePath,
+                    errorMessage:     raw.ErrorMessage     !== undefined ? raw.ErrorMessage     : raw.errorMessage
+                };
+
                 var bar   = document.getElementById('exportProgressBar');
                 var label = document.getElementById('exportProgressLabel');
                 var log   = document.getElementById('exportLogBox');
                 var res   = document.getElementById('exportResult');
-                var hint  = document.getElementById('exportCompletedHint');
-                var msg   = document.getElementById('exportCompletedMsg');
 
                 var pct = d.percentComplete || 0;
                 bar.style.width = pct + '%';
@@ -1306,35 +1333,113 @@
                 var res = document.getElementById('exportResult');
                 res.textContent = '';
 
-                var bar = document.getElementById('exportProgressBar');
-                bar.style.width = '0%'; bar.textContent = '0%';
-                document.getElementById('exportProgressLabel').textContent = t('msg_export_running', 'Export in progress...');
-                document.getElementById('exportLogBox').textContent = '';
-                document.getElementById('exportProgressSection').style.display = '';
-                document.getElementById('btnStartExport').disabled = true;
+                function doExport(overwriteMode) {
 
-                apiPost('/StartExportToSqlite', { targetSqlitePath: targetPath || null })
-                    .then(function(resp) {
-                        if (resp.status === 409) {
+                    var bar = document.getElementById('exportProgressBar');
+                    bar.style.width = '0%'; bar.textContent = '0%';
+                    document.getElementById('exportProgressLabel').textContent = t('msg_export_running', 'Export in progress...');
+                    document.getElementById('exportLogBox').textContent = '';
+                    document.getElementById('exportProgressSection').style.display = '';
+                    document.getElementById('btnStartExport').disabled = true;
+
+                    apiPost('/StartExportToSqlite', { targetSqlitePath: targetPath || null, overwriteMode: overwriteMode })
+                        .then(function(resp) {
+                            if (resp.status === 409) {
+                                res.style.color = '#f3c969';
+                                res.textContent = t('msg_export_conflict', 'An export is already in progress.');
+                                document.getElementById('btnStartExport').disabled = false;
+                                startExportPoll();
+                                return null;
+                            }
+                            if (resp.status === 400) {
+                                return resp.json().then(function(d) {
+                                    res.style.color = '#ff7070';
+                                    res.textContent = 'Error: ' + (d.Error || d.error || 'Bad request');
+                                    document.getElementById('btnStartExport').disabled = false;
+                                    return null;
+                                });
+                            }
+                            return resp.json();
+                        })
+                        .then(function(d) {
+                            if (d && d.targetSqlitePath) {
+                                document.getElementById('exportTargetPath').value = d.targetSqlitePath;
+                            }
+                            if (d && (d.Status || d.status || d.TargetSqlitePath || d.targetSqlitePath)) startExportPoll();
+                        })
+                        .catch(function(e) {
+                            res.style.color = '#ff7070';
+                            res.textContent = t('msg_export_start_error', 'Error starting export: ') + e;
+                            document.getElementById('btnStartExport').disabled = false;
+                        });
+                }
+
+                // Step 1: check if a previous export is running
+                apiGet('/ExportToSqliteProgress')
+                    .then(function(r) { return r.json(); })
+                    .then(function(prog) {
+                        var isRunning = prog.IsRunning !== undefined ? prog.IsRunning : prog.isRunning;
+                        if (isRunning) {
                             res.style.color = '#f3c969';
                             res.textContent = t('msg_export_conflict', 'An export is already in progress.');
-                            document.getElementById('btnStartExport').disabled = false;
                             startExportPoll();
-                            return null;
+                            return;
                         }
-                        return resp.json();
+
+                        // Step 2: ask the server if the target file already exists
+                        var checkUrl = '/CheckExportTarget' + (targetPath ? '?path=' + encodeURIComponent(targetPath) : '');
+                        apiGet(checkUrl)
+                            .then(function(r2) { return r2.json(); })
+                            .then(function(check) {
+                                var fileExists = check.Exists !== undefined ? check.Exists : check.exists;
+                                var resolvedPath = check.Path || check.path || targetPath || 'auto';
+
+                                if (!fileExists) {
+                                    // File does not exist — create schema and export directly
+                                    doExport('use');
+                                    return;
+                                }
+
+                                // File exists — show 3-option dialog
+                                var dialog = document.getElementById('pgConfirmDialog');
+                                var text   = document.getElementById('pgConfirmText');
+                                var yes    = document.getElementById('pgConfirmYes');
+                                var no     = document.getElementById('pgConfirmNo');
+
+                                text.innerHTML =
+                                    '<strong>\uD83D\uDCC4 Exportar PostgreSQL \u2192 SQLite</strong><br><br>' +
+                                    'El archivo ya existe:<br><code>' + escapeHtml(resolvedPath) + '</code><br><br>' +
+                                    '\u00BFQu\u00E9 deseas hacer?';
+
+                                yes.textContent = '\uD83D\uDCBE Renombrar a .bkp y exportar';
+                                no.textContent  = '\u274C Cancelar';
+
+                                var overwriteBtn = document.getElementById('pgConfirmOverwrite');
+                                if (!overwriteBtn) {
+                                    overwriteBtn = document.createElement('button');
+                                    overwriteBtn.id = 'pgConfirmOverwrite';
+                                    overwriteBtn.setAttribute('is', 'emby-button');
+                                    overwriteBtn.type = 'button';
+                                    overwriteBtn.className = 'raised';
+                                    overwriteBtn.style.background = '#b71c1c';
+                                    overwriteBtn.style.color = '#fff';
+                                    yes.parentNode.insertBefore(overwriteBtn, no);
+                                }
+
+                                overwriteBtn.style.display = '';
+                                overwriteBtn.textContent = '\u26A0\uFE0F Sobreescribir sin backup';
+
+                                dialog.style.display = '';
+                                yes.onclick = function() { dialog.style.display = 'none'; doExport('backup'); };
+                                overwriteBtn.onclick = function() { dialog.style.display = 'none'; doExport('overwrite'); };
+                                no.onclick = function() {
+                                    dialog.style.display = 'none';
+                                    document.getElementById('btnStartExport').disabled = false;
+                                };
+                            })
+                            .catch(function() { doExport('use'); });
                     })
-                    .then(function(d) {
-                        if (d && d.targetSqlitePath) {
-                            document.getElementById('exportTargetPath').value = d.targetSqlitePath;
-                        }
-                        if (d) startExportPoll();
-                    })
-                    .catch(function(e) {
-                        res.style.color = '#ff7070';
-                        res.textContent = t('msg_export_start_error', 'Error starting export: ') + e;
-                        document.getElementById('btnStartExport').disabled = false;
-                    });
+                    .catch(function() { doExport('use'); });
             });
 
             applyLocalization();

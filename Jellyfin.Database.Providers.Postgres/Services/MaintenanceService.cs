@@ -1,62 +1,49 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
-using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Database.Providers.Postgres.Services.Models;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
 namespace Jellyfin.Database.Providers.Postgres.Services;
 
-/// <summary>Table size statistics returned by the maintenance API.</summary>
-public sealed record TableStats(
-    string TableName,
-    long RowCount,
-    string TotalSize,
-    string TableSize,
-    string IndexSize);
-
-/// <summary>Status of a plugin-managed GIN trigram index.</summary>
-public sealed record GinIndexInfo(
-    string IndexName,
-    string TableName,
-    string IndexSize,
-    bool IsValid);
-
 /// <summary>
-/// Provides PostgreSQL maintenance operations: VACUUM ANALYZE, REINDEX, and table statistics.
+/// PostgreSQL maintenance: connection tests, VACUUM, REINDEX, stats queries.
+/// Backup/restore operations are in <see cref="MaintenanceBackupService"/>.
 /// </summary>
 public sealed class MaintenanceService
 {
     private readonly ILogger<MaintenanceService> _logger;
 
-    /// <summary>Initializes a new instance of <see cref="MaintenanceService"/>.</summary>
-    public MaintenanceService(ILogger<MaintenanceService> logger)
-    {
-        _logger = logger;
-    }
+    /// <summary>
+    /// Initializes a new instance of the <see cref="MaintenanceService"/> class.
+    /// </summary>
+    /// <param name="logger">The logger instance.</param>
+    public MaintenanceService(ILogger<MaintenanceService> logger) => _logger = logger;
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Connection test
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── Connection helpers ────────────────────────────────────────────────────
 
     /// <summary>
-    /// Tests the connection string and returns <see langword="null"/> on success,
-    /// or an error message on failure.
+    /// Tests the connection string. Returns <see langword="null"/> on success or an error message.
     /// </summary>
+    /// <param name="connectionString">PostgreSQL connection string to test.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns><see langword="null"/> on success, or an error message string on failure.</returns>
     public static async Task<string?> TestConnectionAsync(string connectionString, CancellationToken ct = default)
     {
         try
         {
-            await using var pg = new NpgsqlConnection(connectionString);
+            using var pg = new NpgsqlConnection(connectionString);
             await pg.OpenAsync(ct).ConfigureAwait(false);
-            await using var cmd = new NpgsqlCommand("SELECT version();", pg);
+            using var cmd = new NpgsqlCommand("SELECT version();", pg);
             await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
-            return null; // success — version is logged but not returned
+            return null;
         }
         catch (Exception ex)
         {
@@ -64,81 +51,69 @@ public sealed class MaintenanceService
         }
     }
 
-    /// <summary>
-    /// Tests the connection string and returns the PostgreSQL server version string.
-    /// Throws if the connection fails.
-    /// </summary>
+    /// <summary>Returns the PostgreSQL server version string.</summary>
+    /// <inheritdoc cref="TestConnectionAsync"/>
     public static async Task<string> GetServerVersionAsync(string connectionString, CancellationToken ct = default)
     {
-        await using var pg = new NpgsqlConnection(connectionString);
+        using var pg = new NpgsqlConnection(connectionString);
         await pg.OpenAsync(ct).ConfigureAwait(false);
-        await using var cmd = new NpgsqlCommand("SELECT version();", pg);
+        using var cmd = new NpgsqlCommand("SELECT version();", pg);
         return (await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false))?.ToString() ?? "unknown";
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // VACUUM ANALYZE
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── VACUUM ANALYZE ────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Runs <c>VACUUM ANALYZE</c> on the database. This reclaims dead tuple storage
-    /// and refreshes query planner statistics.
-    /// Note: must be run outside a transaction block (Npgsql handles this automatically
-    /// when <c>CommandTimeout</c> is set to 0 and no explicit transaction is open).
-    /// </summary>
+    /// <summary>Runs <c>VACUUM ANALYZE</c> on the database.</summary>
+    /// <inheritdoc cref="TestConnectionAsync"/>
     public async Task VacuumAnalyzeAsync(string connectionString, CancellationToken ct = default)
     {
         _logger.LogInformation("Starting VACUUM ANALYZE...");
-        await using var pg = new NpgsqlConnection(connectionString);
+        using var pg = new NpgsqlConnection(connectionString);
         await pg.OpenAsync(ct).ConfigureAwait(false);
-        // VACUUM cannot run inside a transaction — use command timeout 0 for long-running ops
-        await using var cmd = new NpgsqlCommand("VACUUM ANALYZE;", pg) { CommandTimeout = 0 };
+        using var cmd = new NpgsqlCommand("VACUUM ANALYZE;", pg) { CommandTimeout = 0 };
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         _logger.LogInformation("VACUUM ANALYZE completed.");
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // REINDEX
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── REINDEX ───────────────────────────────────────────────────────────────
 
-    /// <summary>Runs <c>REINDEX DATABASE</c> to rebuild all indexes.</summary>
+    /// <summary>Runs <c>REINDEX DATABASE CONCURRENTLY</c>.</summary>
+    /// <inheritdoc cref="TestConnectionAsync"/>
     public async Task ReindexAsync(string connectionString, CancellationToken ct = default)
     {
         _logger.LogInformation("Starting REINDEX DATABASE...");
-        await using var pg = new NpgsqlConnection(connectionString);
+        using var pg = new NpgsqlConnection(connectionString);
         await pg.OpenAsync(ct).ConfigureAwait(false);
-        await using var dbNameCmd = new NpgsqlCommand("SELECT current_database();", pg);
-        var dbNameObj = await dbNameCmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
-        var dbName = dbNameObj?.ToString();
+
+        string dbName;
+        using (var dbNameCmd = new NpgsqlCommand("SELECT current_database();", pg))
+        {
+            dbName = (await dbNameCmd.ExecuteScalarAsync(ct).ConfigureAwait(false))?.ToString() ?? string.Empty;
+        }
+
         if (string.IsNullOrWhiteSpace(dbName))
         {
             throw new InvalidOperationException("Unable to resolve current PostgreSQL database name for REINDEX.");
         }
 
-        var sql = $"REINDEX DATABASE CONCURRENTLY {QuoteIdentifier(dbName)};";
-        await using var cmd = new NpgsqlCommand(sql, pg) { CommandTimeout = 0 };
+        // dbName comes from SELECT current_database() — server-controlled, not user input.
+        // QuoteIdentifier escapes any internal double-quotes for safety.
+        using var cmd = CreateReindexCommand(pg, dbName);
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         _logger.LogInformation("REINDEX DATABASE completed.");
     }
 
-    private static string QuoteIdentifier(string input)
-        => $"\"{input.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
+    // ── Table statistics ──────────────────────────────────────────────────────
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Table stats
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Returns size and row-count statistics for all user tables in the given schema.
-    /// </summary>
+    /// <summary>Returns size and row-count statistics for all user tables in the given schema.</summary>
+    /// <param name="connectionString">PostgreSQL connection string.</param>
+    /// <param name="schema">Schema to query. Defaults to <c>public</c>.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>List of per-table size and row-count statistics.</returns>
     public static async Task<List<TableStats>> GetTableStatsAsync(
         string connectionString, string schema = "public", CancellationToken ct = default)
     {
-        await using var pg = new NpgsqlConnection(connectionString);
-        await pg.OpenAsync(ct).ConfigureAwait(false);
-
-        // reltuples is an estimate from pg_class; use it as-is (same as pgAdmin).
-        await using var cmd = new NpgsqlCommand(@"
+        const string tableStatsSql = @"
             SELECT
                 c.relname                                   AS table_name,
                 c.reltuples::bigint                         AS row_count,
@@ -153,11 +128,14 @@ public sealed class MaintenanceService
             WHERE n.nspname = @schema
               AND c.relkind = 'r'
             ORDER BY pg_total_relation_size(c.oid) DESC
-            LIMIT 100;", pg);
-        cmd.Parameters.AddWithValue("schema", schema);
+            LIMIT 100;";
 
         var result = new List<TableStats>();
-        await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        using var pg = new NpgsqlConnection(connectionString);
+        await pg.OpenAsync(ct).ConfigureAwait(false);
+        using var cmd = new NpgsqlCommand(tableStatsSql, pg);
+        cmd.Parameters.AddWithValue("schema", schema);
+        using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         while (await reader.ReadAsync(ct).ConfigureAwait(false))
         {
             result.Add(new TableStats(
@@ -171,49 +149,40 @@ public sealed class MaintenanceService
         return result;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Connection count
-    // ─────────────────────────────────────────────────────────────────────────
-
     /// <summary>Returns the current number of active connections to the database.</summary>
+    /// <inheritdoc cref="TestConnectionAsync"/>
     public static async Task<int> GetConnectionCountAsync(string connectionString, CancellationToken ct = default)
     {
-        await using var pg = new NpgsqlConnection(connectionString);
+        const string sql = "SELECT COUNT(*) FROM pg_stat_activity WHERE datname = current_database();";
+        using var pg = new NpgsqlConnection(connectionString);
         await pg.OpenAsync(ct).ConfigureAwait(false);
-        await using var cmd = new NpgsqlCommand(
-            "SELECT COUNT(*) FROM pg_stat_activity WHERE datname = current_database();", pg);
+        using var cmd = new NpgsqlCommand(sql, pg);
         var result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
         return Convert.ToInt32(result, CultureInfo.InvariantCulture);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Database size
-    // ─────────────────────────────────────────────────────────────────────────
-
     /// <summary>Returns the total size of the current PostgreSQL database as a human-readable string.</summary>
+    /// <inheritdoc cref="TestConnectionAsync"/>
     public static async Task<string> GetDatabaseSizeAsync(string connectionString, CancellationToken ct = default)
     {
-        await using var pg = new NpgsqlConnection(connectionString);
+        const string sql = "SELECT pg_size_pretty(pg_database_size(current_database()));";
+        using var pg = new NpgsqlConnection(connectionString);
         await pg.OpenAsync(ct).ConfigureAwait(false);
-        await using var cmd = new NpgsqlCommand(
-            "SELECT pg_size_pretty(pg_database_size(current_database()));", pg);
+        using var cmd = new NpgsqlCommand(sql, pg);
         return (await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false))?.ToString() ?? "unknown";
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // GIN Index Status
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── GIN index status ──────────────────────────────────────────────────────
 
     /// <summary>
-    /// Returns the names and sizes of all GIN indexes in the public schema that were
-    /// created by this plugin (i.e. names ending in <c>_gin_trgm</c>).
+    /// Returns the names and sizes of all GIN indexes in the public schema
+    /// created by this plugin (names ending in <c>_gin_trgm</c>).
     /// </summary>
+    /// <inheritdoc cref="TestConnectionAsync"/>
     public static async Task<List<GinIndexInfo>> GetGinIndexStatusAsync(
         string connectionString, CancellationToken ct = default)
     {
-        await using var pg = new NpgsqlConnection(connectionString);
-        await pg.OpenAsync(ct).ConfigureAwait(false);
-        await using var cmd = new NpgsqlCommand(@"
+        const string ginSql = @"
             SELECT
                 c.relname                                       AS index_name,
                 t.relname                                       AS table_name,
@@ -226,287 +195,42 @@ public sealed class MaintenanceService
             WHERE n.nspname = 'public'
               AND c.relkind = 'i'
               AND c.relname LIKE '%_gin_trgm'
-            ORDER BY t.relname, c.relname;", pg);
+            ORDER BY t.relname, c.relname;";
 
         var result = new List<GinIndexInfo>();
-        await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        using var pg = new NpgsqlConnection(connectionString);
+        await pg.OpenAsync(ct).ConfigureAwait(false);
+        using var cmd = new NpgsqlCommand(ginSql, pg);
+        using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         while (await reader.ReadAsync(ct).ConfigureAwait(false))
         {
             result.Add(new GinIndexInfo(
                 IndexName: reader.GetString(0),
                 TableName: reader.GetString(1),
                 IndexSize: reader.GetString(2),
-                IsValid:   reader.GetBoolean(3)));
+                IsValid: reader.GetBoolean(3)));
         }
 
         return result;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Backup
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── Internal helpers ──────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Creates a database backup using <c>pg_dump</c> in plain SQL format.
-    /// Optionally compresses the resulting SQL file into a ZIP archive.
-    /// Returns the final backup file path.
-    /// </summary>
-    public async Task<string> CreateBackupAsync(
-        string connectionString,
-        string outputDirectory,
-        bool compress,
-        string? pgDumpPath,
-        CancellationToken ct = default)
+    internal static string QuoteIdentifier(string input)
+        => $"\"{input.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
+
+    internal static string ValidateBackupFilePath(string path)
     {
-        var cs = new NpgsqlConnectionStringBuilder(connectionString);
-        if (string.IsNullOrWhiteSpace(cs.Database))
+        if (!Path.IsPathFullyQualified(path))
         {
-            throw new InvalidOperationException("Connection string must contain Database.");
+            throw new InvalidOperationException(
+                $"Backup file path must be an absolute path. Received: {path}");
         }
 
-        Directory.CreateDirectory(outputDirectory);
-
-        var timestamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
-        var databaseName = cs.Database ?? string.Empty;
-        var safeDbName = SanitizeFileName(databaseName);
-        var sqlFilePath = Path.Combine(outputDirectory, $"{safeDbName}_{timestamp}.sql");
-
-        var executable = ResolvePgDumpExecutable(pgDumpPath);
-        var args = BuildPgDumpArguments(cs, sqlFilePath);
-
-        _logger.LogInformation("Starting PostgreSQL backup with pg_dump to {Path}", sqlFilePath);
-
-        var psi = new ProcessStartInfo
-        {
-            FileName = executable,
-            Arguments = args,
-            RedirectStandardError = true,
-            RedirectStandardOutput = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        if (!string.IsNullOrWhiteSpace(cs.Password))
-        {
-            psi.Environment["PGPASSWORD"] = cs.Password;
-        }
-
-        using var process = new Process { StartInfo = psi };
-        if (!process.Start())
-        {
-            throw new InvalidOperationException("Failed to start pg_dump process.");
-        }
-
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
-        var stderrTask = process.StandardError.ReadToEndAsync(ct);
-
-        await process.WaitForExitAsync(ct).ConfigureAwait(false);
-        var stdOut = await stdoutTask.ConfigureAwait(false);
-        var stdErr = await stderrTask.ConfigureAwait(false);
-
-        if (process.ExitCode != 0)
-        {
-            var detail = string.IsNullOrWhiteSpace(stdErr) ? stdOut : stdErr;
-            throw new InvalidOperationException($"pg_dump failed with exit code {process.ExitCode}. {detail}".Trim());
-        }
-
-        if (!File.Exists(sqlFilePath))
-        {
-            throw new InvalidOperationException("Backup completed but SQL output file was not created.");
-        }
-
-        if (!compress)
-        {
-            _logger.LogInformation("PostgreSQL backup completed at {Path}", sqlFilePath);
-            return sqlFilePath;
-        }
-
-        var zipPath = sqlFilePath + ".zip";
-        if (File.Exists(zipPath))
-        {
-            File.Delete(zipPath);
-        }
-
-        using (var archive = ZipFile.Open(zipPath, ZipArchiveMode.Create))
-        {
-            archive.CreateEntryFromFile(sqlFilePath, Path.GetFileName(sqlFilePath), CompressionLevel.Optimal);
-        }
-
-        File.Delete(sqlFilePath);
-        _logger.LogInformation("PostgreSQL backup completed at {Path}", zipPath);
-        return zipPath;
+        return Path.GetFullPath(path);
     }
 
-    /// <summary>
-    /// Restores a PostgreSQL backup file (.sql or .zip containing .sql) using <c>psql</c>.
-    /// Returns the SQL file path used for restoration.
-    /// </summary>
-    public async Task<string> RestoreBackupAsync(
-        string connectionString,
-        string backupFilePath,
-        string? pgRestorePath,
-        bool replaceExistingObjects,
-        CancellationToken ct = default)
-    {
-        if (string.IsNullOrWhiteSpace(backupFilePath))
-        {
-            throw new InvalidOperationException("Backup file path is required.");
-        }
-
-        if (!File.Exists(backupFilePath))
-        {
-            throw new FileNotFoundException("Backup file not found.", backupFilePath);
-        }
-
-        var cs = new NpgsqlConnectionStringBuilder(connectionString);
-        if (string.IsNullOrWhiteSpace(cs.Database))
-        {
-            throw new InvalidOperationException("Connection string must contain Database.");
-        }
-
-        string? tempDir = null;
-        var sqlFilePath = backupFilePath;
-
-        try
-        {
-            var ext = Path.GetExtension(backupFilePath);
-            if (string.Equals(ext, ".zip", StringComparison.OrdinalIgnoreCase))
-            {
-                tempDir = Path.Combine(Path.GetTempPath(), "jellyfin-pg-restore-" + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture));
-                Directory.CreateDirectory(tempDir);
-
-                using var archive = ZipFile.OpenRead(backupFilePath);
-                ZipArchiveEntry? sqlEntry = null;
-                foreach (var entry in archive.Entries)
-                {
-                    if (entry.FullName.EndsWith(".sql", StringComparison.OrdinalIgnoreCase))
-                    {
-                        sqlEntry = entry;
-                        break;
-                    }
-                }
-
-                if (sqlEntry is null)
-                {
-                    throw new InvalidOperationException("ZIP backup does not contain a .sql file.");
-                }
-
-                sqlFilePath = Path.Combine(tempDir, Path.GetFileName(sqlEntry.FullName));
-                sqlEntry.ExtractToFile(sqlFilePath, overwrite: true);
-            }
-
-            if (!File.Exists(sqlFilePath) || !sqlFilePath.EndsWith(".sql", StringComparison.OrdinalIgnoreCase))
-            {
-                throw new InvalidOperationException("Restore requires a .sql backup file.");
-            }
-
-            var executable = ResolvePsqlExecutable(pgRestorePath);
-            var args = BuildPsqlRestoreArguments(cs, sqlFilePath, replaceExistingObjects);
-
-            _logger.LogWarning(
-                "Starting PostgreSQL restore from {Backup}. ReplaceExistingObjects={ReplaceExistingObjects}",
-                backupFilePath,
-                replaceExistingObjects);
-
-            var psi = new ProcessStartInfo
-            {
-                FileName = executable,
-                Arguments = args,
-                RedirectStandardError = true,
-                RedirectStandardOutput = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-
-            if (!string.IsNullOrWhiteSpace(cs.Password))
-            {
-                psi.Environment["PGPASSWORD"] = cs.Password;
-            }
-
-            using var process = new Process { StartInfo = psi };
-            if (!process.Start())
-            {
-                throw new InvalidOperationException("Failed to start psql restore process.");
-            }
-
-            var stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
-            var stderrTask = process.StandardError.ReadToEndAsync(ct);
-
-            await process.WaitForExitAsync(ct).ConfigureAwait(false);
-            var stdOut = await stdoutTask.ConfigureAwait(false);
-            var stdErr = await stderrTask.ConfigureAwait(false);
-
-            if (process.ExitCode != 0)
-            {
-                var detail = string.IsNullOrWhiteSpace(stdErr) ? stdOut : stdErr;
-                throw new InvalidOperationException($"psql restore failed with exit code {process.ExitCode}. {detail}".Trim());
-            }
-
-            _logger.LogWarning("PostgreSQL restore completed from {Backup}", backupFilePath);
-            return sqlFilePath;
-        }
-        finally
-        {
-            if (!string.IsNullOrWhiteSpace(tempDir) && Directory.Exists(tempDir))
-            {
-                try
-                {
-                    Directory.Delete(tempDir, recursive: true);
-                }
-                catch
-                {
-                    // Best-effort cleanup.
-                }
-            }
-        }
-    }
-
-    private static string BuildPgDumpArguments(NpgsqlConnectionStringBuilder cs, string outputFile)
-    {
-        var sb = new StringBuilder();
-        if (!string.IsNullOrWhiteSpace(cs.Host))
-        {
-            sb.Append(" --host ").Append(QuoteArg(cs.Host));
-        }
-
-        if (cs.Port > 0)
-        {
-            sb.Append(" --port ").Append(cs.Port.ToString(CultureInfo.InvariantCulture));
-        }
-
-        if (!string.IsNullOrWhiteSpace(cs.Username))
-        {
-            sb.Append(" --username ").Append(QuoteArg(cs.Username));
-        }
-
-        sb.Append(" --format=plain --no-owner --no-privileges");
-        sb.Append(" --file ").Append(QuoteArg(outputFile));
-        sb.Append(' ').Append(QuoteArg(cs.Database ?? string.Empty));
-
-        return sb.ToString().Trim();
-    }
-
-    private static string ResolvePgDumpExecutable(string? configuredPath)
-    {
-        if (!string.IsNullOrWhiteSpace(configuredPath))
-        {
-            return configuredPath;
-        }
-
-        return OperatingSystem.IsWindows() ? "pg_dump.exe" : "pg_dump";
-    }
-
-    private static string ResolvePsqlExecutable(string? configuredPath)
-    {
-        if (!string.IsNullOrWhiteSpace(configuredPath))
-        {
-            return configuredPath;
-        }
-
-        return OperatingSystem.IsWindows() ? "psql.exe" : "psql";
-    }
-
-    private static string SanitizeFileName(string value)
+    internal static string SanitizeFileName(string value)
     {
         foreach (var c in Path.GetInvalidFileNameChars())
         {
@@ -516,43 +240,55 @@ public sealed class MaintenanceService
         return value;
     }
 
-    private static string QuoteArg(string value)
+    // ── Backup / Restore (delegates to MaintenanceBackupService) ─────────────
+
+    /// <summary>
+    /// Creates a database backup using <c>pg_dump</c>.
+    /// Delegates to <see cref="MaintenanceBackupService.CreateBackupAsync"/>.
+    /// </summary>
+    /// <param name="connectionString">PostgreSQL connection string.</param>
+    /// <param name="outputDirectory">Directory where the backup file will be written.</param>
+    /// <param name="compress">When <see langword="true"/>, wraps the SQL dump in a ZIP file.</param>
+    /// <param name="pgDumpPath">Optional path to the <c>pg_dump</c> executable.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Absolute path to the created backup file.</returns>
+    public Task<string> CreateBackupAsync(
+        string connectionString,
+        string outputDirectory,
+        bool compress,
+        string? pgDumpPath,
+        CancellationToken ct = default)
     {
-        return '"' + value.Replace("\"", "\\\"", StringComparison.Ordinal) + '"';
+        return new MaintenanceBackupService(_logger).CreateBackupAsync(connectionString, outputDirectory, compress, pgDumpPath, ct);
     }
 
-    private static string BuildPsqlRestoreArguments(
-        NpgsqlConnectionStringBuilder cs,
-        string sqlFile,
-        bool replaceExistingObjects)
+    /// <summary>
+    /// Restores a PostgreSQL backup using <c>psql</c>.
+    /// Delegates to <see cref="MaintenanceBackupService.RestoreBackupAsync"/>.
+    /// </summary>
+    /// <param name="connectionString">PostgreSQL connection string.</param>
+    /// <param name="backupFilePath">Path to the <c>.sql</c> or <c>.zip</c> backup file.</param>
+    /// <param name="pgRestorePath">Optional path to the <c>psql</c> executable.</param>
+    /// <param name="replaceExistingObjects">When <see langword="true"/>, uses <c>--single-transaction</c>.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Absolute path to the SQL file used for restoration.</returns>
+    public Task<string> RestoreBackupAsync(
+        string connectionString,
+        string backupFilePath,
+        string? pgRestorePath,
+        bool replaceExistingObjects,
+        CancellationToken ct = default)
     {
-        var sb = new StringBuilder();
-        if (!string.IsNullOrWhiteSpace(cs.Host))
-        {
-            sb.Append(" --host ").Append(QuoteArg(cs.Host));
-        }
+        return new MaintenanceBackupService(_logger).RestoreBackupAsync(connectionString, backupFilePath, pgRestorePath, replaceExistingObjects, ct);
+    }
 
-        if (cs.Port > 0)
-        {
-            sb.Append(" --port ").Append(cs.Port.ToString(CultureInfo.InvariantCulture));
-        }
+    // ── Command factory (CA2100) ──────────────────────────────────────────────
 
-        if (!string.IsNullOrWhiteSpace(cs.Username))
-        {
-            sb.Append(" --username ").Append(QuoteArg(cs.Username));
-        }
-
-        sb.Append(" --dbname ").Append(QuoteArg(cs.Database ?? string.Empty));
-        sb.Append(" --set ON_ERROR_STOP=1");
-
-        if (replaceExistingObjects)
-        {
-            // Ensure a consistent restore target even if schema objects already exist.
-            sb.Append(" --command ").Append(QuoteArg("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;"));
-        }
-
-        sb.Append(" --file ").Append(QuoteArg(sqlFile));
-
-        return sb.ToString().Trim();
+    // dbName comes from SELECT current_database() — server-controlled, not user input.
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "dbName comes from SELECT current_database(), server-controlled. QuoteIdentifier prevents injection.")]
+    private static NpgsqlCommand CreateReindexCommand(NpgsqlConnection pg, string dbName)
+    {
+        var sql = string.Concat("REINDEX DATABASE CONCURRENTLY ", QuoteIdentifier(dbName), ";");
+        return new NpgsqlCommand(sql, pg) { CommandTimeout = 0 };
     }
 }

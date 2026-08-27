@@ -1,26 +1,14 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Database.Providers.Postgres.Services.Models;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
 namespace Jellyfin.Database.Providers.Postgres.Services;
-
-/// <summary>
-/// A minimal result record for the instant-search endpoint.
-/// Short property names keep the JSON payload under 1 KB for typical result sets.
-/// </summary>
-public sealed record InstantSearchResult(
-    Guid Id,
-    string? Name,
-    string? Type,
-    int? Year,
-    string? Artists,
-    string? Album,
-    string? SeriesName,
-    double Relevance);
 
 /// <summary>
 /// Low-latency search service that bypasses EF Core and queries PostgreSQL directly
@@ -31,7 +19,10 @@ public sealed class InstantSearchService
 {
     private readonly ILogger<InstantSearchService> _logger;
 
-    /// <summary>Initializes a new instance of <see cref="InstantSearchService"/>.</summary>
+    /// <summary>
+    /// Initializes a new instance of the <see cref="InstantSearchService"/> class.
+    /// </summary>
+    /// <param name="logger">The logger instance.</param>
     public InstantSearchService(ILogger<InstantSearchService> logger)
     {
         _logger = logger;
@@ -50,6 +41,7 @@ public sealed class InstantSearchService
     /// <param name="limit">Maximum results to return (default 8, max 50).</param>
     /// <param name="mediaTypes">Optional comma-separated list of Jellyfin media types to filter by.</param>
     /// <param name="ct">Cancellation token.</param>
+    /// <returns>List of ranked search results.</returns>
     public async Task<List<InstantSearchResult>> SearchAsync(
         string term,
         string connectionString,
@@ -73,7 +65,7 @@ public sealed class InstantSearchService
             CommandTimeout = 5, // hard cap: 5 seconds max for an instant-search query
         };
 
-        await using var conn = new NpgsqlConnection(builder.ConnectionString);
+        using var conn = new NpgsqlConnection(builder.ConnectionString);
         try
         {
             await conn.OpenAsync(ct).ConfigureAwait(false);
@@ -191,23 +183,24 @@ public sealed class InstantSearchService
         var results = new List<InstantSearchResult>(limit);
         try
         {
-            await using var cmd = new NpgsqlCommand(sql, conn);
+            // sql comes from BuildSearchSql (hardcoded templates), not user input (CA2100).
+            using var cmd = CreateSearchCommand(conn, sql);
             cmd.Parameters.AddWithValue("term", term);
             cmd.Parameters.AddWithValue("like", $"%{EscapeLike(term)}%");
             cmd.Parameters.AddWithValue("limit", limit);
 
-            await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
             while (await reader.ReadAsync(ct).ConfigureAwait(false))
             {
                 results.Add(new InstantSearchResult(
                     Id: reader.GetGuid(0),
-                    Name: reader.IsDBNull(1) ? null : reader.GetString(1),
-                    Type: reader.IsDBNull(2) ? null : reader.GetString(2),
-                    Year: reader.IsDBNull(3) ? null : reader.GetInt32(3),
-                    Artists: reader.IsDBNull(4) ? null : reader.GetString(4),
-                    Album: reader.IsDBNull(5) ? null : reader.GetString(5),
-                    SeriesName: reader.IsDBNull(6) ? null : reader.GetString(6),
-                    Relevance: reader.IsDBNull(7) ? 0.0 : Convert.ToDouble(reader.GetValue(7), CultureInfo.InvariantCulture)));
+                    Name: await reader.IsDBNullAsync(1, ct).ConfigureAwait(false) ? null : reader.GetString(1),
+                    Type: await reader.IsDBNullAsync(2, ct).ConfigureAwait(false) ? null : reader.GetString(2),
+                    Year: await reader.IsDBNullAsync(3, ct).ConfigureAwait(false) ? null : reader.GetInt32(3),
+                    Artists: await reader.IsDBNullAsync(4, ct).ConfigureAwait(false) ? null : reader.GetString(4),
+                    Album: await reader.IsDBNullAsync(5, ct).ConfigureAwait(false) ? null : reader.GetString(5),
+                    SeriesName: await reader.IsDBNullAsync(6, ct).ConfigureAwait(false) ? null : reader.GetString(6),
+                    Relevance: await reader.IsDBNullAsync(7, ct).ConfigureAwait(false) ? 0.0 : Convert.ToDouble(reader.GetValue(7), CultureInfo.InvariantCulture)));
             }
         }
         catch (Exception ex)
@@ -237,7 +230,11 @@ public sealed class InstantSearchService
         safe.Append("AND \"MediaType\" IN (");
         for (var i = 0; i < types.Length; i++)
         {
-            if (i > 0) safe.Append(',');
+            if (i > 0)
+            {
+                safe.Append(',');
+            }
+
             // Escape single-quote by doubling it (SQL standard, parameter is sanitised above)
             var t = types[i].Replace("'", "''", StringComparison.Ordinal);
             safe.Append(CultureInfo.InvariantCulture, $"'{t}'");
@@ -253,4 +250,10 @@ public sealed class InstantSearchService
             .Replace("\\", "\\\\", StringComparison.Ordinal)
             .Replace("%", "\\%", StringComparison.Ordinal)
             .Replace("_", "\\_", StringComparison.Ordinal);
+
+    // sql is produced by BuildSearchSql from hardcoded templates. User-supplied values are always
+    // passed as parameters (term, like, limit) — never interpolated into the SQL string.
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "sql is built from hardcoded templates; user values are parameterized via NpgsqlCommand.Parameters.")]
+    private static NpgsqlCommand CreateSearchCommand(NpgsqlConnection conn, string sql)
+        => new NpgsqlCommand(sql, conn);
 }

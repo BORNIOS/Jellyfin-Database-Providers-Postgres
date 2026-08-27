@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "pg-aiguide": {
+      "url": "https://mcp.tigerdata.com/docs",
+      "type": "http"
+    }
+  },
+  "inputs": []
+}

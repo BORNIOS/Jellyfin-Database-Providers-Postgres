@@ -1,50 +1,66 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- Must match the running Jellyfin binary (net9.0 / jellyfin 10.11.10) -->
     <TargetFramework>net9.0</TargetFramework>
     <RootNamespace>Jellyfin.Database.Providers.Postgres</RootNamespace>
-    <AssemblyName>Jellyfin.Database.Providers.Postgres</AssemblyName>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
-    <Version>1.1.0.0</Version>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
-    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Nullable>enable</Nullable>
+    <AnalysisMode>AllEnabledByDefault</AnalysisMode>
+    <CodeAnalysisRuleSet>../jellyfin.ruleset</CodeAnalysisRuleSet>
+    <!--
+      Set this to your Jellyfin server version.
+      Check https://www.nuget.org/packages/Jellyfin.Controller/ for available versions.
+    -->
+    <JellyfinVersion>10.11.10</JellyfinVersion>
   </PropertyGroup>
 
-  <!-- ASP.NET Core is provided by the Jellyfin host process at runtime (net9.0) -->
   <ItemGroup>
-    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <!--
+      ExcludeAssets="runtime" prevents Jellyfin assemblies from being bundled into
+      the plugin .dll — the server provides them at runtime via its own assembly loader.
+    -->
+    <PackageReference Include="Jellyfin.Database.Implementations" Version="$(JellyfinVersion)">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+
+    <PackageReference Include="MediaBrowser.Common" Version="4.10.0.24-beta2">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+    <PackageReference Include="Jellyfin.Controller" Version="$(JellyfinVersion)">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Jellyfin 10.11.10 public NuGet packages (same as what the deployed binary was compiled against) -->
-    <PackageReference Include="Jellyfin.Database.Implementations" Version="10.11.10">
-      <ExcludeAssets>runtime</ExcludeAssets>
-    </PackageReference>
-    <PackageReference Include="MediaBrowser.Common" Version="4.10.0.1-beta">
-      <ExcludeAssets>runtime</ExcludeAssets>
-    </PackageReference>
-    <!-- Jellyfin.Controller = NuGet package ID for MediaBrowser.Controller (ISystemManager lives here) -->
-    <PackageReference Include="Jellyfin.Controller" Version="10.11.10">
-      <ExcludeAssets>runtime</ExcludeAssets>
-    </PackageReference>
-
-    <!-- EF Core 9.x + Npgsql (matching what the binary ships: EF 9.0.11) -->
+    <!-- EF Core + Npgsql — runtime dependencies bundled with the plugin -->
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.4" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.11">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
 
-    <!-- SQLite driver for the in-process migration service — net9.0 version -->
+    <!-- SQLite — export PG → SQLite in-process + EF Core for schema creation -->
     <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.6" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.6">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
   </ItemGroup>
 
-  <!-- Embedded resources: schema SQL and config page HTML -->
   <ItemGroup>
+    <!-- Code analysis (build-time only, never shipped with the plugin) -->
+    <PackageReference Include="StyleCop.Analyzers" Version="1.2.0-beta.556" PrivateAssets="All" />
+    <PackageReference Include="SmartAnalyzers.MultithreadingAnalyzer" Version="1.1.31" PrivateAssets="All" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ASP.NET Core types — part of the shared runtime, not bundled -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Embedded resources -->
     <EmbeddedResource Include="Resources\schema.sql" />
     <EmbeddedResource Include="Web\configurationPage.html" />
   </ItemGroup>

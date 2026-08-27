@@ -4,7 +4,7 @@
     "name": "PostgreSQL Database Provider",
     "description": "Provides PostgreSQL as the Jellyfin database backend via EF Core and Npgsql, including tooling to migrate an existing Jellyfin SQLite database into a PostgreSQL schema.",
     "overview": "Use PostgreSQL as Jellyfin's database backend",
-    "owner": "BORNIOS",
+    "owner": ".:BORNIOS:.",
     "category": "Database",
     "imageUrl": "https://raw.githubusercontent.com/BORNIOS/Jellyfin-Database-Providers-Postgres/v1.1.0.0/Jellyfin.Database.Providers.Postgres/Resources/logo.png",
     "versions": [

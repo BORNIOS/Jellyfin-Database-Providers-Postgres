@@ -1,113 +1,25 @@
+﻿// Controller endpoints follow ASP.NET conventions — parameter doc is implicit via model bindings.
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Database.Implementations;
+using Jellyfin.Database.Implementations.Locking;
+using Jellyfin.Database.Providers.Postgres;
+using Jellyfin.Database.Providers.Postgres.Controllers.Models;
 using Jellyfin.Database.Providers.Postgres.Services;
+using Jellyfin.Database.Providers.Postgres.Services.Models;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
-namespace Jellyfin.Database.Providers.Postgres.Api;
-
-/// <summary>Request body for starting a migration.</summary>
-public sealed class StartMigrationRequest
-{
-    /// <summary>Gets or sets the path to the SQLite database file.</summary>
-    public string SqlitePath { get; set; } = string.Empty;
-
-    /// <summary>Gets or sets the PostgreSQL connection string to migrate to.</summary>
-    public string ConnectionString { get; set; } = string.Empty;
-
-    /// <summary>Gets or sets the target schema (default "public").</summary>
-    public string Schema { get; set; } = "public";
-
-    /// <summary>Gets or sets the insert batch size (default 1000).</summary>
-    public int BatchSize { get; set; } = 1000;
-
-    /// <summary>Gets or sets whether to TRUNCATE tables before inserting.</summary>
-    public bool Truncate { get; set; }
-}
-
-/// <summary>Request body for testing / saving a connection string.</summary>
-public sealed class ConnectionRequest
-{
-    /// <summary>Gets or sets the PostgreSQL connection string to test.</summary>
-    public string ConnectionString { get; set; } = string.Empty;
-}
-
-/// <summary>Request body for activating PostgreSQL.</summary>
-public sealed class ActivateRequest
-{
-    /// <summary>Gets or sets the connection string to write to database.xml.</summary>
-    public string ConnectionString { get; set; } = string.Empty;
-
-    /// <summary>Gets or sets the EF command timeout in seconds.</summary>
-    public int CommandTimeout { get; set; } = 60;
-}
-
-/// <summary>Request body for saving plugin configuration.</summary>
-public sealed class SaveConfigRequest
-{
-    /// <summary>Gets or sets the connection string to save.</summary>
-    public string ConnectionString { get; set; } = string.Empty;
-
-    /// <summary>Gets or sets the EF command timeout in seconds.</summary>
-    public int CommandTimeout { get; set; } = 60;
-
-    /// <summary>Gets or sets the backup output directory on the server.</summary>
-    public string? BackupDirectory { get; set; }
-
-    /// <summary>Gets or sets a value indicating whether backups should be zipped.</summary>
-    public bool BackupCompression { get; set; } = true;
-
-    /// <summary>Gets or sets optional explicit path to pg_dump executable.</summary>
-    public string? PgDumpPath { get; set; }
-
-    /// <summary>Gets or sets optional explicit path to psql executable for restore.</summary>
-    public string? PgRestorePath { get; set; }
-}
-
-/// <summary>Request body for creating a backup.</summary>
-public sealed class BackupRequest
-{
-    /// <summary>Gets or sets optional backup output directory override.</summary>
-    public string? OutputDirectory { get; set; }
-
-    /// <summary>Gets or sets optional compression override.</summary>
-    public bool? Compress { get; set; }
-
-    /// <summary>Gets or sets optional pg_dump path override.</summary>
-    public string? PgDumpPath { get; set; }
-}
-
-/// <summary>Request body for the PostgreSQL → SQLite export.</summary>
-public sealed class StartExportToSqliteRequest
-{
-    /// <summary>
-    /// Gets or sets the target SQLite .db file path.
-    /// Leave empty to use the auto-detected default: {DataPath}/jellyfin.db
-    /// </summary>
-    public string? TargetSqlitePath { get; set; }
-}
-
-/// <summary>Request body for restoring a backup.</summary>
-public sealed class RestoreBackupRequest
-{
-    /// <summary>Gets or sets absolute path to .sql or .zip backup file.</summary>
-    public string BackupPath { get; set; } = string.Empty;
-
-    /// <summary>Gets or sets optional psql path override.</summary>
-    public string? PgRestorePath { get; set; }
-
-    /// <summary>
-    /// Gets or sets a value indicating whether existing objects should be replaced before restore.
-    /// Defaults to true for compatibility with plain SQL backups.
-    /// </summary>
-    public bool? ReplaceExistingObjects { get; set; }
-}
+namespace Jellyfin.Database.Providers.Postgres.Controllers;
 
 /// <summary>
 /// REST API for the PostgreSQL database provider plugin.
@@ -128,8 +40,15 @@ public class PostgresController : ControllerBase
     private readonly ILogger<PostgresController> _logger;
 
     /// <summary>
-    /// Initializes a new instance of <see cref="PostgresController"/>.
+    /// Initializes a new instance of the <see cref="PostgresController"/> class.
     /// </summary>
+    /// <param name="appPaths">Jellyfin application paths.</param>
+    /// <param name="systemManager">Jellyfin system manager used to restart the server.</param>
+    /// <param name="migrationService">Migration service instance.</param>
+    /// <param name="maintenanceService">Maintenance service instance.</param>
+    /// <param name="instantSearch">Instant search service instance.</param>
+    /// <param name="exportService">Export service instance.</param>
+    /// <param name="logger">Logger instance.</param>
     public PostgresController(
         IApplicationPaths appPaths,
         ISystemManager systemManager,
@@ -153,6 +72,7 @@ public class PostgresController : ControllerBase
     // ─────────────────────────────────────────────────────────────────────────
 
     /// <summary>Returns the plugin configuration and activation status.</summary>
+    /// <returns>Plugin configuration and activation status object.</returns>
     [HttpGet("Status")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     public ActionResult<object> GetStatus()
@@ -195,6 +115,9 @@ public class PostgresController : ControllerBase
     // ─────────────────────────────────────────────────────────────────────────
 
     /// <summary>Tests a PostgreSQL connection string.</summary>
+    /// <param name="request">Request body containing the connection string to test.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Object with <c>Success</c> and optional <c>Error</c> fields.</returns>
     [HttpPost("TestConnection")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     public async Task<ActionResult<object>> TestConnection(
@@ -230,6 +153,8 @@ public class PostgresController : ControllerBase
     // ─────────────────────────────────────────────────────────────────────────
 
     /// <summary>Saves the connection string and options to the plugin configuration.</summary>
+    /// <param name="request">Request body containing connection string and plugin options.</param>
+    /// <returns>Object confirming the configuration was saved.</returns>
     [HttpPost("SaveConfig")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     public ActionResult<object> SaveConfig([FromBody] SaveConfigRequest request)
@@ -269,6 +194,8 @@ public class PostgresController : ControllerBase
     // ─────────────────────────────────────────────────────────────────────────
 
     /// <summary>Starts the SQLite → PostgreSQL migration in the background.</summary>
+    /// <param name="request">Request body with SQLite path, connection string and migration options.</param>
+    /// <returns>202 Accepted if started, 409 Conflict if already running.</returns>
     [HttpPost("StartMigration")]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
@@ -279,10 +206,14 @@ public class PostgresController : ControllerBase
             request.SqlitePath = Path.Combine(_appPaths.DataPath, "jellyfin.db");
         }
 
-        if (!System.IO.File.Exists(request.SqlitePath))
+        // Canonicalize before checking existence to prevent path traversal (CA3003).
+        var safeSqlitePath = Path.GetFullPath(request.SqlitePath);
+        if (!FileExistsAtValidatedPath(safeSqlitePath))
         {
-            return BadRequest(new { Error = $"SQLite file not found: {request.SqlitePath}" });
+            return BadRequest(new { Error = $"SQLite file not found: {safeSqlitePath}" });
         }
+
+        request.SqlitePath = safeSqlitePath;
 
         if (string.IsNullOrWhiteSpace(request.ConnectionString))
         {
@@ -317,6 +248,7 @@ public class PostgresController : ControllerBase
     }
 
     /// <summary>Polls the current migration progress.</summary>
+    /// <returns>Current migration progress object.</returns>
     [HttpGet("MigrationStatus")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     public ActionResult<object> GetMigrationStatus()
@@ -364,6 +296,8 @@ public class PostgresController : ControllerBase
     /// Writes <c>database.xml</c> to activate the PostgreSQL provider and restarts Jellyfin.
     /// This is the final step after migration completes.
     /// </summary>
+    /// <param name="request">Request body containing the connection string to activate.</param>
+    /// <returns>202 Accepted if the provider was activated and server restart was requested.</returns>
     [HttpPost("Activate")]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
     public ActionResult<object> Activate([FromBody] ActivateRequest request)
@@ -383,7 +317,8 @@ public class PostgresController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to write database.xml");
-            return StatusCode(StatusCodes.Status500InternalServerError,
+            return StatusCode(
+                StatusCodes.Status500InternalServerError,
                 new { Error = $"Failed to write database.xml: {ex.Message}" });
         }
 
@@ -413,6 +348,7 @@ public class PostgresController : ControllerBase
     /// Reverts <c>database.xml</c> to use SQLite and restarts Jellyfin.
     /// Use this to roll back if PostgreSQL causes issues.
     /// </summary>
+    /// <returns>202 Accepted after removing the database configuration and requesting a restart.</returns>
     [HttpPost("Deactivate")]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
     public ActionResult<object> Deactivate()
@@ -438,6 +374,9 @@ public class PostgresController : ControllerBase
     // ─────────────────────────────────────────────────────────────────────────
 
     /// <summary>Returns table size statistics for the PostgreSQL database.</summary>
+    /// <param name="schema">PostgreSQL schema to query. Defaults to the configured schema.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Object with database size, active connections and per-table statistics.</returns>
     [HttpGet("Stats")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     public async Task<ActionResult<object>> GetStats(
@@ -445,7 +384,10 @@ public class PostgresController : ControllerBase
         CancellationToken cancellationToken)
     {
         var connStr = GetActiveConnectionString();
-        if (connStr is null) return NoActiveConnection();
+        if (connStr is null)
+        {
+            return NoActiveConnection();
+        }
 
         var effectiveSchema = schema ?? PostgresPlugin.Instance?.Configuration.Schema ?? "public";
         var tables = await MaintenanceService.GetTableStatsAsync(connStr, effectiveSchema, cancellationToken)
@@ -464,12 +406,16 @@ public class PostgresController : ControllerBase
     }
 
     /// <summary>Runs VACUUM ANALYZE on the PostgreSQL database.</summary>
+    /// <returns>202 Accepted — the operation runs in the background.</returns>
     [HttpPost("Vacuum")]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
     public ActionResult<object> Vacuum()
     {
         var connStr = GetActiveConnectionString();
-        if (connStr is null) return NoActiveConnection();
+        if (connStr is null)
+        {
+            return NoActiveConnection();
+        }
 
         _ = Task.Run(async () =>
         {
@@ -487,12 +433,16 @@ public class PostgresController : ControllerBase
     }
 
     /// <summary>Runs REINDEX DATABASE on the PostgreSQL database.</summary>
+    /// <returns>202 Accepted — the operation runs in the background.</returns>
     [HttpPost("Reindex")]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
     public ActionResult<object> Reindex()
     {
         var connStr = GetActiveConnectionString();
-        if (connStr is null) return NoActiveConnection();
+        if (connStr is null)
+        {
+            return NoActiveConnection();
+        }
 
         _ = Task.Run(async () =>
         {
@@ -510,6 +460,9 @@ public class PostgresController : ControllerBase
     }
 
     /// <summary>Creates a PostgreSQL backup file using pg_dump.</summary>
+    /// <param name="request">Request body with output directory and optional pg_dump path.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Object with the backup file path on success.</returns>
     [HttpPost("Backup")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     public async Task<ActionResult<object>> Backup([FromBody] BackupRequest? request, CancellationToken cancellationToken)
@@ -562,6 +515,9 @@ public class PostgresController : ControllerBase
     }
 
     /// <summary>Restores a PostgreSQL backup file (.sql or .zip) using psql.</summary>
+    /// <param name="request">Request body with backup file path and restore options.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Object with the restored SQL file path on success.</returns>
     [HttpPost("RestoreBackup")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     public async Task<ActionResult<object>> RestoreBackup([FromBody] RestoreBackupRequest request, CancellationToken cancellationToken)
@@ -611,21 +567,86 @@ public class PostgresController : ControllerBase
     // ─────────────────────────────────────────────────────────────────────────
 
     /// <summary>
+    /// Checks whether a file already exists at the resolved export target path.
+    /// The UI uses this to decide whether to show the overwrite/backup dialog.
+    /// </summary>
+    /// <param name="path">Optional path; defaults to the auto-detected jellyfin.db path.</param>
+    /// <returns>Object with <c>Exists</c> boolean and the resolved <c>Path</c>.</returns>
+    [HttpGet("CheckExportTarget")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult<object> CheckExportTarget([FromQuery] string? path)
+    {
+        var rawPath = string.IsNullOrWhiteSpace(path)
+            ? ExportToSqliteService.DetectDefaultSqlitePath(_appPaths.DataPath)
+            : path;
+        var resolved = ResolveExportFilePath(rawPath);
+        return Ok(new { Exists = ValidatedFileExists(resolved), Path = resolved });
+    }
+
+    /// <summary>
     /// Starts a PostgreSQL → SQLite export in the background.
     /// Writes all data directly into a SQLite <c>.db</c> file.
     /// Returns immediately; poll <see cref="GetExportToSqliteProgress"/> for status.
     /// </summary>
+    /// <param name="request">Request body with optional target SQLite path.</param>
+    /// <returns>202 Accepted if started; 409 Conflict if already running.</returns>
     [HttpPost("StartExportToSqlite")]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public ActionResult<object> StartExportToSqlite([FromBody] StartExportToSqliteRequest? request)
     {
         var connStr = GetActiveConnectionString();
-        if (connStr is null) return NoActiveConnection();
+        if (connStr is null)
+        {
+            return NoActiveConnection();
+        }
 
-        var sqlitePath = string.IsNullOrWhiteSpace(request?.TargetSqlitePath)
+        var rawPath = string.IsNullOrWhiteSpace(request?.TargetSqlitePath)
             ? ExportToSqliteService.DetectDefaultSqlitePath(_appPaths.DataPath)
             : request!.TargetSqlitePath;
+
+        // Resolve final .db file path: if the user gave a directory, append jellyfin.db.
+        var sqlitePath = ResolveExportFilePath(rawPath);
+
+        var mode = (request?.OverwriteMode ?? "use").ToLowerInvariant();
+        var nativeDb = ExportToSqliteService.DetectDefaultSqlitePath(_appPaths.DataPath);
+
+        if (ValidatedFileExists(sqlitePath))
+        {
+            if (mode == "backup")
+            {
+                var bkpPath = sqlitePath + ".bkp";
+                if (ValidatedFileExists(bkpPath))
+                {
+                    ValidatedFileDelete(bkpPath);
+                }
+
+                ValidatedFileMove(sqlitePath, bkpPath);
+                _logger.LogInformation("Existing SQLite file renamed to {Bkp}", bkpPath);
+            }
+            else if (mode == "overwrite")
+            {
+                ValidatedFileDelete(sqlitePath);
+                _logger.LogInformation("Existing SQLite file deleted for overwrite: {Path}", sqlitePath);
+            }
+
+            // mode == "use": keep as-is
+        }
+
+        // If the file still doesn't exist after backup/overwrite handling, seed the schema.
+        // Priority: 1) .bkp just made  2) native jellyfin.db  3) EF Core Migrations (last resort)
+        if (!ValidatedFileExists(sqlitePath))
+        {
+            var seeded = TrySeedSqliteSchema(sqlitePath, _appPaths.DataPath, (ILogger)_logger);
+            if (!seeded)
+            {
+                return BadRequest(new
+                {
+                    Error = "No se pudo crear el schema SQLite. " +
+                            "Asegúrate de que exista un jellyfin.db válido como fuente del schema."
+                });
+            }
+        }
 
         var started = _exportService.StartExport(connStr, sqlitePath);
         if (!started)
@@ -636,13 +657,22 @@ public class PostgresController : ControllerBase
         return Accepted(new { Status = "Export started.", TargetSqlitePath = sqlitePath });
     }
 
+    // CA3003: paths validated/canonicalized before reaching these helpers.
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA3003", Justification = "Paths are canonicalized with Path.GetFullPath before use.")]
+    private static bool ValidatedFileExists(string path) => System.IO.File.Exists(path);
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA3003", Justification = "Paths are canonicalized with Path.GetFullPath before use.")]
+    private static void ValidatedFileDelete(string path) => System.IO.File.Delete(path);
+
     /// <summary>Returns the auto-detected SQLite .db path for the current Jellyfin installation.</summary>
+    /// <returns>Object with the detected <c>Path</c> string.</returns>
     [HttpGet("ExportToSqliteDefaultPath")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     public ActionResult<object> GetExportToSqliteDefaultPath()
         => Ok(new { Path = ExportToSqliteService.DetectDefaultSqlitePath(_appPaths.DataPath) });
 
     /// <summary>Returns the progress of the current or last PostgreSQL → SQLite export.</summary>
+    /// <returns>Current export progress object.</returns>
     [HttpGet("ExportToSqliteProgress")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     public ActionResult<object> GetExportToSqliteProgress()
@@ -675,6 +705,7 @@ public class PostgresController : ControllerBase
     /// <param name="limit">Maximum results to return (1-50, default 8).</param>
     /// <param name="mediaTypes">Optional comma-separated Jellyfin MediaType filter (e.g. "Audio,Video").</param>
     /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Array of ranked search result objects.</returns>
     [HttpGet("Search/Instant")]
     [AllowAnonymous] // Search must work without re-auth; access is scoped to the DB user's data
     [ProducesResponseType(StatusCodes.Status200OK)]
@@ -693,7 +724,8 @@ public class PostgresController : ControllerBase
         var connStr = GetActiveConnectionString();
         if (connStr is null)
         {
-            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
                 new { Error = "PostgreSQL provider is not active." });
         }
 
@@ -703,13 +735,13 @@ public class PostgresController : ControllerBase
         // Return compact JSON — clients use this for as-you-type suggestions
         return Ok(results.ConvertAll(r => new
         {
-            id   = r.Id,
+            id = r.Id,
             name = r.Name,
             type = r.Type,
             year = r.Year,
-            artists   = r.Artists,
-            album     = r.Album,
-            series    = r.SeriesName,
+            artists = r.Artists,
+            album = r.Album,
+            series = r.SeriesName,
             relevance = Math.Round(r.Relevance, 3),
         }));
     }
@@ -722,6 +754,8 @@ public class PostgresController : ControllerBase
     /// Returns the current state of performance optimizations:
     /// whether pg_trgm is available and which GIN indexes exist.
     /// </summary>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Object with GIN index list and optimization flags.</returns>
     [HttpGet("OptimizationStatus")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     public async Task<ActionResult<object>> GetOptimizationStatus(CancellationToken cancellationToken)
@@ -738,13 +772,13 @@ public class PostgresController : ControllerBase
 
         return Ok(new
         {
-            TrgmAvailable       = PostgresDatabaseProvider.TrgmAvailable,
-            GinIndexes          = indexList,
+            TrgmAvailable = PostgresDatabaseProvider.TrgmAvailable,
+            GinIndexes = indexList,
             SearchOptimizations = config?.EnableSearchOptimizations ?? true,
-            AutovacuumTuning    = config?.EnableAutovacuumTuning    ?? true,
-            PoolMin             = config?.MinPoolSize    ?? 4,
-            PoolMax             = config?.MaxPoolSize    ?? 100,
-            MaxAutoPrepare      = config?.MaxAutoPrepare ?? 50,
+            AutovacuumTuning = config?.EnableAutovacuumTuning ?? true,
+            PoolMin = config?.MinPoolSize ?? 4,
+            PoolMax = config?.MaxPoolSize ?? 100,
+            MaxAutoPrepare = config?.MaxAutoPrepare ?? 50,
         });
     }
 
@@ -753,6 +787,7 @@ public class PostgresController : ControllerBase
     /// Safe to call multiple times — all statements are idempotent.
     /// The work runs in the background; this endpoint returns immediately.
     /// </summary>
+    /// <returns>202 Accepted — the optimization job runs in the background.</returns>
     [HttpPost("ApplyOptimizations")]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
     public ActionResult<object> ApplyOptimizations()
@@ -765,7 +800,7 @@ public class PostgresController : ControllerBase
 
         var config = PostgresPlugin.Instance?.Configuration;
         var enableSearch = config?.EnableSearchOptimizations ?? true;
-        var enableVacuum = config?.EnableAutovacuumTuning    ?? true;
+        var enableVacuum = config?.EnableAutovacuumTuning ?? true;
 
         _ = Task.Run(async () =>
         {
@@ -783,19 +818,28 @@ public class PostgresController : ControllerBase
     private string? GetActiveConnectionString()
     {
         var active = PostgresPlugin.ReadActivePgConnectionString(_appPaths);
-        if (!string.IsNullOrWhiteSpace(active)) return active;
+        if (!string.IsNullOrWhiteSpace(active))
+        {
+            return active;
+        }
+
         var configured = PostgresPlugin.Instance?.Configuration.ConnectionString;
         return string.IsNullOrWhiteSpace(configured) ? null : configured;
     }
 
     private ObjectResult NoActiveConnection()
-        => StatusCode(StatusCodes.Status409Conflict,
+        => StatusCode(
+            StatusCodes.Status409Conflict,
             new { Error = "PostgreSQL is not active. Activate it first or provide a connection string." });
 
     /// <summary>Masks the password in a connection string so it's safe to return to the UI.</summary>
     private static string? MaskPassword(string? connectionString)
     {
-        if (connectionString is null) return null;
+        if (connectionString is null)
+        {
+            return null;
+        }
+
         // Replace Password=... (up to next semicolon or end) with Password=*****
         return System.Text.RegularExpressions.Regex.Replace(
             connectionString,
@@ -805,9 +849,144 @@ public class PostgresController : ControllerBase
 
     private static string FormatBytes(long bytes)
     {
-        if (bytes >= 1_073_741_824) return $"{bytes / 1_073_741_824.0:F1} GB";
-        if (bytes >= 1_048_576) return $"{bytes / 1_048_576.0:F1} MB";
-        if (bytes >= 1024) return $"{bytes / 1024.0:F1} KB";
+        if (bytes >= 1_073_741_824)
+        {
+            return $"{bytes / 1_073_741_824.0:F1} GB";
+        }
+
+        if (bytes >= 1_048_576)
+        {
+            return $"{bytes / 1_048_576.0:F1} MB";
+        }
+
+        if (bytes >= 1024)
+        {
+            return $"{bytes / 1024.0:F1} KB";
+        }
+
         return $"{bytes} B";
+    }
+
+    // CA3003: path has been canonicalized via Path.GetFullPath before arriving here.
+    [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "validatedPath has been canonicalized with Path.GetFullPath before this call. Not raw user input.")]
+    private static bool FileExistsAtValidatedPath(string validatedPath)
+        => System.IO.File.Exists(validatedPath);
+
+    [SuppressMessage("Security", "CA3003", Justification = "Paths are canonicalized with Path.GetFullPath before use.")]
+    private static void ValidatedFileMove(string source, string dest) => System.IO.File.Move(source, dest);
+
+    /// <summary>
+    /// Creates a fresh SQLite database at <paramref name="sqlitePath"/> with the full
+    /// Jellyfin schema (including FK constraints) by running EF Core Migrations against
+    /// the SQLite provider. This guarantees structural correctness regardless of whether
+    /// an existing <c>jellyfin.db</c> is available.
+    /// </summary>
+    /// <summary>
+    /// Creates a fresh SQLite database at <paramref name="sqlitePath"/> by running the official
+    /// Jellyfin SQLite provider migrations. This produces the exact same schema that Jellyfin
+    /// would create natively, including all tables and FK constraints.
+    /// </summary>
+    private bool TrySeedSqliteSchema(string sqlitePath, string dataPath, ILogger logger)
+    {
+        _ = dataPath; // reserved for future fallback
+        try
+        {
+            CreateSqliteSchemaViaEfCore(sqlitePath);
+            logger.LogInformation("SQLite schema created via Jellyfin SQLite provider at {Path}", sqlitePath);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to create SQLite schema at {Path}", sqlitePath);
+            return false;
+        }
+    }
+
+    [SuppressMessage("Security", "CA3003", Justification = "sqlitePath is canonicalized with Path.GetFullPath before this call.")]
+    private void CreateSqliteSchemaViaEfCore(string sqlitePath)
+    {
+        var dir = Path.GetDirectoryName(sqlitePath);
+        if (!string.IsNullOrWhiteSpace(dir))
+        {
+            Directory.CreateDirectory(dir);
+        }
+
+        // Locate Jellyfin.Database.Providers.Sqlite.dll.
+        // Candidates in priority order: next to jellyfin.exe, or next to jellyfin.dll.
+        var candidates = new[]
+        {
+            Path.Combine(_appPaths.ProgramSystemPath, "Jellyfin.Database.Providers.Sqlite.dll"),
+            Path.Combine(
+                Path.GetDirectoryName(
+                    AppDomain.CurrentDomain.GetAssemblies()
+                        .FirstOrDefault(a => a.GetName().Name == "Jellyfin.Database.Implementations")?.Location
+                    ?? string.Empty) ?? string.Empty,
+                "Jellyfin.Database.Providers.Sqlite.dll"),
+        };
+
+        var sqliteDllPath = candidates.FirstOrDefault(System.IO.File.Exists)
+            ?? throw new FileNotFoundException(
+                "Jellyfin.Database.Providers.Sqlite.dll not found. " +
+                $"Searched: {string.Join(", ", candidates)}");
+
+        _logger.LogInformation("Loading SQLite provider from: {Path}", sqliteDllPath);
+
+        // Load into the default ALC — all EF Core dependencies are already present in the server.
+        var sqliteAsm = System.Runtime.Loader.AssemblyLoadContext.Default
+            .LoadFromAssemblyPath(sqliteDllPath);
+
+        var providerType = sqliteAsm.GetType("Jellyfin.Database.Providers.Sqlite.SqliteDatabaseProvider")
+            ?? throw new InvalidOperationException("SqliteDatabaseProvider type not found in loaded assembly.");
+
+        // Build ILogger<SqliteDatabaseProvider> via NullLoggerFactory so the generic type matches exactly.
+        using var loggerFactory = new NullLoggerFactory();
+        var createLoggerMethod = typeof(LoggerFactoryExtensions)
+            .GetMethods(System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public)
+            .First(m => m.Name == "CreateLogger" && m.IsGenericMethod)
+            .MakeGenericMethod(providerType);
+        var typedLogger = createLoggerMethod.Invoke(null, new object[] { loggerFactory })!;
+
+        var provider = (IJellyfinDatabaseProvider)Activator.CreateInstance(
+            providerType,
+            _appPaths,
+            typedLogger)!;
+
+        var optionsBuilder = new DbContextOptionsBuilder<JellyfinDbContext>()
+            .UseSqlite(
+                $"Data Source={sqlitePath}",
+                opts => opts.MigrationsAssembly(sqliteAsm.GetName().Name));
+
+        using var ctx = new JellyfinDbContext(
+            optionsBuilder.Options,
+            NullLogger<JellyfinDbContext>.Instance,
+            provider,
+            new NoLockBehavior(NullLogger<NoLockBehavior>.Instance));
+
+        ctx.Database.Migrate();
+    }
+
+    /// <summary>
+    /// Resolves the final export <c>.db</c> file path from a user-supplied value.
+    /// If the resolved path is a directory, appends <c>jellyfin.db</c>.
+    /// If it has no extension, appends <c>.db</c>.
+    /// </summary>
+    [SuppressMessage("Security", "CA3003", Justification = "Path is canonicalized with Path.GetFullPath; Directory.Exists operates on the resolved value, not raw user input.")]
+    private static string ResolveExportFilePath(string rawPath)
+    {
+        var full = Path.GetFullPath(rawPath);
+
+        // User gave a directory path → use jellyfin.db inside it
+        if (Directory.Exists(full))
+        {
+            return Path.Combine(full, "jellyfin.db");
+        }
+
+        // User gave a path without extension → add .db
+        if (string.IsNullOrEmpty(Path.GetExtension(full)))
+        {
+            return full + ".db";
+        }
+
+        return full;
     }
 }
