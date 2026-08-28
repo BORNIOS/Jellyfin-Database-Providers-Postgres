@@ -99,6 +99,13 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
     {
         _applicationPaths = applicationPaths;
         _logger = logger ?? NullLogger<PostgresDatabaseProvider>.Instance;
+
+        // Jellyfin passes DateTime values with Kind=Unspecified for media dates
+        // (air dates, premiere dates, etc.) sourced from external providers like TVDB.
+        // Npgsql 9.x rejects these by default when writing to 'timestamp with time zone'.
+        // This switch instructs Npgsql to treat Kind=Unspecified as UTC, preserving
+        // the same behaviour as Npgsql 6.x and earlier.
+        AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
     }
 
     // ── Properties (SA1201: after constructor) ────────────────────────────────
