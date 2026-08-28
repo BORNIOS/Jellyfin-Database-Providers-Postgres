@@ -157,7 +157,9 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
             .UseNpgsql(
                 tunedConnStr,
                 npgsql => npgsql.MigrationsAssembly(typeof(PostgresDatabaseProvider).Assembly.GetName().Name!))
-            .AddInterceptors(new HomeQueryCacheInterceptor(_logger));
+            .AddInterceptors(
+                new HomeQueryCacheInterceptor(_logger),
+                new UpsertConflictInterceptor());
 
         // Run the health check in background exactly once, even if Initialise is called
         // multiple times (EF Core can call it more than once during startup).

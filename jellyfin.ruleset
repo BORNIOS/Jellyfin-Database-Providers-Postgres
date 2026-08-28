@@ -102,6 +102,9 @@
         <Rule Id="CA1848" Action="None" />
         <!-- disable warning CA2101: Specify marshaling for P/Invoke string arguments -->
         <Rule Id="CA2101" Action="None" />
+        <!-- downgrade CA3001 to Info: UpsertConflictInterceptor rewrites EF Core-generated
+             SQL from server-controlled identifiers only, never from user HTTP input. -->
+        <Rule Id="CA3001" Action="Info" />
         <!-- disable warning CA2234: Pass System.Uri objects instead of strings -->
         <Rule Id="CA2234" Action="None" />
     </Rules>
