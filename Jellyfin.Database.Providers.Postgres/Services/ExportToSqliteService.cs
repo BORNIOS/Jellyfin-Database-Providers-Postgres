@@ -27,6 +27,13 @@ public sealed class ExportToSqliteService : IDisposable
     private static readonly HashSet<string> SkipTables = new(StringComparer.OrdinalIgnoreCase)
         { "__EFMigrationsHistory", "__EFMigrationsLock" };
 
+    // Jellyfin's native SQLite stores GUIDs in UPPERCASE. PostgreSQL uses lowercase.
+    // This pattern detects UUID strings so we can normalise them on export.
+    private static readonly System.Text.RegularExpressions.Regex GuidPattern =
+        new System.Text.RegularExpressions.Regex(
+            @"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+            System.Text.RegularExpressions.RegexOptions.Compiled);
+
     // ── Instance fields ───────────────────────────────────────────────────────
     private readonly ILogger<ExportToSqliteService> _logger;
     private readonly SemaphoreSlim _semaphore = new(1, 1);
@@ -311,11 +318,17 @@ public sealed class ExportToSqliteService : IDisposable
 
     // ── Value conversion ──────────────────────────────────────────────────────
 
+    // GUID format note: Jellyfin's native SQLite stores GUIDs in UPPERCASE
+    // (e.g. "DB139722-47D3-4C47-ADE9-F625715551CA"). PostgreSQL stores them
+    // in lowercase. We normalise to UPPERCASE on export so that Jellyfin's
+    // case-sensitive internal lookups (UserManager, DeviceManager, etc.) work
+    // correctly when switching back to SQLite mode.
     private static object ConvertForSqlite(object? value) => value switch
     {
         null or DBNull => DBNull.Value,
         bool b => b ? 1 : 0,
-        Guid g => g.ToString(),
+        // GUIDs must be UPPERCASE to match Jellyfin's native SQLite format
+        Guid g => g.ToString().ToUpperInvariant(),
         DateTime dt => dt.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
         DateTimeOffset dto => dto.UtcDateTime.ToString("O", CultureInfo.InvariantCulture),
         float f when float.IsNaN(f) || float.IsInfinity(f) => DBNull.Value,
@@ -323,6 +336,8 @@ public sealed class ExportToSqliteService : IDisposable
         long[] arr => JsonSerializer.Serialize(arr),
         int[] arr => JsonSerializer.Serialize(arr),
         float[] arr => JsonSerializer.Serialize(arr),
+        // String GUIDs from PostgreSQL (uuid columns read as string) → UPPERCASE
+        string s when GuidPattern.IsMatch(s) => s.ToUpperInvariant(),
         _ => value,
     };
 

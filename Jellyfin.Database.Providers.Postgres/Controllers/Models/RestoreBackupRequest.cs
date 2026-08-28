@@ -6,8 +6,8 @@ public sealed class RestoreBackupRequest
     /// <summary>Gets or sets absolute path to .sql or .zip backup file.</summary>
     public string BackupPath { get; set; } = string.Empty;
 
-    /// <summary>Gets or sets optional psql path override.</summary>
-    public string? PgRestorePath { get; set; }
+    /// <summary>Gets or sets optional PostgreSQL bin directory override for this request.</summary>
+    public string? PgBinPath { get; set; }
 
     /// <summary>
     /// Gets or sets a value indicating whether existing objects should be replaced before restore.

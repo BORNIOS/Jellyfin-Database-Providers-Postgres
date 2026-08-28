@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Database.Providers.Postgres.Logging;
 using MediaBrowser.Common.Configuration;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
@@ -51,6 +52,7 @@ internal static class MigrationEngine
         var tables = await MigrationDiscovery.GetSqliteTablesAsync(sqlite).ConfigureAwait(false);
         var tablesToMigrate = tables.Where(t => !SkipTables.Contains(t)).ToList();
         svc.Log($"Tablas SQLite: {tables.Count} total, {tablesToMigrate.Count} a migrar");
+        PostgresLog.Warn($"[Migration] Tablas SQLite: {tables.Count} total, {tablesToMigrate.Count} a migrar");
 
         tablesToMigrate = await MigrationDiscovery
             .SortTablesByFkDependencyAsync(pg, schema, tablesToMigrate)
@@ -129,11 +131,13 @@ internal static class MigrationEngine
                     totalRows += rowCount;
                     svc.AddMigratedRows(rowCount);
                     svc.Log($"[{table}] OK — {rowCount} filas.");
+                    PostgresLog.Warn($"[Migration]   → {table} ({rowCount:N0} filas)");
                 }
                 catch (Exception ex)
                 {
                     svc.Log($"[{table}] ERROR: {ex.Message}");
                     errors.Add((table, ex.Message));
+                    PostgresLog.Error($"[Migration] ERROR en tabla {table}: {ex.Message}", ex);
                 }
             }
 
@@ -168,6 +172,7 @@ internal static class MigrationEngine
         }
 
         svc.Log($"Migración completada. Total de filas copiadas: {totalRows}.");
+        PostgresLog.Warn($"[Migration] Total filas migradas: {totalRows:N0}");
     }
 
     // ── Command factory methods ─────────────────────────────────────────────────────────

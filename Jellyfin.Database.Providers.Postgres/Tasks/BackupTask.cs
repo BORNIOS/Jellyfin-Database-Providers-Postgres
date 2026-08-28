@@ -68,7 +68,7 @@ public class BackupTask : IScheduledTask
             config.ConnectionString,
             backupDir,
             config.BackupCompression,
-            config.PgDumpPath,
+            config.PgBinPath,
             cancellationToken).ConfigureAwait(false);
         progress.Report(100);
     }

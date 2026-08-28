@@ -37,6 +37,29 @@ public class PostgresPlugin : BasePlugin<PluginConfiguration>, IHasWebPages
         _instance = this;
         PostgresLog.SetLogDirectory(applicationPaths.LogDirectoryPath);
         PostgresLog.Info($"PostgreSQL Database Provider v{Version} loaded. Log directory: {applicationPaths.LogDirectoryPath}");
+
+        // Log the active database engine so the plugin log always shows which mode Jellyfin is in
+        var isPostgresActive = IsPostgresActive(applicationPaths);
+        if (isPostgresActive)
+        {
+            var activeConnStr = ReadActivePgConnectionString(applicationPaths);
+            // Mask password for safety
+            var maskedConn = activeConnStr is not null
+                ? System.Text.RegularExpressions.Regex.Replace(
+                    activeConnStr,
+                    @"(?i)(Password\s*=)[^;]+",
+                    "$1*****")
+                : "(unknown)";
+            PostgresLog.Warn($"[ENGINE] Modo activo: PostgreSQL. Connection: {maskedConn}");
+        }
+        else
+        {
+            var sqlitePath = System.IO.Path.Combine(applicationPaths.DataPath, "jellyfin.db");
+            var sqliteSize = System.IO.File.Exists(sqlitePath)
+                ? $"{new System.IO.FileInfo(sqlitePath).Length / 1_048_576.0:F1} MB"
+                : "(no encontrado)";
+            PostgresLog.Warn($"[ENGINE] Modo activo: SQLite. Archivo: {sqlitePath} ({sqliteSize})");
+        }
     }
 
     /// <summary>Gets the singleton instance of the plugin.</summary>

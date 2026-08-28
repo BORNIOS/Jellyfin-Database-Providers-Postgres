@@ -15,9 +15,9 @@ public sealed class SaveConfigRequest
     /// <summary>Gets or sets a value indicating whether backups should be zipped.</summary>
     public bool BackupCompression { get; set; } = true;
 
-    /// <summary>Gets or sets optional explicit path to pg_dump executable.</summary>
-    public string? PgDumpPath { get; set; }
-
-    /// <summary>Gets or sets optional explicit path to psql executable for restore.</summary>
-    public string? PgRestorePath { get; set; }
+    /// <summary>
+    /// Gets or sets the directory that contains pg_dump, psql, pg_restore, etc.
+    /// Leave empty to auto-detect or rely on PATH.
+    /// </summary>
+    public string? PgBinPath { get; set; }
 }

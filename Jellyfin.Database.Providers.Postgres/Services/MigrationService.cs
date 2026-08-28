@@ -100,7 +100,10 @@ public sealed class MigrationService : IDisposable
             _logBuffer.Clear();
         }
 
-        PostgresLog.Warn($"[Migration] INICIO: {sqlitePath} → PostgreSQL schema={schema} batch={batchSize} truncate={truncate}");
+        PostgresLog.Warn("[ENGINE SWITCH] SQLite \u2192 PostgreSQL");
+        PostgresLog.Warn($"[ENGINE SWITCH] Origen SQLite: {sqlitePath}");
+        PostgresLog.Warn($"[ENGINE SWITCH] Schema PG: {schema} | Batch: {batchSize} | Truncate: {truncate}");
+        PostgresLog.Warn($"[Migration] INICIO: {sqlitePath} \u2192 PostgreSQL schema={schema} batch={batchSize} truncate={truncate}");
 
         _ = Task.Run(async () =>
         {
@@ -117,6 +120,7 @@ public sealed class MigrationService : IDisposable
                     CancellationToken.None).ConfigureAwait(false);
                 _isCompleted = true;
                 PostgresLog.Warn($"[Migration] COMPLETADA: {_migratedRows:N0} filas migradas.");
+                PostgresLog.Warn("[ENGINE SWITCH] SQLite \u2192 PostgreSQL: COMPLETADO. Activa PostgreSQL desde la UI para finalizar el cambio.");
             }
             catch (Exception ex)
             {

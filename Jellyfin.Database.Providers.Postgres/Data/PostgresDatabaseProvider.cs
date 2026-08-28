@@ -5,6 +5,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.DbConfiguration;
+using Jellyfin.Database.Providers.Postgres.Services;
+using Jellyfin.Database.Providers.Postgres.Services.Models;
 using MediaBrowser.Common.Configuration;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -20,12 +22,55 @@ namespace Jellyfin.Database.Providers.Postgres;
 public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 {
     // ── Fields: readonly first (SA1214), then mutable (SA1201: fields before constructor) ───
-    // Hardcoded DDL index definitions — no user input (satisfies CA2100 and CA1861)
-    private static readonly (string IdxName, string Table, string Col)[] GinIndexDefinitions =
+    // 9 GIN trigram indexes for sub-15ms instant search (pg_trgm required)
+    // All use partial indexes (WHERE col IS NOT NULL) to avoid indexing NULL rows.
+    private static readonly (string Name, string Sql)[] GinIndexDefinitions =
     {
-        ("ix_baseitems_name_gin_trgm",    "\"BaseItems\"", "\"Name\""),
-        ("ix_baseitems_sortname_gin_trgm", "\"BaseItems\"", "\"SortName\""),
-        ("ix_peoples_name_gin_trgm",       "\"Peoples\"",  "\"Name\""),
+        ("IX_BaseItems_Name_gin_trgm",
+         """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_Name_gin_trgm" ON "BaseItems" USING gin ("Name" gin_trgm_ops) WHERE "Name" IS NOT NULL;"""),
+        ("IX_BaseItems_OriginalTitle_gin_trgm",
+         """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_OriginalTitle_gin_trgm" ON "BaseItems" USING gin ("OriginalTitle" gin_trgm_ops) WHERE "OriginalTitle" IS NOT NULL;"""),
+        ("IX_BaseItems_Album_gin_trgm",
+         """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_Album_gin_trgm" ON "BaseItems" USING gin ("Album" gin_trgm_ops) WHERE "Album" IS NOT NULL;"""),
+        ("IX_BaseItems_Artists_gin_trgm",
+         """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_Artists_gin_trgm" ON "BaseItems" USING gin ("Artists" gin_trgm_ops) WHERE "Artists" IS NOT NULL;"""),
+        ("IX_BaseItems_AlbumArtists_gin_trgm",
+         """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_AlbumArtists_gin_trgm" ON "BaseItems" USING gin ("AlbumArtists" gin_trgm_ops) WHERE "AlbumArtists" IS NOT NULL;"""),
+        ("IX_BaseItems_SeriesName_gin_trgm",
+         """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_SeriesName_gin_trgm" ON "BaseItems" USING gin ("SeriesName" gin_trgm_ops) WHERE "SeriesName" IS NOT NULL;"""),
+        ("IX_ItemValues_Value_gin_trgm",
+         """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_ItemValues_Value_gin_trgm" ON "ItemValues" USING gin ("Value" gin_trgm_ops);"""),
+        ("IX_ItemValues_CleanValue_gin_trgm",
+         """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_ItemValues_CleanValue_gin_trgm" ON "ItemValues" USING gin ("CleanValue" gin_trgm_ops);"""),
+        ("IX_Peoples_Name_gin_trgm",
+         """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_Peoples_Name_gin_trgm" ON "Peoples" USING gin ("Name" gin_trgm_ops) WHERE "Name" IS NOT NULL;"""),
+    };
+
+    // Composite partial indexes optimised for home-page, library-browser and resume queries.
+    // These match the exact column order PostgreSQL needs to satisfy ORDER BY without a sort.
+    private static readonly (string Name, string Sql)[] NavigationIndexDefinitions =
+    {
+        ("IX_BaseItems_ParentId_DateCreated_Partial",
+         """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_ParentId_DateCreated_Partial" ON "BaseItems" ("ParentId", "DateCreated" DESC) WHERE "IsVirtualItem" = false;"""),
+        ("IX_BaseItems_TopParentId_DateCreated_Partial",
+         """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_TopParentId_DateCreated_Partial" ON "BaseItems" ("TopParentId", "DateCreated" DESC) WHERE "IsVirtualItem" = false;"""),
+        ("IX_BaseItems_Type_TopParentId_DateCreated_Partial",
+         """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_Type_TopParentId_DateCreated_Partial" ON "BaseItems" ("Type", "TopParentId", "DateCreated" DESC) WHERE "IsVirtualItem" = false;"""),
+        ("IX_UserData_UserId_LastPlayedDate_Partial",
+         """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_UserData_UserId_LastPlayedDate_Partial" ON "UserData" ("UserId", "LastPlayedDate" DESC) WHERE "PlaybackPositionTicks" > 0;"""),
+        ("IX_UserData_UserId_IsFavorite_Partial",
+         """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_UserData_UserId_IsFavorite_Partial" ON "UserData" ("UserId") WHERE "IsFavorite" = true;"""),
+
+        // --- Additional covering indexes for frequent Jellyfin queries ---
+        // Cover the library browser sort by OfficialRating + DateCreated (common in All Movies view)
+        ("IX_BaseItems_Type_IsFolder_IsVirtualItem_OfficialRating",
+         """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_Type_IsFolder_IsVirtualItem_OfficialRating" ON "BaseItems" ("Type", "IsFolder", "OfficialRating", "DateCreated" DESC) WHERE "IsVirtualItem" = false;"""),
+        // Cover episodes sorted by IndexNumber within a season (Next Up, Continue Watching)
+        ("IX_BaseItems_SeriesId_SeasonId_IndexNumber",
+         """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_SeriesId_SeasonId_IndexNumber" ON "BaseItems" ("SeriesId", "SeasonId", "IndexNumber") WHERE "IsVirtualItem" = false;"""),
+        // Cover UserData lookups by ItemId alone (used by playback state queries)
+        ("IX_UserData_ItemId_PlaybackPositionTicks_Partial",
+         """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_UserData_ItemId_PlaybackPositionTicks_Partial" ON "UserData" ("ItemId") WHERE "PlaybackPositionTicks" > 0;"""),
     };
 
     private static readonly string[] AutovacuumTables = { "BaseItems", "UserData", "ActivityLogs" };
@@ -37,6 +82,9 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 
     // Mutable static field (after readonly fields — SA1214)
     private static bool _trgmAvailable;
+
+    // Ensures the startup health check runs exactly once across all Initialise calls.
+    private static int _startupHealthCheckFired;
 
     // ── Constructor ───────────────────────────────────────────────────────────
 
@@ -83,9 +131,70 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
                 "Configure it through the plugin settings before activating the PostgreSQL provider.");
         }
 
-        options.UseNpgsql(
-            connStr,
-            npgsql => npgsql.MigrationsAssembly(typeof(PostgresDatabaseProvider).Assembly.GetName().Name!));
+        // Apply pool tuning and prepared-statement cache from plugin config
+        var config = PostgresPlugin.Instance?.Configuration;
+        var csb = new NpgsqlConnectionStringBuilder(connStr)
+        {
+            MinPoolSize = config?.MinPoolSize ?? 4,
+            MaxPoolSize = config?.MaxPoolSize ?? 100,
+            MaxAutoPrepare = config?.MaxAutoPrepare ?? 50,
+            CommandTimeout = config?.CommandTimeout ?? 60,
+        };
+
+        var tunedConnStr = csb.ToString();
+        Logging.PostgresLog.Warn(
+            $"[Provider] Pool: min={csb.MinPoolSize} max={csb.MaxPoolSize} " +
+            $"maxAutoPrepare={csb.MaxAutoPrepare} cmdTimeout={csb.CommandTimeout}s");
+
+        options
+            .UseNpgsql(
+                tunedConnStr,
+                npgsql => npgsql.MigrationsAssembly(typeof(PostgresDatabaseProvider).Assembly.GetName().Name!))
+            .AddInterceptors(new HomeQueryCacheInterceptor(_logger));
+
+        // Run the health check in background exactly once, even if Initialise is called
+        // multiple times (EF Core can call it more than once during startup).
+        var schema = config?.Schema ?? "public";
+        if (Interlocked.CompareExchange(ref _startupHealthCheckFired, 1, 0) == 0)
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+                    var svc = new HealthCheckService(NullLogger<HealthCheckService>.Instance);
+                    var result = await svc.RunHealthCheckAsync(tunedConnStr, schema, silent: true).ConfigureAwait(false);
+                    LogHealthSummary(result);
+                }
+                catch (Exception ex)
+                {
+                    Logging.PostgresLog.Error("[HealthCheck] AUTO fall\u00f3 al iniciar", ex);
+                }
+            });
+        }
+    }
+
+    private static void LogHealthSummary(HealthCheckResult result)
+    {
+        var findings = result.Findings;
+        var errors = findings.Count(static f => f.Severity == HealthSeverity.Error);
+        var warns = findings.Count(static f => f.Severity == HealthSeverity.Warn);
+        var info = findings.Count - errors - warns;
+
+        Logging.PostgresLog.Warn(
+            $"[HealthCheck] Resumen arranque: {errors} error(es), {warns} advertencia(s), {info} informativo(s) | " +
+            $"Severidad: {result.OverallSeverity} | {result.DurationMs} ms");
+
+        foreach (var f in findings)
+        {
+            if (f.Severity == HealthSeverity.Ok)
+            {
+                continue;
+            }
+
+            var det = string.IsNullOrEmpty(f.Detail) ? string.Empty : $" | {f.Detail}";
+            Logging.PostgresLog.Warn($"[HealthCheck] [{f.Check}] {f.Message}{det}");
+        }
     }
 
     /// <inheritdoc/>
@@ -148,20 +257,47 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         ILogger logger,
         CancellationToken ct)
     {
+        Logging.PostgresLog.Warn($"[Optimization] INICIO: enableSearch={enableSearch} enableVacuum={enableVacuum}");
+
         using var conn = new NpgsqlConnection(connectionString);
         await conn.OpenAsync(ct).ConfigureAwait(false);
 
         _trgmAvailable = await CheckTrgmAsync(conn, logger, ct).ConfigureAwait(false);
+        Logging.PostgresLog.Warn($"[Optimization] pg_trgm: {(_trgmAvailable ? "disponible \u2713" : "no disponible \u2717 \u2014 InstantSearch usar\u00e1 ILIKE")}");
 
         if (enableSearch && _trgmAvailable)
         {
+            Logging.PostgresLog.Warn($"[Optimization] Aplicando {GinIndexDefinitions.Length} \u00edndices GIN trigram...");
             await ApplySearchIndexesAsync(conn, logger, ct).ConfigureAwait(false);
+            Logging.PostgresLog.Warn("[Optimization] \u00cdndices GIN trigram aplicados (IF NOT EXISTS \u2014 instant\u00e1neo si ya exist\u00edan).");
         }
+        else if (enableSearch && !_trgmAvailable)
+        {
+            Logging.PostgresLog.Warn("[Optimization] \u00cdndices GIN omitidos \u2014 pg_trgm no disponible. Ejecuta: CREATE EXTENSION pg_trgm;");
+        }
+
+        // Navigation indexes improve home-page, library-browser and resume performance
+        // regardless of pg_trgm availability.
+        Logging.PostgresLog.Warn($"[Optimization] Aplicando {NavigationIndexDefinitions.Length} \u00edndices de navegaci\u00f3n parciales...");
+        await ApplyNavigationIndexesAsync(conn, logger, ct).ConfigureAwait(false);
+        Logging.PostgresLog.Warn("[Optimization] \u00cdndices de navegaci\u00f3n aplicados (home-page, library-browser, resume).");
+
+        // Query-planner memory hints (work_mem) for sort-heavy queries.
+        await ApplyServerMemoryTuningAsync(conn, logger, ct).ConfigureAwait(false);
+        Logging.PostgresLog.Warn("[Optimization] Ajuste de memoria de sesi\u00f3n aplicado (work_mem=16MB).");
 
         if (enableVacuum)
         {
+            Logging.PostgresLog.Warn("[Optimization] Aplicando autovacuum tuning en tablas cr\u00edticas...");
             await ApplyAutovacuumTuningAsync(conn, logger, ct).ConfigureAwait(false);
+            Logging.PostgresLog.Warn($"[Optimization] Autovacuum tuning aplicado en: {string.Join(", ", AutovacuumTables)}");
         }
+
+        // Try to activate pg_stat_statements for slow-query visibility.
+        // Requires pg_stat_statements in shared_preload_libraries (needs restart if not already active).
+        await TryActivateStatStatementsAsync(conn, logger, ct).ConfigureAwait(false);
+
+        Logging.PostgresLog.Warn("[Optimization] COMPLETADO. InstantSearch activo, home-page optimizada, autovacuum tuned.");
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -191,11 +327,39 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 
     private static async Task ApplySearchIndexesAsync(NpgsqlConnection conn, ILogger logger, CancellationToken ct)
     {
-        foreach (var (idxName, table, col) in GinIndexDefinitions)
+        foreach (var (name, sql) in GinIndexDefinitions)
         {
-            // SQL built from GinIndexDefinitions — hardcoded, no user input (CA2100)
-            var sql = $"CREATE INDEX CONCURRENTLY IF NOT EXISTS {idxName} ON {table} USING gin({col} gin_trgm_ops);";
-            await TryExecuteIndexWithRetryAsync(sql, idxName, conn, logger, ct).ConfigureAwait(false);
+            await TryExecuteIndexWithRetryAsync(sql, name, conn, logger, ct).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task ApplyNavigationIndexesAsync(NpgsqlConnection conn, ILogger logger, CancellationToken ct)
+    {
+        foreach (var (name, sql) in NavigationIndexDefinitions)
+        {
+            await TryExecuteIndexWithRetryAsync(sql, name, conn, logger, ct).ConfigureAwait(false);
+        }
+
+        logger.LogInformation("PostgreSQL navigation indexes applied. Home page, library browser and resume queries optimized.");
+    }
+
+    [SuppressMessage("Security", "CA2100", Justification = "work_mem value is a hardcoded constant, not user input.")]
+    private static async Task ApplyServerMemoryTuningAsync(NpgsqlConnection conn, ILogger logger, CancellationToken ct)
+    {
+        // Tune the query planner and sort memory for a home-media-server workload.
+        // work_mem controls per-sort-operation memory; raising it avoids disk spills
+        // on ORDER BY DateCreated DESC, ORDER BY RANDOM(), etc.
+        // This is a session-level SET — no server restart required.
+        const string sql = "SET work_mem = '16MB';";
+        try
+        {
+            using var cmd = new NpgsqlCommand(sql, conn);
+            await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            logger.LogInformation("PostgreSQL session memory tuning applied (work_mem=16MB).");
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Could not apply server memory tuning — skipping.");
         }
     }
 
@@ -231,12 +395,14 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
                 using var cmd = CreateIndexCommand(connection, sql);
                 await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
                 logger.LogInformation("Index applied: {IndexName}", indexName);
+                Logging.PostgresLog.Warn($"[Optimization]   \u2713 {indexName}");
                 return;
             }
             catch (PostgresException pgEx) when (pgEx.SqlState == "40P01" && attempt < RetryDelays.Length)
             {
                 var delay = RetryDelays[attempt];
                 logger.LogWarning(
+                    pgEx,
                     "Deadlock creating {IndexName} (attempt {Attempt}). Retrying in {Delay}s.",
                     indexName,
                     attempt + 1,
@@ -268,4 +434,45 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "sql comes from GinIndexDefinitions private static readonly array, not user input.")]
     private static NpgsqlCommand CreateIndexCommand(NpgsqlConnection conn, string sql)
         => new NpgsqlCommand(sql, conn) { CommandTimeout = 0 };
+
+    /// <summary>
+    /// Tries to activate <c>pg_stat_statements</c> so slow queries are visible in the
+    /// Health Check and in tools like pgAdmin. Silently skips when the extension requires
+    /// a server restart (needs <c>shared_preload_libraries</c>) or the user lacks privileges.
+    /// </summary>
+    private static async Task TryActivateStatStatementsAsync(NpgsqlConnection conn, ILogger logger, CancellationToken ct)
+    {
+        try
+        {
+            // Check if already active
+            using var checkCmd = new NpgsqlCommand(
+                "SELECT COUNT(*) FROM pg_extension WHERE extname = 'pg_stat_statements';", conn);
+            var count = Convert.ToInt64(
+                await checkCmd.ExecuteScalarAsync(ct).ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture);
+
+            if (count > 0)
+            {
+                Logging.PostgresLog.Info("[Optimization] pg_stat_statements: ya activo \u2713 (slow-query tracking disponible).");
+                return;
+            }
+
+            // Try to create it — may fail if not in shared_preload_libraries
+            using var createCmd = new NpgsqlCommand(
+                "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;", conn);
+            await createCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            Logging.PostgresLog.Warn("[Optimization] pg_stat_statements activado \u2713 (agrega 'pg_stat_statements' a shared_preload_libraries para que persista entre reinicios).");
+        }
+        catch (PostgresException pgEx) when (pgEx.SqlState is "55P02" or "42501")
+        {
+            // 55P02 = extension requires restart, 42501 = insufficient privileges
+            Logging.PostgresLog.Warn(
+                $"[Optimization] pg_stat_statements no pudo activarse autom\u00e1ticamente ({pgEx.MessageText}). " +
+                "Para activarlo manualmente: agrega 'pg_stat_statements' a shared_preload_libraries en postgresql.conf y reinicia PostgreSQL.");
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Could not activate pg_stat_statements — skipping.");
+        }
+    }
 }

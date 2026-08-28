@@ -55,16 +55,13 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool BackupCompression { get; set; } = true;
 
     /// <summary>
-    /// Gets or sets an optional full path to pg_dump executable.
-    /// Leave empty to use pg_dump from PATH.
+    /// Gets or sets the directory that contains the PostgreSQL client binaries
+    /// (pg_dump, psql, pg_restore, etc.).
+    /// Example on Windows: C:\Program Files\PostgreSQL\17\bin
+    /// Example on Linux:   /usr/lib/postgresql/17/bin
+    /// Leave empty to auto-detect (searches well-known paths) or rely on PATH.
     /// </summary>
-    public string PgDumpPath { get; set; } = string.Empty;
-
-    /// <summary>
-    /// Gets or sets an optional full path to psql executable for restore operations.
-    /// Leave empty to use psql from PATH.
-    /// </summary>
-    public string PgRestorePath { get; set; } = string.Empty;
+    public string PgBinPath { get; set; } = string.Empty;
 
     // ── Connection Pool Tuning ──────────────────────────────────────────────
 

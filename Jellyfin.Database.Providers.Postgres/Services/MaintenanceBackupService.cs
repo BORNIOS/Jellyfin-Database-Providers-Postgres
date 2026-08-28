@@ -39,14 +39,14 @@ public sealed class MaintenanceBackupService
     /// <param name="connectionString">PostgreSQL connection string for the source database.</param>
     /// <param name="outputDirectory">Directory where the backup file will be written.</param>
     /// <param name="compress">When <see langword="true"/>, wraps the SQL dump in a ZIP file.</param>
-    /// <param name="pgDumpPath">Optional path to the <c>pg_dump</c> executable.</param>
+    /// <param name="pgBinPath">Optional directory containing pg_dump, psql, etc. Leave null/empty to auto-detect or rely on PATH.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>Absolute path to the created backup file.</returns>
     public async Task<string> CreateBackupAsync(
         string connectionString,
         string outputDirectory,
         bool compress,
-        string? pgDumpPath,
+        string? pgBinPath,
         CancellationToken ct = default)
     {
         var cs = new NpgsqlConnectionStringBuilder(connectionString);
@@ -64,7 +64,7 @@ public sealed class MaintenanceBackupService
         var sqlFilePath = Path.Combine(safeOutputDirectory, $"{safeDbName}_{timestamp}.sql");
 
         // Resolve + validate the executable path; name must be in AllowedPgExecutables (CA3006)
-        var safeExecutable = ResolvePgDumpExecutable(pgDumpPath);
+        var safeExecutable = ResolveExecutable(pgBinPath, "pg_dump");
         var args = BuildPgDumpArguments(cs, sqlFilePath);
 
         _logger.LogInformation("Starting PostgreSQL backup with pg_dump to {Path}", sqlFilePath);
@@ -103,8 +103,9 @@ public sealed class MaintenanceBackupService
 
         if (!compress)
         {
-            _logger.LogInformation("PostgreSQL backup completed at {Path}", sqlFilePath);
-            PostgresLog.Warn($"[Backup] COMPLETADO: {sqlFilePath}");
+            var sqlSize = MaintenanceService.FormatBytes(GetFileSize(sqlFilePath));
+            _logger.LogInformation("PostgreSQL backup completed at {Path} ({Size})", sqlFilePath, sqlSize);
+            PostgresLog.Warn($"[Backup] COMPLETADO: {sqlFilePath} ({sqlSize})");
             return sqlFilePath;
         }
 
@@ -120,8 +121,9 @@ public sealed class MaintenanceBackupService
         }
 
         SafeFileDelete(sqlFilePath);
-        _logger.LogInformation("PostgreSQL backup completed at {Path}", zipPath);
-        PostgresLog.Warn($"[Backup] COMPLETADO (ZIP): {zipPath}");
+        var zipSize = MaintenanceService.FormatBytes(GetFileSize(zipPath));
+        _logger.LogInformation("PostgreSQL backup completed at {Path} ({Size})", zipPath, zipSize);
+        PostgresLog.Warn($"[Backup] COMPLETADO (ZIP): {zipPath} ({zipSize})");
         return zipPath;
     }
 
@@ -133,14 +135,14 @@ public sealed class MaintenanceBackupService
     /// </summary>
     /// <param name="connectionString">PostgreSQL connection string for the target database.</param>
     /// <param name="backupFilePath">Path to the <c>.sql</c> or <c>.zip</c> backup file.</param>
-    /// <param name="pgRestorePath">Optional path to the <c>psql</c> executable.</param>
+    /// <param name="pgBinPath">Optional directory containing pg_dump, psql, etc. Leave null/empty to auto-detect or rely on PATH.</param>
     /// <param name="replaceExistingObjects">When <see langword="true"/>, uses <c>--single-transaction</c>.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>Absolute path to the SQL file used for restoration.</returns>
     public async Task<string> RestoreBackupAsync(
         string connectionString,
         string backupFilePath,
-        string? pgRestorePath,
+        string? pgBinPath,
         bool replaceExistingObjects,
         CancellationToken ct = default)
     {
@@ -203,14 +205,15 @@ public sealed class MaintenanceBackupService
             }
 
             // Resolve + validate before assigning to ProcessStartInfo (CA3006)
-            var safeRestoreExe = ResolvePsqlExecutable(pgRestorePath);
+            var safeRestoreExe = ResolveExecutable(pgBinPath, "psql");
             var args = BuildPsqlRestoreArguments(cs, sqlFilePath, replaceExistingObjects);
 
             _logger.LogWarning(
                 "Starting PostgreSQL restore from {Backup}. ReplaceExistingObjects={Replace}",
                 backupFilePath,
                 replaceExistingObjects);
-            PostgresLog.Warn($"[Restore] INICIO: {backupFilePath} replaceExisting={replaceExistingObjects}");
+            var sourceSize = MaintenanceService.FormatBytes(GetFileSize(backupFilePath));
+            PostgresLog.Warn($"[Restore] INICIO: {backupFilePath} ({sourceSize}) replaceExisting={replaceExistingObjects}");
 
             var psi = CreateProcessStartInfo(safeRestoreExe, args);
 
@@ -257,56 +260,153 @@ public sealed class MaintenanceBackupService
 
     // ── Process helpers (CA3003/CA3006: validate executables against allowed names) ──────
 
-    private static string ResolvePgDumpExecutable(string? userPath)
+    /// <summary>
+    /// Resolves a PostgreSQL client executable (pg_dump, psql, …) from a bin directory.
+    /// <list type="bullet">
+    ///   <item>If <paramref name="pgBinPath"/> is provided, we look for <c>&lt;pgBinPath&gt;/&lt;name&gt;[.exe]</c>.</item>
+    ///   <item>Otherwise we search well-known OS installation directories.</item>
+    ///   <item>If still not found, we fall back to the bare name and rely on PATH.</item>
+    /// </list>
+    /// </summary>
+    [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "pgBinPath is a user-configured directory validated against AllowedPgExecutables name. Constructed path is canonicalized with Path.GetFullPath.")]
+    private static string ResolveExecutable(string? pgBinPath, string executableName)
     {
-        if (string.IsNullOrWhiteSpace(userPath))
+        if (!AllowedPgExecutables.Contains(executableName, StringComparer.OrdinalIgnoreCase))
         {
-            return "pg_dump";
+            throw new InvalidOperationException(
+                $"Executable '{executableName}' is not in the allowed list ({string.Join(", ", AllowedPgExecutables)}).");
         }
 
-        return ValidatePgExecutable(userPath, "pg_dump");
+        // 1. User-configured bin directory takes priority.
+        if (!string.IsNullOrWhiteSpace(pgBinPath))
+        {
+            var userBin = Path.GetFullPath(pgBinPath);
+            var candidate = FindInDirectory(userBin, executableName);
+            if (candidate is not null)
+            {
+                return candidate;
+            }
+
+            // Dir was provided but exe not found there — throw so the user knows the config is wrong.
+            throw new InvalidOperationException(
+                $"Executable '{executableName}' not found in configured PgBinPath: {userBin}");
+        }
+
+        // 2. Search well-known installation directories (Windows: Program Files; Linux: postgresql version dirs).
+        var autoFound = FindInKnownLocations(executableName);
+        if (autoFound is not null)
+        {
+            return autoFound;
+        }
+
+        // 3. Rely on PATH (works on most Linux/macOS installations).
+        return executableName;
     }
 
-    private static string ResolvePsqlExecutable(string? userPath)
+    // Returns the full path if the executable exists in <dir>, otherwise null.
+    [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "dir is either Path.GetFullPath of a user config value or a hard-coded well-known path. executableName is validated against AllowedPgExecutables.")]
+    private static string? FindInDirectory(string dir, string executableName)
     {
-        if (string.IsNullOrWhiteSpace(userPath))
+        // Try with .exe extension first (Windows), then bare name (Linux/macOS).
+        var withExt = Path.Combine(dir, executableName + ".exe");
+        if (File.Exists(withExt))
         {
-            return "psql";
+            return withExt;
         }
 
-        return ValidatePgExecutable(userPath, "psql");
+        var bare = Path.Combine(dir, executableName);
+        if (File.Exists(bare))
+        {
+            return bare;
+        }
+
+        return null;
     }
 
     /// <summary>
-    /// Validates a user-supplied executable path against <see cref="AllowedPgExecutables"/>.
-    /// The executable name (without extension) must be in the allow-list.
-    /// Returns the canonicalized absolute path if valid and the file exists.
+    /// Searches well-known PostgreSQL installation directories for the given executable.
+    /// Checks newest version first. Returns <see langword="null"/> when not found.
     /// </summary>
-    private static string ValidatePgExecutable(string userPath, string expectedBaseName)
+    [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "Paths are constructed from hard-coded OS roots and the allow-listed executable name — no user input flows here.")]
+    private static string? FindInKnownLocations(string executableName)
     {
-        var abs = Path.GetFullPath(userPath);
-        var baseName = Path.GetFileNameWithoutExtension(abs);
-
-        if (!AllowedPgExecutables.Contains(baseName, StringComparer.OrdinalIgnoreCase))
+        // ── Windows: C:\Program Files\PostgreSQL\<ver>\bin\
+        if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+                System.Runtime.InteropServices.OSPlatform.Windows))
         {
-            throw new InvalidOperationException(
-                $"Executable '{baseName}' is not in the allowed list ({string.Join(", ", AllowedPgExecutables)}).");
+            var programFiles = new[]
+            {
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+            };
+
+            foreach (var pf in programFiles)
+            {
+                if (string.IsNullOrEmpty(pf))
+                {
+                    continue;
+                }
+
+                var pgRoot = Path.Combine(pf, "PostgreSQL");
+                if (!Directory.Exists(pgRoot))
+                {
+                    continue;
+                }
+
+                var versionDirs = Directory.GetDirectories(pgRoot);
+                System.Array.Sort(versionDirs, StringComparer.OrdinalIgnoreCase);
+                System.Array.Reverse(versionDirs); // newest first
+
+                foreach (var versionDir in versionDirs)
+                {
+                    var found = FindInDirectory(Path.Combine(versionDir, "bin"), executableName);
+                    if (found is not null)
+                    {
+                        return found;
+                    }
+                }
+            }
+
+            return null;
         }
 
-        var safeAbs = GetValidatedExecutablePath(abs);
-        return safeAbs;
-    }
-
-    // Isolated method so the analyzer sees File.Exists on a fully-validated path,
-    // not on a value flowing from user input (CA3003).
-    private static string GetValidatedExecutablePath(string abs)
-    {
-        if (!System.IO.File.Exists(abs))
+        // ── Linux: /usr/lib/postgresql/<ver>/bin/  (Debian/Ubuntu packages)
+        const string linuxPgRoot = "/usr/lib/postgresql";
+        if (Directory.Exists(linuxPgRoot))
         {
-            throw new InvalidOperationException($"Executable not found at validated path: {abs}");
+            var versionDirs = Directory.GetDirectories(linuxPgRoot);
+            System.Array.Sort(versionDirs, StringComparer.OrdinalIgnoreCase);
+            System.Array.Reverse(versionDirs); // newest first
+
+            foreach (var versionDir in versionDirs)
+            {
+                var found = FindInDirectory(Path.Combine(versionDir, "bin"), executableName);
+                if (found is not null)
+                {
+                    return found;
+                }
+            }
         }
 
-        return abs;
+        // ── macOS (Homebrew): /opt/homebrew/opt/postgresql@<ver>/bin/
+        const string brewRoot = "/opt/homebrew/opt";
+        if (Directory.Exists(brewRoot))
+        {
+            var pgDirs = Directory.GetDirectories(brewRoot, "postgresql*");
+            System.Array.Sort(pgDirs, StringComparer.OrdinalIgnoreCase);
+            System.Array.Reverse(pgDirs);
+
+            foreach (var pgDir in pgDirs)
+            {
+                var found = FindInDirectory(Path.Combine(pgDir, "bin"), executableName);
+                if (found is not null)
+                {
+                    return found;
+                }
+            }
+        }
+
+        return null;
     }
 
     private static string BuildPgDumpArguments(NpgsqlConnectionStringBuilder cs, string outputPath)
@@ -375,4 +475,9 @@ public sealed class MaintenanceBackupService
     [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "Paths are canonicalized via Path.GetFullPath or built from trusted internal values before reaching this method.")]
     private static void SafeFileDelete(string path)
         => File.Delete(path);
+
+    // Path has been canonicalized by Path.GetFullPath before reaching here (CA3003).
+    [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "Path is canonicalized with Path.GetFullPath or constructed from trusted internal values before this call.")]
+    private static long GetFileSize(string path)
+        => new FileInfo(path).Length;
 }

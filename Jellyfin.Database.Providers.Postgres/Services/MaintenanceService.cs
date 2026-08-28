@@ -4,9 +4,11 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Database.Providers.Postgres.Logging;
 using Jellyfin.Database.Providers.Postgres.Services.Models;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -68,11 +70,17 @@ public sealed class MaintenanceService
     public async Task VacuumAnalyzeAsync(string connectionString, CancellationToken ct = default)
     {
         _logger.LogInformation("Starting VACUUM ANALYZE...");
+        PostgresLog.Warn("[Vacuum] INICIO: VACUUM ANALYZE en toda la base de datos...");
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
         using var pg = new NpgsqlConnection(connectionString);
         await pg.OpenAsync(ct).ConfigureAwait(false);
         using var cmd = new NpgsqlCommand("VACUUM ANALYZE;", pg) { CommandTimeout = 0 };
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+        sw.Stop();
         _logger.LogInformation("VACUUM ANALYZE completed.");
+        PostgresLog.Warn($"[Vacuum] COMPLETADO en {sw.Elapsed.TotalSeconds:F1}s. Las tablas han sido analizadas y el espacio muerto recuperado.");
     }
 
     // ── REINDEX ───────────────────────────────────────────────────────────────
@@ -98,9 +106,15 @@ public sealed class MaintenanceService
 
         // dbName comes from SELECT current_database() — server-controlled, not user input.
         // QuoteIdentifier escapes any internal double-quotes for safety.
+        PostgresLog.Warn($"[Reindex] INICIO: REINDEX DATABASE CONCURRENTLY {dbName}...");
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
         using var cmd = CreateReindexCommand(pg, dbName);
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+        sw.Stop();
         _logger.LogInformation("REINDEX DATABASE completed.");
+        PostgresLog.Warn($"[Reindex] COMPLETADO en {sw.Elapsed.TotalSeconds:F1}s. Todos los índices de '{dbName}' han sido reconstruidos.");
     }
 
     // ── Table statistics ──────────────────────────────────────────────────────
@@ -240,6 +254,66 @@ public sealed class MaintenanceService
         return value;
     }
 
+    internal static string FormatBytes(long bytes)
+    {
+        const long kb = 1024;
+        const long mb = kb * 1024;
+        const long gb = mb * 1024;
+        if (bytes >= gb)
+        {
+            return string.Format(CultureInfo.InvariantCulture, "{0:F1} GB", (double)bytes / gb);
+        }
+
+        if (bytes >= mb)
+        {
+            return string.Format(CultureInfo.InvariantCulture, "{0:F1} MB", (double)bytes / mb);
+        }
+
+        if (bytes >= kb)
+        {
+            return string.Format(CultureInfo.InvariantCulture, "{0:F1} KB", (double)bytes / kb);
+        }
+
+        return string.Format(CultureInfo.InvariantCulture, "{0} B", bytes);
+    }
+
+    // ── Backup listing ────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns all <c>.sql</c> and <c>.zip</c> backup files in <paramref name="backupDirectory"/>,
+    /// sorted newest-first. Returns an empty list when the directory does not exist.
+    /// </summary>
+    /// <param name="backupDirectory">Directory to scan for backup files.</param>
+    /// <returns>Ordered list of <see cref="BackupFileInfo"/> records.</returns>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "backupDirectory comes from server-side plugin configuration, not from user HTTP input.")]
+    public static System.Collections.Generic.IReadOnlyList<BackupFileInfo> ListBackups(string backupDirectory)
+    {
+        if (!Directory.Exists(backupDirectory))
+        {
+            return System.Array.Empty<BackupFileInfo>();
+        }
+
+        var files = Directory.GetFiles(backupDirectory)
+            .Where(static f =>
+                f.EndsWith(".sql", StringComparison.OrdinalIgnoreCase) ||
+                f.EndsWith(".sql.zip", StringComparison.OrdinalIgnoreCase) ||
+                f.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+            .Select(static f =>
+            {
+                var info = new FileInfo(f);
+                return new BackupFileInfo(
+                    Name: info.Name,
+                    Path: info.FullName,
+                    SizeBytes: info.Length,
+                    SizeFormatted: FormatBytes(info.Length),
+                    CreatedAtUtc: info.LastWriteTimeUtc);
+            })
+            .OrderByDescending(static b => b.CreatedAtUtc)
+            .ToList();
+
+        return files;
+    }
+
     // ── Backup / Restore (delegates to MaintenanceBackupService) ─────────────
 
     /// <summary>
@@ -249,17 +323,17 @@ public sealed class MaintenanceService
     /// <param name="connectionString">PostgreSQL connection string.</param>
     /// <param name="outputDirectory">Directory where the backup file will be written.</param>
     /// <param name="compress">When <see langword="true"/>, wraps the SQL dump in a ZIP file.</param>
-    /// <param name="pgDumpPath">Optional path to the <c>pg_dump</c> executable.</param>
+    /// <param name="pgBinPath">Optional directory containing pg_dump, psql, etc. Leave null/empty to auto-detect or rely on PATH.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>Absolute path to the created backup file.</returns>
     public Task<string> CreateBackupAsync(
         string connectionString,
         string outputDirectory,
         bool compress,
-        string? pgDumpPath,
+        string? pgBinPath,
         CancellationToken ct = default)
     {
-        return new MaintenanceBackupService(_logger).CreateBackupAsync(connectionString, outputDirectory, compress, pgDumpPath, ct);
+        return new MaintenanceBackupService(_logger).CreateBackupAsync(connectionString, outputDirectory, compress, pgBinPath, ct);
     }
 
     /// <summary>
@@ -268,24 +342,92 @@ public sealed class MaintenanceService
     /// </summary>
     /// <param name="connectionString">PostgreSQL connection string.</param>
     /// <param name="backupFilePath">Path to the <c>.sql</c> or <c>.zip</c> backup file.</param>
-    /// <param name="pgRestorePath">Optional path to the <c>psql</c> executable.</param>
+    /// <param name="pgBinPath">Optional directory containing pg_dump, psql, etc. Leave null/empty to auto-detect or rely on PATH.</param>
     /// <param name="replaceExistingObjects">When <see langword="true"/>, uses <c>--single-transaction</c>.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>Absolute path to the SQL file used for restoration.</returns>
     public Task<string> RestoreBackupAsync(
         string connectionString,
         string backupFilePath,
-        string? pgRestorePath,
+        string? pgBinPath,
         bool replaceExistingObjects,
         CancellationToken ct = default)
     {
-        return new MaintenanceBackupService(_logger).RestoreBackupAsync(connectionString, backupFilePath, pgRestorePath, replaceExistingObjects, ct);
+        return new MaintenanceBackupService(_logger).RestoreBackupAsync(connectionString, backupFilePath, pgBinPath, replaceExistingObjects, ct);
+    }
+
+    // ── Truncate all tables (fresh migration support) ─────────────────────────
+
+    /// <summary>
+    /// Truncates all Jellyfin data tables in PostgreSQL using RESTART IDENTITY CASCADE.
+    /// This is the correct way to prepare PostgreSQL for a clean re-migration from SQLite.
+    /// The schema is preserved — only data is removed.
+    /// </summary>
+    /// <param name="connectionString">PostgreSQL connection string.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Summary with tables affected and row counts before truncation.</returns>
+    public static async Task<TruncateResult> TruncateAllTablesAsync(
+        string connectionString, CancellationToken ct = default)
+    {
+        // FK-safe order: children before parents so CASCADE is not required per-table.
+        // The single TRUNCATE ... CASCADE at the end handles any remaining FK chains.
+        var tables = new[]
+        {
+            "HomeSection", "AccessSchedules", "ImageInfos", "ItemDisplayPreferences",
+            "CustomItemDisplayPreferences", "DisplayPreferences", "Devices", "DeviceOptions",
+            "ApiKeys", "UserData", "Preferences", "Permissions",
+            "PeopleBaseItemMap", "ItemValuesMap", "ItemValues",
+            "MediaSegments", "MediaStreamInfos", "AttachmentStreamInfos",
+            "TrickplayInfos", "KeyframeData", "Chapters",
+            "BaseItemTrailerTypes", "BaseItemMetadataFields", "BaseItemProviders",
+            "BaseItemImageInfos", "AncestorIds", "BaseItems",
+            "Peoples", "ActivityLogs", "Users",
+        };
+
+        using var pg = new NpgsqlConnection(connectionString);
+        await pg.OpenAsync(ct).ConfigureAwait(false);
+
+        // Collect row counts before truncation for the response
+        var rowsBefore = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        foreach (var table in tables)
+        {
+            using var countCmd = CreateCountCommand(pg, table);
+            var count = Convert.ToInt64(
+                await countCmd.ExecuteScalarAsync(ct).ConfigureAwait(false),
+                CultureInfo.InvariantCulture);
+            rowsBefore[table] = count;
+        }
+
+        // Single TRUNCATE with CASCADE — fastest, avoids FK ordering issues
+        using var truncCmd = CreateTruncateAllCommand(pg, tables);
+        await truncCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+        return new TruncateResult(
+            TablesAffected: tables.Length,
+            TotalRowsRemoved: rowsBefore.Values.Sum(),
+            RowCountsBeforeTruncation: rowsBefore);
+    }
+
+    [SuppressMessage("Security", "CA2100", Justification = "Table names are hardcoded constants, not user input.")]
+    private static NpgsqlCommand CreateCountCommand(NpgsqlConnection pg, string table)
+    {
+        var sql = string.Concat("SELECT COUNT(*) FROM public.\"", table, "\";");
+        return new NpgsqlCommand(sql, pg);
+    }
+
+    [SuppressMessage("Security", "CA2100", Justification = "Table names are hardcoded constants, not user input.")]
+    private static NpgsqlCommand CreateTruncateAllCommand(NpgsqlConnection pg, string[] tables)
+    {
+        var tableList = string.Join(",", tables.Select(t => string.Concat("public.\"", t, "\"")));
+        var sql = string.Concat("TRUNCATE TABLE ", tableList, " RESTART IDENTITY CASCADE;");
+        return new NpgsqlCommand(sql, pg) { CommandTimeout = 0 };
     }
 
     // ── Command factory (CA2100) ──────────────────────────────────────────────
 
     // dbName comes from SELECT current_database() — server-controlled, not user input.
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "dbName comes from SELECT current_database(), server-controlled. QuoteIdentifier prevents injection.")]
+    [SuppressMessage("Security", "CA3001:Review code for SQL injection vulnerabilities", Justification = "dbName comes from SELECT current_database(), server-controlled value. QuoteIdentifier sanitizes it.")]
     private static NpgsqlCommand CreateReindexCommand(NpgsqlConnection pg, string dbName)
     {
         var sql = string.Concat("REINDEX DATABASE CONCURRENTLY ", QuoteIdentifier(dbName), ";");

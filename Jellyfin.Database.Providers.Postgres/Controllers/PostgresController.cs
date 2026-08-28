@@ -1,4 +1,4 @@
-﻿// Controller endpoints follow ASP.NET conventions — parameter doc is implicit via model bindings.
+// Controller endpoints follow ASP.NET conventions — parameter doc is implicit via model bindings.
 using System;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
@@ -31,6 +31,8 @@ namespace Jellyfin.Database.Providers.Postgres.Controllers;
 [Authorize(Policy = "RequiresElevation")]
 public class PostgresController : ControllerBase
 {
+    private const string DefaultSchema = "public";
+
     private readonly IApplicationPaths _appPaths;
     private readonly ISystemManager _systemManager;
     private readonly MigrationService _migrationService;
@@ -95,14 +97,13 @@ public class PostgresController : ControllerBase
                 ? FormatBytes(new FileInfo(sqliteDefault).Length)
                 : null,
             SavedConnectionString = config?.ConnectionString,
-            SavedSchema = config?.Schema ?? "public",
+            SavedSchema = config?.Schema ?? DefaultSchema,
             SavedCommandTimeout = config?.CommandTimeout ?? 60,
             SavedBackupDirectory = string.IsNullOrWhiteSpace(config?.BackupDirectory)
                 ? defaultBackupDir
-                : config!.BackupDirectory,
+                : config?.BackupDirectory ?? defaultBackupDir,
             SavedBackupCompression = config?.BackupCompression ?? true,
-            SavedPgDumpPath = config?.PgDumpPath ?? string.Empty,
-            SavedPgRestorePath = config?.PgRestorePath ?? string.Empty,
+            SavedPgBinPath = config?.PgBinPath ?? string.Empty,
             DefaultBackupDirectory = defaultBackupDir,
             MigrationState = config?.MigrationState.ToString() ?? "NotStarted",
             LastMigrationError = config?.LastMigrationError,
@@ -174,14 +175,9 @@ public class PostgresController : ControllerBase
 
         plugin.Configuration.BackupCompression = request.BackupCompression;
 
-        if (request.PgDumpPath is not null)
+        if (request.PgBinPath is not null)
         {
-            plugin.Configuration.PgDumpPath = request.PgDumpPath;
-        }
-
-        if (request.PgRestorePath is not null)
-        {
-            plugin.Configuration.PgRestorePath = request.PgRestorePath;
+            plugin.Configuration.PgBinPath = request.PgBinPath;
         }
 
         plugin.SaveConfiguration();
@@ -358,6 +354,21 @@ public class PostgresController : ControllerBase
         {
             System.IO.File.Delete(configPath);
             _logger.LogInformation("database.xml deleted — Jellyfin will use SQLite on next start.");
+
+            // Log the engine switch prominently so it appears in the plugin log
+            var sqlitePath = Services.ExportToSqliteService.DetectDefaultSqlitePath(_appPaths.DataPath);
+            var sqliteSize = System.IO.File.Exists(sqlitePath)
+                ? $"{new System.IO.FileInfo(sqlitePath).Length / 1_048_576.0:F1} MB"
+                : "(file not found)";
+
+            Logging.PostgresLog.Warn("[ENGINE SWITCH] PostgreSQL → SQLite");
+            Logging.PostgresLog.Warn($"[ENGINE SWITCH] database.xml eliminado — Jellyfin usará SQLite al reiniciar.");
+            Logging.PostgresLog.Warn($"[ENGINE SWITCH] SQLite destino: {sqlitePath} ({sqliteSize})");
+            Logging.PostgresLog.Warn("[ENGINE SWITCH] Reiniciando Jellyfin...");
+        }
+        else
+        {
+            Logging.PostgresLog.Warn("[ENGINE SWITCH] Deactivate llamado pero database.xml no existía.");
         }
 
         _ = Task.Run(async () =>
@@ -372,6 +383,37 @@ public class PostgresController : ControllerBase
     // ─────────────────────────────────────────────────────────────────────────
     // Maintenance
     // ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Truncates all Jellyfin data tables in PostgreSQL (RESTART IDENTITY CASCADE).
+    /// Use before a fresh migration from SQLite to avoid PK conflicts.
+    /// The database schema is preserved — only data is removed.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>200 OK with row counts per table before truncation.</returns>
+    [HttpPost("TruncateAllTables")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<ActionResult<object>> TruncateAllTables(CancellationToken cancellationToken)
+    {
+        var connStr = GetActiveConnectionString();
+        if (connStr is null)
+        {
+            return NoActiveConnection();
+        }
+
+        try
+        {
+            var result = await MaintenanceService.TruncateAllTablesAsync(connStr, cancellationToken)
+                .ConfigureAwait(false);
+            Logging.PostgresLog.Warn($"[Maintenance] TruncateAllTables: {result.TablesAffected} tablas truncadas.");
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "TruncateAllTables failed");
+            return StatusCode(StatusCodes.Status500InternalServerError, new { Error = ex.Message });
+        }
+    }
 
     /// <summary>Returns table size statistics for the PostgreSQL database.</summary>
     /// <param name="schema">PostgreSQL schema to query. Defaults to the configured schema.</param>
@@ -389,13 +431,16 @@ public class PostgresController : ControllerBase
             return NoActiveConnection();
         }
 
-        var effectiveSchema = schema ?? PostgresPlugin.Instance?.Configuration.Schema ?? "public";
+        var effectiveSchema = schema ?? PostgresPlugin.Instance?.Configuration.Schema ?? DefaultSchema;
         var tables = await MaintenanceService.GetTableStatsAsync(connStr, effectiveSchema, cancellationToken)
             .ConfigureAwait(false);
         var dbSize = await MaintenanceService.GetDatabaseSizeAsync(connStr, cancellationToken)
             .ConfigureAwait(false);
         var connCount = await MaintenanceService.GetConnectionCountAsync(connStr, cancellationToken)
             .ConfigureAwait(false);
+
+        Logging.PostgresLog.Warn(
+            $"[Stats] BD: {dbSize} | Conexiones activas: {connCount} | Tablas: {tables.Count} | Schema: {effectiveSchema}");
 
         return Ok(new
         {
@@ -406,10 +451,11 @@ public class PostgresController : ControllerBase
     }
 
     /// <summary>Runs VACUUM ANALYZE on the PostgreSQL database.</summary>
-    /// <returns>202 Accepted — the operation runs in the background.</returns>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>200 OK with duration once the operation completes.</returns>
     [HttpPost("Vacuum")]
-    [ProducesResponseType(StatusCodes.Status202Accepted)]
-    public ActionResult<object> Vacuum()
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<ActionResult<object>> Vacuum(CancellationToken cancellationToken)
     {
         var connStr = GetActiveConnectionString();
         if (connStr is null)
@@ -417,26 +463,28 @@ public class PostgresController : ControllerBase
             return NoActiveConnection();
         }
 
-        _ = Task.Run(async () =>
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try
         {
-            try
-            {
-                await _maintenanceService.VacuumAnalyzeAsync(connStr).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "VACUUM ANALYZE failed");
-            }
-        });
-
-        return Accepted(new { Status = "VACUUM ANALYZE started in background." });
+            await _maintenanceService.VacuumAnalyzeAsync(connStr, cancellationToken).ConfigureAwait(false);
+            sw.Stop();
+            var msg = $"VACUUM ANALYZE completado en {sw.Elapsed.TotalSeconds:F1}s.";
+            return Ok(new { Status = msg, DurationSeconds = sw.Elapsed.TotalSeconds });
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            _logger.LogError(ex, "VACUUM ANALYZE failed");
+            return StatusCode(StatusCodes.Status500InternalServerError, new { Error = ex.Message });
+        }
     }
 
     /// <summary>Runs REINDEX DATABASE on the PostgreSQL database.</summary>
-    /// <returns>202 Accepted — the operation runs in the background.</returns>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>200 OK with duration once the operation completes.</returns>
     [HttpPost("Reindex")]
-    [ProducesResponseType(StatusCodes.Status202Accepted)]
-    public ActionResult<object> Reindex()
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<ActionResult<object>> Reindex(CancellationToken cancellationToken)
     {
         var connStr = GetActiveConnectionString();
         if (connStr is null)
@@ -444,19 +492,77 @@ public class PostgresController : ControllerBase
             return NoActiveConnection();
         }
 
-        _ = Task.Run(async () =>
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try
         {
-            try
-            {
-                await _maintenanceService.ReindexAsync(connStr).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "REINDEX failed");
-            }
-        });
+            await _maintenanceService.ReindexAsync(connStr, cancellationToken).ConfigureAwait(false);
+            sw.Stop();
+            var msg = $"REINDEX DATABASE completado en {sw.Elapsed.TotalSeconds:F1}s.";
+            return Ok(new { Status = msg, DurationSeconds = sw.Elapsed.TotalSeconds });
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            _logger.LogError(ex, "REINDEX DATABASE failed");
+            return StatusCode(StatusCodes.Status500InternalServerError, new { Error = ex.Message });
+        }
+    }
 
-        return Accepted(new { Status = "REINDEX DATABASE started in background." });
+    /// <summary>
+    /// Runs 5 PostgreSQL health diagnostics in parallel and returns a structured
+    /// report with a severity semaphore (Ok / Warn / Error).
+    /// </summary>
+    /// <param name="healthCheckService">Health check service instance.</param>
+    /// <param name="schema">PostgreSQL schema to inspect. Defaults to the configured schema.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Object with overall severity, findings and duration.</returns>
+    [HttpGet("HealthCheck")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<ActionResult<object>> GetHealthCheck(
+        [FromServices] HealthCheckService healthCheckService,
+        [FromQuery] string? schema,
+        CancellationToken cancellationToken)
+    {
+        var connStr = GetActiveConnectionString();
+        if (connStr is null)
+        {
+            return NoActiveConnection();
+        }
+
+        var effectiveSchema = schema ?? PostgresPlugin.Instance?.Configuration.Schema ?? DefaultSchema;
+        var result = await healthCheckService
+            .RunHealthCheckAsync(connStr, effectiveSchema, silent: false, cancellationToken).ConfigureAwait(false);
+
+        return Ok(result);
+    }
+
+    /// <summary>
+    /// Auto-repairs the issues detected by <see cref="GetHealthCheck"/>:
+    /// rebuilds invalid indexes (REINDEX CONCURRENTLY), vacuums bloated tables
+    /// and fixes out-of-sync sequences. Idempotent and safe to call repeatedly.
+    /// </summary>
+    /// <param name="healthCheckService">Health check service instance.</param>
+    /// <param name="schema">PostgreSQL schema to inspect. Defaults to the configured schema.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Object with per-action repair results and overall success.</returns>
+    [HttpPost("HealthCheck/Repair")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<ActionResult<object>> RepairHealthCheck(
+        [FromServices] HealthCheckService healthCheckService,
+        [FromQuery] string? schema,
+        CancellationToken cancellationToken)
+    {
+        var connStr = GetActiveConnectionString();
+        if (connStr is null)
+        {
+            return NoActiveConnection();
+        }
+
+        var effectiveSchema = schema ?? PostgresPlugin.Instance?.Configuration.Schema ?? DefaultSchema;
+        var result = await healthCheckService
+            .RepairAsync(connStr, effectiveSchema, cancellationToken).ConfigureAwait(false);
+
+        return Ok(result);
     }
 
     /// <summary>Creates a PostgreSQL backup file using pg_dump.</summary>
@@ -486,21 +592,24 @@ public class PostgresController : ControllerBase
         }
 
         var compress = request?.Compress ?? config?.BackupCompression ?? true;
-        var pgDumpPath = string.IsNullOrWhiteSpace(request?.PgDumpPath)
-            ? config?.PgDumpPath
-            : request!.PgDumpPath;
+        var pgBinPath = string.IsNullOrWhiteSpace(request?.PgBinPath)
+            ? config?.PgBinPath
+            : request?.PgBinPath;
 
         try
         {
             var backupPath = await _maintenanceService
-                .CreateBackupAsync(connStr, outputDir, compress, pgDumpPath, cancellationToken)
+                .CreateBackupAsync(connStr, outputDir, compress, pgBinPath, cancellationToken)
                 .ConfigureAwait(false);
 
+            var backupSize = GetFileSizeBytes(backupPath);
             return Ok(new
             {
                 Success = true,
                 BackupPath = backupPath,
-                Compressed = compress
+                Compressed = compress,
+                SizeBytes = backupSize,
+                SizeFormatted = MaintenanceService.FormatBytes(backupSize)
             });
         }
         catch (Exception ex)
@@ -512,6 +621,37 @@ public class PostgresController : ControllerBase
                 Error = ex.Message
             });
         }
+    }
+
+    /// <summary>
+    /// Lists all backup files (.sql, .zip) found in the configured backup directory, newest first.
+    /// If <paramref name="directory"/> is provided it overrides the saved configuration.
+    /// </summary>
+    /// <param name="directory">Optional directory override. Defaults to the saved BackupDirectory or the data path.</param>
+    /// <returns>Array of backup file metadata objects.</returns>
+    [HttpGet("ListBackups")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult<object> ListBackups([FromQuery] string? directory = null)
+    {
+        var config = PostgresPlugin.Instance?.Configuration;
+        var dir = directory;
+
+        if (string.IsNullOrWhiteSpace(dir))
+        {
+            dir = config?.BackupDirectory;
+        }
+
+        if (string.IsNullOrWhiteSpace(dir))
+        {
+            dir = Path.Combine(_appPaths.DataPath, "postgres-backups");
+        }
+
+        var files = MaintenanceService.ListBackups(dir);
+        return Ok(new
+        {
+            Directory = dir,
+            Files = files
+        });
     }
 
     /// <summary>Restores a PostgreSQL backup file (.sql or .zip) using psql.</summary>
@@ -534,15 +674,15 @@ public class PostgresController : ControllerBase
         }
 
         var config = PostgresPlugin.Instance?.Configuration;
-        var pgRestorePath = string.IsNullOrWhiteSpace(request.PgRestorePath)
-            ? config?.PgRestorePath
-            : request.PgRestorePath;
+        var pgBinPath = string.IsNullOrWhiteSpace(request.PgBinPath)
+            ? config?.PgBinPath
+            : request.PgBinPath;
         var replaceExistingObjects = request.ReplaceExistingObjects ?? true;
 
         try
         {
             var restoredFrom = await _maintenanceService
-                .RestoreBackupAsync(connStr, request.BackupPath, pgRestorePath, replaceExistingObjects, cancellationToken)
+                .RestoreBackupAsync(connStr, request.BackupPath, pgBinPath, replaceExistingObjects, cancellationToken)
                 .ConfigureAwait(false);
 
             return Ok(new
@@ -603,13 +743,12 @@ public class PostgresController : ControllerBase
 
         var rawPath = string.IsNullOrWhiteSpace(request?.TargetSqlitePath)
             ? ExportToSqliteService.DetectDefaultSqlitePath(_appPaths.DataPath)
-            : request!.TargetSqlitePath;
+            : request?.TargetSqlitePath ?? ExportToSqliteService.DetectDefaultSqlitePath(_appPaths.DataPath);
 
         // Resolve final .db file path: if the user gave a directory, append jellyfin.db.
         var sqlitePath = ResolveExportFilePath(rawPath);
 
         var mode = (request?.OverwriteMode ?? "use").ToLowerInvariant();
-        var nativeDb = ExportToSqliteService.DetectDefaultSqlitePath(_appPaths.DataPath);
 
         if (ValidatedFileExists(sqlitePath))
         {
@@ -846,6 +985,11 @@ public class PostgresController : ControllerBase
             @"(?i)(Password\s*=)[^;]+",
             "$1*****");
     }
+
+    // backupPath is built internally from a trusted output directory + timestamp — not user input (CA3003).
+    [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "backupPath is constructed by CreateBackupAsync from a server-controlled directory and timestamp, not from HTTP input.")]
+    private static long GetFileSizeBytes(string backupPath)
+        => new System.IO.FileInfo(backupPath).Length;
 
     private static string FormatBytes(long bytes)
     {

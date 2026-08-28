@@ -9,6 +9,6 @@ public sealed class BackupRequest
     /// <summary>Gets or sets optional compression override.</summary>
     public bool? Compress { get; set; }
 
-    /// <summary>Gets or sets optional pg_dump path override.</summary>
-    public string? PgDumpPath { get; set; }
+    /// <summary>Gets or sets optional PostgreSQL bin directory override for this request.</summary>
+    public string? PgBinPath { get; set; }
 }

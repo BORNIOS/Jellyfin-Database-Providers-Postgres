@@ -57,12 +57,12 @@ public sealed class InstantSearchService
         limit = Math.Clamp(limit, 1, 50);
         term = term.Trim();
 
-        // Use a dedicated, non-pooled connection so query plans don't compete with EF Core
+        // MaxAutoPrepare=0 prevents plan cache pollution in the shared pool.
+        // Pooling remains ON (default) so TCP+TLS is reused across keystrokes.
         var builder = new NpgsqlConnectionStringBuilder(connectionString)
         {
             MaxAutoPrepare = 0,
-            Pooling = false,
-            CommandTimeout = 5, // hard cap: 5 seconds max for an instant-search query
+            CommandTimeout = 1,
         };
 
         using var conn = new NpgsqlConnection(builder.ConnectionString);
@@ -192,15 +192,7 @@ public sealed class InstantSearchService
             using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
             while (await reader.ReadAsync(ct).ConfigureAwait(false))
             {
-                results.Add(new InstantSearchResult(
-                    Id: reader.GetGuid(0),
-                    Name: await reader.IsDBNullAsync(1, ct).ConfigureAwait(false) ? null : reader.GetString(1),
-                    Type: await reader.IsDBNullAsync(2, ct).ConfigureAwait(false) ? null : reader.GetString(2),
-                    Year: await reader.IsDBNullAsync(3, ct).ConfigureAwait(false) ? null : reader.GetInt32(3),
-                    Artists: await reader.IsDBNullAsync(4, ct).ConfigureAwait(false) ? null : reader.GetString(4),
-                    Album: await reader.IsDBNullAsync(5, ct).ConfigureAwait(false) ? null : reader.GetString(5),
-                    SeriesName: await reader.IsDBNullAsync(6, ct).ConfigureAwait(false) ? null : reader.GetString(6),
-                    Relevance: await reader.IsDBNullAsync(7, ct).ConfigureAwait(false) ? 0.0 : Convert.ToDouble(reader.GetValue(7), CultureInfo.InvariantCulture)));
+                results.Add(await MapRowAsync(reader, ct).ConfigureAwait(false));
             }
         }
         catch (Exception ex)
@@ -210,6 +202,19 @@ public sealed class InstantSearchService
 
         return results;
     }
+
+    private static async Task<InstantSearchResult> MapRowAsync(NpgsqlDataReader reader, CancellationToken ct)
+        => new InstantSearchResult(
+            Id: reader.GetGuid(0),
+            Name: await reader.IsDBNullAsync(1, ct).ConfigureAwait(false) ? null : reader.GetString(1),
+            Type: await reader.IsDBNullAsync(2, ct).ConfigureAwait(false) ? null : reader.GetString(2),
+            Year: await reader.IsDBNullAsync(3, ct).ConfigureAwait(false) ? null : reader.GetInt32(3),
+            Artists: await reader.IsDBNullAsync(4, ct).ConfigureAwait(false) ? null : reader.GetString(4),
+            Album: await reader.IsDBNullAsync(5, ct).ConfigureAwait(false) ? null : reader.GetString(5),
+            SeriesName: await reader.IsDBNullAsync(6, ct).ConfigureAwait(false) ? null : reader.GetString(6),
+            Relevance: await reader.IsDBNullAsync(7, ct).ConfigureAwait(false)
+                ? 0.0
+                : Convert.ToDouble(reader.GetValue(7), CultureInfo.InvariantCulture));
 
     private static string BuildMediaTypeFilter(string? mediaTypes)
     {
