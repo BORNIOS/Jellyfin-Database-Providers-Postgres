@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
     <title>PostgreSQL Database Provider</title>
     <style>
@@ -107,30 +107,95 @@
                 padding-bottom: 8px;
             }
         }
+
+        /* dialog styles are inline on the element itself to guarantee
+           they apply even when Jellyfin discards the plugin <head> */
     </style>
 </head>
 <body>
     <div id="PostgresProviderConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"
          data-require="emby-input,emby-button,emby-checkbox,emby-select">
+
+        <!-- Native HTML5 <dialog> — all styles are inline so they work
+             even when Jellyfin strips the plugin page <head> -->
+        <dialog id="pgNativeDialog" style="
+            background: linear-gradient(160deg, #111935, #0b1020);
+            border: 1px solid rgba(124,146,196,.35);
+            border-radius: 14px;
+            padding: 28px 32px;
+            max-width: 500px;
+            width: calc(100vw - 48px);
+            color: #dbe7ff;
+            box-shadow: 0 32px 80px rgba(0,0,0,.8), 0 0 0 1px rgba(82,132,255,.12);
+        ">
+            <style>
+                #pgNativeDialog::backdrop {
+                    background: rgba(0,0,0,.75);
+                    backdrop-filter: blur(4px);
+                }
+                #pgNativeDialog .pg-dlg-title {
+                    font-size: 1rem;
+                    font-weight: 700;
+                    letter-spacing: .2px;
+                    margin: 0 0 10px;
+                    color: #a0c4ff;
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                }
+                #pgNativeDialog .pg-dlg-title .pg-dlg-icon {
+                    font-size: 1.2rem;
+                }
+                #pgNativeDialog .pg-dlg-separator {
+                    border: none;
+                    border-top: 1px solid rgba(124,146,196,.2);
+                    margin: 0 0 18px;
+                }
+                #pgNativeDialog #pgDlgText {
+                    margin: 0 0 22px;
+                    line-height: 1.65;
+                    font-size: 13.5px;
+                    white-space: pre-line;
+                    color: #c8d8f0;
+                }
+                #pgNativeDialog .pg-dlg-row {
+                    display: flex;
+                    gap: 10px;
+                    flex-wrap: wrap;
+                    justify-content: flex-end;
+                }
+                #pgNativeDialog .pg-dlg-row button {
+                    padding: 9px 20px;
+                    border-radius: 8px;
+                    border: none;
+                    cursor: pointer;
+                    font-size: 13px;
+                    font-weight: 600;
+                    letter-spacing: .2px;
+                    transition: filter .15s, transform .1s;
+                }
+                #pgNativeDialog .pg-dlg-row button:hover  { filter: brightness(1.15); }
+                #pgNativeDialog .pg-dlg-row button:active { transform: scale(.97); }
+            </style>
+            <div class="pg-dlg-title"><span class="pg-dlg-icon" id="pgDlgIcon">⚠️</span><span id="pgDlgTitleText">Confirmar acción</span></div>
+            <hr class="pg-dlg-separator">
+            <p id="pgDlgText"></p>
+            <div class="pg-dlg-row" id="pgDlgActions"></div>
+        </dialog>
+
         <div data-role="content">
             <div class="content-primary" style="background:linear-gradient(180deg,#111935,#0b1020); border:1px solid rgba(144,170,225,.22); border-radius:14px; padding:18px; color:#dbe7ff;">
                 <h1 id="titleMain" style="margin-top:4px; margin-bottom:14px;">PostgreSQL Database Provider</h1>
 
                 <!-- Status banner -->
                 <div id="pgStatusBanner" style="display:none; padding:12px 16px; border-radius:6px; margin-bottom:20px; font-weight:500;"></div>
-                <div id="pgConfirmDialog" style="display:none; padding:14px 16px; border-radius:6px; margin-bottom:20px; background:#1f1f2f; color:#fff; border:1px solid #5c6bc0;">
-                    <div id="pgConfirmText" style="margin-bottom:12px; line-height:1.5;"></div>
-                    <div style="display:flex; gap:10px; flex-wrap:wrap;">
-                        <button is="emby-button" type="button" id="pgConfirmYes" class="raised button-submit"></button>
-                        <button is="emby-button" type="button" id="pgConfirmNo" class="raised button-default"></button>
-                    </div>
-                </div>
 
                 <!-- Tab bar -->
                 <div class="pg-tabbar" style="display:flex; gap:8px; margin-bottom:20px; border-bottom:1px solid rgba(144,170,225,.25); padding-bottom:10px;">
                     <button type="button" class="pg-tab-btn raised emby-button" data-tab="config"      style="border-radius:4px 4px 0 0; padding:8px 18px;">&#9881; Configuracion</button>
                     <button type="button" class="pg-tab-btn raised emby-button" data-tab="migration"   style="border-radius:4px 4px 0 0; padding:8px 18px;">&#128260; Migracion</button>
                     <button type="button" class="pg-tab-btn raised emby-button" data-tab="maintenance" style="border-radius:4px 4px 0 0; padding:8px 18px;">&#128295; Mantenimiento</button>
+                    <button type="button" class="pg-tab-btn raised emby-button" data-tab="health"      style="border-radius:4px 4px 0 0; padding:8px 18px;">&#128138; Health</button>
                 </div>
 
                 <!-- TAB 1: CONFIGURACION -->
@@ -186,12 +251,8 @@
                                 <input is="emby-input" type="text" id="configBackupDirectory" label="Directorio de backup por defecto" autocomplete="off"/>
                             </div>
                             <div class="inputContainer">
-                                <input is="emby-input" type="text" id="configPgDumpPath" label="Ruta de pg_dump (opcional)" autocomplete="off"/>
-                                <div class="fieldDescription" id="configPgDumpHelp">Ruta persistente para backups manuales y tareas programadas.</div>
-                            </div>
-                            <div class="inputContainer">
-                                <input is="emby-input" type="text" id="configPgRestorePath" label="Ruta de psql (opcional)" autocomplete="off"/>
-                                <div class="fieldDescription" id="configPgRestoreHelp">Ruta persistente para restores desde el panel.</div>
+                                <input is="emby-input" type="text" id="configPgBinPath" label="Directorio de binarios PostgreSQL (opcional)" autocomplete="off"/>
+                                <div class="fieldDescription" id="configPgBinHelp">Carpeta que contiene pg_dump, psql, etc. Ej: C:\Program Files\PostgreSQL\17\bin &nbsp;|&nbsp; /usr/lib/postgresql/17/bin &nbsp;|&nbsp; Vacío = auto-detectar</div>
                             </div>
                             <label class="checkboxContainer" style="margin-bottom:0;">
                                 <input is="emby-checkbox" type="checkbox" id="configBackupCompress" checked />
@@ -236,7 +297,19 @@
                             Jellyfin puede seguir corriendo durante la migracion (en modo SQLite).
                         </p>
 
-                        <div id="migrationConfigHint" style="padding:10px 14px; border-radius:6px; background:#1a2a3a; border-left:4px solid #42a5f5; margin-bottom:16px; font-size:13px; color:#90caf9;">
+                        <div style="padding:10px 14px; border-radius:6px; background:#2a1a1a; border-left:4px solid #ef5350; margin-bottom:16px; font-size:13px; color:#ef9a9a;">
+                            &#9888;&#65039; <strong id="truncateHeading">Prepare PostgreSQL for clean migration</strong><br>
+                            <span id="truncateDesc">If PostgreSQL already has previous data (re-migration), clean it first to avoid PK conflicts.</span><br>
+                            <small id="truncateNote">Deletes all data but preserves the schema. Irreversible without a backup.</small>
+                            <div style="margin-top:10px;">
+                                <button is="emby-button" type="button" id="btnTruncatePg" class="raised" style="background:#b71c1c; color:#fff; font-size:12px;">
+                                    &#128465; <span id="btnTruncatePgLabel">Clean PostgreSQL (TRUNCATE ALL)</span>
+                                </button>
+                                <span id="truncateResult" style="margin-left:12px; font-size:12px;"></span>
+                            </div>
+                        </div>
+
+                    <div id="migrationConfigHint" style="padding:10px 14px; border-radius:6px; background:#1a2a3a; border-left:4px solid #42a5f5; margin-bottom:16px; font-size:13px; color:#90caf9;">
                             &#128279; Usa la conexion configurada en la pestana <strong>Configuracion</strong>.
                             Guarda la configuracion antes de iniciar la migracion.
                         </div>
@@ -282,6 +355,42 @@
                             </button>
                         </div>
                     </div>
+
+                    <!-- ── PostgreSQL → SQLite ─────────────────────────────────────────── -->
+                    <div class="verticalSection pg-card" style="background:rgba(18,26,48,.88); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2); margin-bottom:16px;">
+                        <h2 id="exportHeading">Exportar PostgreSQL &rarr; SQLite</h2>
+                        <p class="fieldDescription" id="exportDescription">
+                            Escribe todos los datos de PostgreSQL directamente en un archivo <code>.db</code> de SQLite.
+                            Util para recuperar la base de datos original o revertir a SQLite.
+                        </p>
+                        <div style="padding:10px 14px; border-radius:6px; background:#1a2a3a; border-left:4px solid #42a5f5; margin-bottom:16px; font-size:13px; color:#90caf9;" id="exportHint">
+                            &#128196; Si el archivo <code>.db</code> destino <strong>no existe</strong>, se crea automáticamente con el schema oficial de Jellyfin usando EF Core Migrations.<br>
+                            Si <strong>ya existe</strong>, se te preguntará si deseas sobreescribirlo o hacer un backup (<code>.bkp</code>) antes de continuar.
+                        </div>
+                        <div class="inputContainer">
+                            <input is="emby-input" type="text" id="exportTargetPath" label="Ruta del archivo .db destino" autocomplete="off" spellcheck="false"/>
+                            <div class="fieldDescription" id="exportTargetPathHelp">Se auto-detecta la ruta nativa de Jellyfin. Puedes cambiarla antes de iniciar.</div>
+                        </div>
+                        <button is="emby-button" type="button" id="btnStartExport" class="raised button-default" style="margin-top:8px;">
+                            &#9654; Iniciar exportacion a SQLite
+                        </button>
+                    </div>
+
+                    <div id="exportProgressSection" class="verticalSection pg-card" style="display:none; background:rgba(18,26,48,.88); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2); margin-bottom:16px;">
+                        <h2 id="exportProgressHeading">Progreso de exportacion</h2>
+                        <div style="background:#333; border-radius:4px; height:20px; margin-bottom:8px; overflow:hidden;">
+                            <div id="exportProgressBar"
+                                 style="height:100%; background:linear-gradient(90deg,#1565C0,#42a5f5); border-radius:4px; width:0%; transition:width 0.4s; display:flex; align-items:center; justify-content:center; color:white; font-size:12px; font-weight:bold;">
+                                0%
+                            </div>
+                        </div>
+                        <div id="exportProgressLabel" style="font-size:13px; color:#aaa; margin-bottom:12px;"></div>
+                        <div id="exportLogBox"
+                             style="background:#0d0d0d; color:#80d8ff; font-family:monospace; font-size:12px; padding:12px; border-radius:6px; height:240px; overflow-y:auto; white-space:pre-wrap; border:1px solid #333;">
+                        </div>
+                        <div id="exportResult" style="margin-top:10px; font-size:14px; font-weight:bold;"></div>
+                    </div>
+
                 </div>
 
                 <!-- TAB 3: MANTENIMIENTO -->
@@ -303,19 +412,41 @@
                         </div>
 
                         <div class="pg-card pg-card-muted" style="background:rgba(21,31,57,.7); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2);">
-                            <h3 style="margin-top:0; margin-bottom:10px;" id="backupHeading">Backups PostgreSQL</h3>
-                            <div class="inputContainer">
-                                <input is="emby-input" type="text" id="restoreBackupPath" label="Ruta del backup a restaurar (.sql o .zip)" autocomplete="off"/>
-                            </div>
+                            <h3 style="margin-top:0; margin-bottom:6px;" id="backupHeading">Backups PostgreSQL</h3>
                             <div class="fieldDescription" id="maintenanceConfigHint" style="margin-bottom:10px;">
                                 Esta seccion usa la configuracion persistida en la pestana Configuracion (directorio y rutas de binarios).
                             </div>
-                            <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:8px;">
+
+                            <!-- Crear backup -->
+                            <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px;">
                                 <button is="emby-button" type="button" id="btnCreateBackup" class="raised button-submit">
-                                    &#128190; Crear backup ahora
+                                    &#128190; <span id="btnCreateBackupLabel">Create backup now</span>
                                 </button>
+                            </div>
+
+                            <!-- Selector de backup para restaurar -->
+                            <div style="margin-bottom:8px;">
+                                <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+                                    <label id="backupSelectorLabel" style="font-size:13px; color:#90caf9; flex:1;">Select backup to restore</label>
+                                    <button is="emby-button" type="button" id="btnRefreshBackups" class="raised" style="font-size:11px; padding:4px 10px;">&#8635; <span id="btnRefreshBackupsLabel">Refresh</span></button>
+                                </div>
+                                <select id="backupSelector" style="width:100%; background:#1a1a2e; color:#e0e0e0; border:1px solid #3a3a5a; border-radius:6px; padding:8px 10px; font-size:13px;">
+                                    <option id="backupSelectorEmpty" value="">— no backups found —</option>
+                                </select>
+                                <div id="backupSelectorMeta" style="font-size:11px; color:#888; margin-top:4px;"></div>
+                            </div>
+
+                            <!-- Ruta manual (fallback) -->
+                            <details style="margin-bottom:10px;">
+                                <summary id="backupManualPathSummary" style="font-size:12px; color:#78909c; cursor:pointer;">Manual path (advanced)</summary>
+                                <div class="inputContainer" style="margin-top:6px;">
+                                    <input is="emby-input" type="text" id="restoreBackupPath" label="Backup path (.sql or .zip)" autocomplete="off"/>
+                                </div>
+                            </details>
+
+                            <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:4px;">
                                 <button is="emby-button" type="button" id="btnRestoreBackup" class="raised" style="background:#f57c00; color:#111;">
-                                    &#9851; Restablecer backup
+                                    &#9851; <span id="btnRestoreBackupLabel">Restore backup</span>
                                 </button>
                             </div>
                         </div>
@@ -327,6 +458,23 @@
                             <a id="scheduledTasksLink" href="/web/#/dashboard/tasks" style="color:#81c784; text-decoration:underline; margin-top:6px; display:inline-block;">
                                 Ir a Tareas programadas &#8594;
                             </a>
+                        </div>
+                    </div>
+
+                    <!-- ── Optimizacion de rendimiento ──────────────────────────────── -->
+                    <div class="verticalSection pg-card" style="background:rgba(18,26,48,.88); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2); margin-bottom:16px;">
+                        <h2 id="optHeading">Optimizacion de rendimiento</h2>
+                        <p class="fieldDescription" id="optDescription">Crea indices GIN trigram (pg_trgm) para busqueda instantanea y aplica ajustes de autovacuum en tablas criticas. Idempotente: se puede ejecutar varias veces sin daño.</p>
+
+                        <button is="emby-button" type="button" id="btnApplyOptimizations" class="raised button-submit" style="margin-bottom:12px;">
+                            &#9889; Aplicar optimizaciones
+                        </button>
+
+                        <div id="optResult" style="font-size:13px; margin-bottom:10px;"></div>
+
+                        <div id="optStatusSection" style="display:none;">
+                            <div id="optTrgmBadge" style="display:inline-block; padding:3px 10px; border-radius:12px; font-size:12px; margin-bottom:10px;"></div>
+                            <div id="optIndexList" style="font-size:12px; color:#a0b4d0; line-height:1.8;"></div>
                         </div>
                     </div>
 
@@ -350,6 +498,26 @@
                     </div>
                 </div>
 
+                <!-- TAB 4: HEALTH -->
+                <div id="pg-tab-health" class="pg-tab-content" style="display:none;">
+                    <div class="verticalSection pg-card" style="background:rgba(18,26,48,.88); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2); margin-bottom:16px;">
+                        <h2 id="healthHeading">Salud de la base de datos</h2>
+                        <p class="fieldDescription" id="healthDescription">Diagnostica indices invalidos, bloat, secuencias desincronizadas, estadisticas obsoletas e indices sin uso.</p>
+
+                        <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
+                            <button is="emby-button" type="button" id="btnHealthCheck" class="raised button-default">
+                                &#128138; <span id="btnHealthCheckLabel">Ejecutar Health Check</span>
+                            </button>
+                            <button is="emby-button" type="button" id="btnHealthRepair" class="raised" style="background:#f57c00; color:#111; display:none;">
+                                &#128295; <span id="btnHealthRepairLabel">Auto-repair</span>
+                            </button>
+                        </div>
+
+                        <div id="healthResult" style="font-size:13px; margin-bottom:10px;"></div>
+                        <div id="healthFindings" style="display:none; font-size:12px; line-height:1.8; padding:10px 12px; background:rgba(13,20,38,.55); border-radius:6px;"></div>
+                    </div>
+                </div>
+
             </div><!-- end content-primary -->
         </div><!-- end data-role=content -->
 
@@ -366,6 +534,7 @@
                     tab_config: 'Configuration',
                     tab_migration: 'Migration',
                     tab_maintenance: 'Maintenance',
+                    tab_health: 'Health',
                     heading_status: 'Current status',
                     heading_connection: 'PostgreSQL connection',
                     heading_activate: 'Activate PostgreSQL',
@@ -382,18 +551,45 @@
                     button_vacuum: 'VACUUM ANALYZE',
                     button_reindex: 'REINDEX DATABASE',
                     button_refresh_stats: 'Refresh statistics',
+                    heading_opt: 'Performance optimization',
+                    desc_opt: 'Creates GIN trigram indexes (pg_trgm) for instant search and tunes autovacuum on critical tables. Idempotent — safe to run multiple times.',
+                    button_apply_opt: '\u26A1 Apply optimizations',
+                    msg_opt_running: 'Applying optimizations in background...',
+                    msg_opt_done: 'Optimization job started. GIN indexes may take a few minutes on large databases.',
                     heading_backup: 'PostgreSQL backups',
                     heading_config_backup: 'Backup and restore (persistent configuration)',
                     field_backup_directory: 'Backup directory',
                     field_backup_directory_default: 'Default backup directory',
-                    field_pgdump_path: 'pg_dump path (optional)',
-                    field_pgrestore_path: 'psql path (optional)',
+                    field_pgbin_path: 'PostgreSQL bin directory (optional)',
                     field_restore_backup_path: 'Backup path to restore (.sql or .zip)',
                     label_backup_compress: 'Compress backup as ZIP',
                     label_backup_compress_default: 'Compress backup as ZIP by default',
                     button_create_backup: 'Create backup now',
                     button_restore_backup: 'Restore backup',
+                    backup_selector_label: 'Select backup to restore',
+                    backup_selector_empty: '\u2014 no backups found \u2014',
+                    backup_selector_loading: 'Loading backups...',
+                    backup_manual_path: 'Manual path (advanced)',
+                    button_refresh_backups: 'Refresh',
+                    backup_meta_size: 'Size: ',
+                    backup_meta_date: '  |  Date: ',
+                    msg_backup_done_size: 'Backup created: ',
+                    msg_restore_done_size: 'Restore completed from: ',
                     help_password_mask: 'Only the password is masked. Other fields are visible.',
+                    tab_export: 'Export to SQLite',
+                    heading_export: 'Export PostgreSQL \u2192 SQLite',
+                    desc_export: 'Writes all PostgreSQL data directly into a SQLite <code>.db</code> file. Useful to recover the original database or revert to SQLite.',
+                    hint_export: '&#128196; If the <code>.db</code> file does not exist, it is created from the PostgreSQL schema. If it already exists, its structure is preserved and only the data is replaced.',
+                    field_export_target_path: 'Target .db file path',
+                    help_export_target_path: 'Auto-detected native Jellyfin path. You can change it before starting.',
+                    button_start_export: 'Start export to SQLite',
+                    heading_export_progress: 'Export progress',
+                    msg_export_running: 'Export in progress...',
+                    msg_export_conflict: 'An export is already in progress.',
+                    msg_export_start_error: 'Error starting export: ',
+                    msg_export_done_prefix: 'Export completed: ',
+                    msg_export_table_prefix: 'Current table: ',
+                    msg_export_rows_prefix: 'Exported rows: ',
                     summary_advanced_options: 'Advanced options',
                     help_pool_size: 'Maximum number of connections in the Npgsql pool.',
                     desc_activate: 'When migration is complete, write <code>database.xml</code> and restart Jellyfin.',
@@ -401,12 +597,18 @@
                     hint_use_saved_connection: '&#128279; Use the connection configured in the <strong>Configuration</strong> tab. Save configuration before starting migration.',
                     help_sqlite_path: 'Auto-detected when the file exists in Jellyfin data directory.',
                     label_truncate: 'Truncate tables before insert (--truncate)',
+                    truncate_heading: 'Prepare PostgreSQL for clean migration',
+                    truncate_desc: 'If PostgreSQL already has previous data (re-migration), clean it first to avoid PK conflicts.',
+                    truncate_note: 'Deletes all data but preserves the schema. Irreversible without a backup.',
+                    button_truncate_pg: 'Clean PostgreSQL (TRUNCATE ALL)',
+                    msg_truncate_confirm: 'WARNING: This will delete ALL Jellyfin data in PostgreSQL.\n\nThe schema is preserved. This operation is irreversible without a prior backup.\n\nConfirm you want to clean PostgreSQL?',
+                    msg_truncate_running: 'Cleaning...',
+                    msg_truncate_done: ' tables cleaned.',
+                    msg_truncate_rows: ' rows deleted.',
                     hint_migration_completed_activate: 'Migration completed. You can activate PostgreSQL now.',
                     desc_maintenance_only_active: 'These operations are only available when PostgreSQL is active.',
-                    help_pgdump_path: 'If empty, pg_dump is resolved from system PATH.',
-                    help_pgrestore_path: 'If empty, psql is resolved from system PATH.',
-                    help_config_pgdump_path: 'Persistent path for manual backups and scheduled tasks.',
-                    help_config_pgrestore_path: 'Persistent path for restore operations from the panel.',
+
+                    help_config_pgbin_path: 'Directory containing pg_dump, psql, etc. Example: C:\\Program Files\\PostgreSQL\\17\\bin — Leave empty to auto-detect.',
                     help_maintenance_config_hint: 'This section uses persisted settings from the Configuration tab (directory and binary paths).',
                     hint_scheduled_tasks: '&#128197; These operations are also available as <strong>Jellyfin scheduled tasks</strong> so you can configure automatic execution.',
                     link_scheduled_tasks: 'Go to Scheduled Tasks &#8594;',
@@ -461,13 +663,29 @@
                     msg_connection_prefix: 'Connection: ',
                     msg_db_size_prefix: 'DB size: ',
                     msg_active_connections_prefix: 'Active connections: ',
-                    msg_unknown_error: 'unknown error'
+                    msg_unknown_error: 'unknown error',
+                    heading_health: 'Database health',
+                    desc_health: 'Diagnoses invalid indexes, table bloat, out-of-sync sequences, stale statistics and unused indexes. Read-only.',
+                    button_health_check: 'Run health check',
+                    button_health_repair: 'Auto-repair',
+                    msg_health_running: 'Running health check...',
+                    msg_health_repair_running: 'Repairing database...',
+                    msg_health_repair_done_prefix: 'Auto-repair finished: ',
+                    msg_health_repair_actions_suffix: ' actions (',
+                    msg_health_repair_ok: ' ok, ',
+                    msg_health_repair_failed: ' failed).',
+                    msg_health_findings_suffix: ' finding(s)',
+                    msg_health_repairable_tag: '[auto-repairable]',
+                    health_sev_ok: 'All checks passed',
+                    health_sev_warn: 'Warnings detected',
+                    health_sev_error: 'Critical issues detected'
                 },
                 es: {
                     title_main: 'PostgreSQL Database Provider',
                     tab_config: 'Configuracion',
                     tab_migration: 'Migracion',
                     tab_maintenance: 'Mantenimiento',
+                    tab_health: 'Health',
                     heading_status: 'Estado actual',
                     heading_connection: 'Conexion PostgreSQL',
                     heading_activate: 'Activar PostgreSQL',
@@ -484,17 +702,44 @@
                     button_vacuum: 'VACUUM ANALYZE',
                     button_reindex: 'REINDEX DATABASE',
                     button_refresh_stats: 'Actualizar estadisticas',
+                    heading_opt: 'Optimizacion de rendimiento',
+                    desc_opt: 'Crea indices GIN trigram (pg_trgm) para busqueda instantanea y ajusta autovacuum en tablas criticas. Idempotente: se puede ejecutar varias veces sin daño.',
+                    button_apply_opt: '\u26A1 Aplicar optimizaciones',
+                    msg_opt_running: 'Aplicando optimizaciones en segundo plano...',
+                    msg_opt_done: 'Tarea de optimizacion iniciada. Los indices GIN pueden tardar unos minutos en bases de datos grandes.',
                     heading_backup: 'Backups PostgreSQL',
                     heading_config_backup: 'Backup y Restore (configuracion persistente)',
                     field_backup_directory: 'Directorio de backup',
                     field_backup_directory_default: 'Directorio de backup por defecto',
-                    field_pgdump_path: 'Ruta de pg_dump (opcional)',
-                    field_pgrestore_path: 'Ruta de psql (opcional)',
+                    field_pgbin_path: 'Directorio de binarios PostgreSQL (opcional)',
                     field_restore_backup_path: 'Ruta del backup a restaurar (.sql o .zip)',
                     label_backup_compress: 'Comprimir backup en ZIP',
                     label_backup_compress_default: 'Comprimir backup en ZIP por defecto',
                     button_create_backup: 'Crear backup ahora',
-                    button_restore_backup: 'Restablecer backup',
+                    button_restore_backup: 'Restaurar backup',
+                    backup_selector_label: 'Seleccionar backup a restaurar',
+                    backup_selector_empty: '\u2014 sin backups encontrados \u2014',
+                    backup_selector_loading: 'Cargando backups...',
+                    backup_manual_path: 'Ruta manual (avanzado)',
+                    button_refresh_backups: 'Actualizar',
+                    backup_meta_size: 'Tama\u00F1o: ',
+                    backup_meta_date: '  |  Fecha: ',
+                    msg_backup_done_size: 'Backup creado: ',
+                    msg_restore_done_size: 'Restauraci\u00F3n completada desde: ',
+                    tab_export: 'Exportar a SQLite',
+                    heading_export: 'Exportar PostgreSQL \u2192 SQLite',
+                    desc_export: 'Escribe todos los datos de PostgreSQL directamente en un archivo SQLite <code>.db</code>. Util para recuperar la base de datos original o revertir a SQLite.',
+                    hint_export: '&#128196; Si el archivo <code>.db</code> no existe, se crea con el schema derivado de PostgreSQL. Si ya existe, se respetan las tablas y se reemplaza solo el contenido.',
+                    field_export_target_path: 'Ruta del archivo .db destino',
+                    help_export_target_path: 'Se auto-detecta la ruta nativa de Jellyfin. Puedes cambiarla antes de iniciar.',
+                    button_start_export: 'Iniciar exportacion a SQLite',
+                    heading_export_progress: 'Progreso de exportacion',
+                    msg_export_running: 'Exportacion en progreso...',
+                    msg_export_conflict: 'Ya hay una exportacion en curso.',
+                    msg_export_start_error: 'Error al iniciar exportacion: ',
+                    msg_export_done_prefix: 'Exportacion completada: ',
+                    msg_export_table_prefix: 'Tabla actual: ',
+                    msg_export_rows_prefix: 'Filas exportadas: ',
                     help_password_mask: 'Solo la contrasena se enmascara. El resto de los campos son visibles.',
                     summary_advanced_options: 'Opciones avanzadas',
                     help_pool_size: 'Numero maximo de conexiones en el pool de Npgsql.',
@@ -503,12 +748,18 @@
                     hint_use_saved_connection: '&#128279; Usa la conexion configurada en la pestana <strong>Configuracion</strong>. Guarda la configuracion antes de iniciar la migracion.',
                     help_sqlite_path: 'Se auto-detecta si el archivo existe en el directorio de datos de Jellyfin.',
                     label_truncate: 'Truncar tablas antes de insertar (--truncate)',
+                    truncate_heading: 'Preparar PostgreSQL para migraci\u00F3n limpia',
+                    truncate_desc: 'Si PostgreSQL ya tiene datos previos (re-migraci\u00F3n), l\u00EDmpialo primero para evitar conflictos de PK.',
+                    truncate_note: 'Elimina todos los datos pero conserva el schema. Irreversible sin backup.',
+                    button_truncate_pg: 'Limpiar PostgreSQL (TRUNCATE ALL)',
+                    msg_truncate_confirm: 'ADVERTENCIA: Esto eliminar\u00E1 TODOS los datos de Jellyfin en PostgreSQL.\n\nEl schema se conserva. Esta operaci\u00F3n es irreversible sin un backup previo.\n\n\u00BFConfirmas que quieres limpiar PostgreSQL?',
+                    msg_truncate_running: 'Limpiando...',
+                    msg_truncate_done: ' tablas limpiadas.',
+                    msg_truncate_rows: ' filas eliminadas.',
                     hint_migration_completed_activate: 'Migracion completada. Ahora puedes activar PostgreSQL.',
                     desc_maintenance_only_active: 'Estas operaciones solo estan disponibles cuando PostgreSQL esta activo.',
-                    help_pgdump_path: 'Si se deja vacio, se usa pg_dump desde PATH del sistema.',
-                    help_pgrestore_path: 'Si se deja vacio, se usa psql desde PATH del sistema.',
-                    help_config_pgdump_path: 'Ruta persistente para backups manuales y tareas programadas.',
-                    help_config_pgrestore_path: 'Ruta persistente para restores desde el panel.',
+
+                    help_config_pgbin_path: 'Carpeta con pg_dump, psql, etc. Ej: C:\\Program Files\\PostgreSQL\\17\\bin — Vac\u00EDo = auto-detectar.',
                     help_maintenance_config_hint: 'Esta seccion usa la configuracion persistida en la pestana Configuracion (directorio y rutas de binarios).',
                     hint_scheduled_tasks: '&#128197; Estas operaciones tambien estan registradas como <strong>tareas programadas de Jellyfin</strong> para que puedas configurar su horario automatico.',
                     link_scheduled_tasks: 'Ir a Tareas programadas &#8594;',
@@ -563,7 +814,22 @@
                     msg_connection_prefix: 'Conexion: ',
                     msg_db_size_prefix: 'Tamano de BD: ',
                     msg_active_connections_prefix: 'Conexiones activas: ',
-                    msg_unknown_error: 'error desconocido'
+                    msg_unknown_error: 'error desconocido',
+                    heading_health: 'Salud de la base de datos',
+                    desc_health: 'Diagnostica indices invalidos, bloat, secuencias desincronizadas, estadisticas obsoletas e indices sin uso. Solo lectura.',
+                    button_health_check: 'Ejecutar Health Check',
+                    button_health_repair: 'Auto-repair',
+                    msg_health_running: 'Ejecutando health check...',
+                    msg_health_repair_running: 'Reparando la base de datos...',
+                    msg_health_repair_done_prefix: 'Auto-repair completado: ',
+                    msg_health_repair_actions_suffix: ' acciones (',
+                    msg_health_repair_ok: ' ok, ',
+                    msg_health_repair_failed: ' fallaron).',
+                    msg_health_findings_suffix: ' hallazgo(s)',
+                    msg_health_repairable_tag: '[auto-reparable]',
+                    health_sev_ok: 'Todos los checks pasaron',
+                    health_sev_warn: 'Advertencias detectadas',
+                    health_sev_error: 'Problemas criticos detectados'
                 }
             };
 
@@ -644,10 +910,13 @@
                 setHtml('migrationConfigHint', t('hint_use_saved_connection', '&#128279; Use the connection configured in the <strong>Configuration</strong> tab. Save configuration before starting migration.'));
                 setText('sqlitePathHelp', t('help_sqlite_path', 'Auto-detected when the file exists in Jellyfin data directory.'));
                 setText('truncateLabel', t('label_truncate', 'Truncate tables before insert (--truncate)'));
+                setText('truncateHeading', t('truncate_heading', 'Prepare PostgreSQL for clean migration'));
+                setText('truncateDesc', t('truncate_desc', 'If PostgreSQL already has previous data (re-migration), clean it first to avoid PK conflicts.'));
+                setText('truncateNote', t('truncate_note', 'Deletes all data but preserves the schema. Irreversible without a backup.'));
+                setText('btnTruncatePgLabel', t('button_truncate_pg', 'Clean PostgreSQL (TRUNCATE ALL)'));
                 setText('migrationCompleteHint', t('hint_migration_completed_activate', 'Migration completed. You can activate PostgreSQL now.'));
                 setText('maintenanceDescription', t('desc_maintenance_only_active', 'These operations are only available when PostgreSQL is active.'));
-                setText('configPgDumpHelp', t('help_config_pgdump_path', 'Persistent path for manual backups and scheduled tasks.'));
-                setText('configPgRestoreHelp', t('help_config_pgrestore_path', 'Persistent path for restore operations from the panel.'));
+                setText('configPgBinHelp', t('help_config_pgbin_path', 'Directory containing pg_dump, psql, etc. Leave empty to auto-detect.'));
                 setText('maintenanceConfigHint', t('help_maintenance_config_hint', 'This section uses persisted settings from the Configuration tab (directory and binary paths).'));
                 setHtml('scheduledTasksHintText', t('hint_scheduled_tasks', '&#128197; These operations are also available as <strong>Jellyfin scheduled tasks</strong> so you can configure automatic execution.'));
                 setHtml('scheduledTasksLink', t('link_scheduled_tasks', 'Go to Scheduled Tasks &#8594;'));
@@ -666,8 +935,28 @@
                 setText('btnVacuum', t('button_vacuum', 'VACUUM ANALYZE'));
                 setText('btnReindex', t('button_reindex', 'REINDEX DATABASE'));
                 setText('btnRefreshStats', t('button_refresh_stats', 'Refresh statistics', 'ButtonRefresh'));
-                setText('btnCreateBackup', t('button_create_backup', 'Create backup now'));
-                setText('btnRestoreBackup', t('button_restore_backup', 'Restore backup'));
+                setText('optHeading', t('heading_opt', 'Performance optimization'));
+                setText('optDescription', t('desc_opt', 'Creates GIN trigram indexes (pg_trgm) for instant search and tunes autovacuum on critical tables.'));
+                setText('btnApplyOptimizations', t('button_apply_opt', '\u26A1 Apply optimizations'));
+                setText('healthHeading', t('heading_health', 'Database health'));
+                setText('healthDescription', t('desc_health', 'Diagnoses invalid indexes, table bloat, out-of-sync sequences, stale statistics and unused indexes. Read-only.'));
+                setText('btnHealthCheckLabel', t('button_health_check', 'Run health check'));
+                setText('btnHealthRepairLabel', t('button_health_repair', 'Auto-repair'));
+                setText('btnCreateBackupLabel', t('button_create_backup', 'Create backup now'));
+                setText('btnRestoreBackupLabel', t('button_restore_backup', 'Restore backup'));
+                setText('backupSelectorLabel', t('backup_selector_label', 'Select backup to restore'));
+                setText('backupSelectorEmpty', t('backup_selector_empty', '\u2014 no backups found \u2014'));
+                setText('backupManualPathSummary', t('backup_manual_path', 'Manual path (advanced)'));
+                setText('btnRefreshBackupsLabel', t('button_refresh_backups', 'Refresh'));
+                setInputLabel('restoreBackupPath', t('field_restore_backup_path', 'Backup path (.sql or .zip)'));
+
+                setText('exportHeading', t('heading_export', 'Export PostgreSQL \u2192 SQLite'));
+                setHtml('exportDescription', t('desc_export', 'Writes all PostgreSQL data directly into a SQLite <code>.db</code> file.'));
+                setHtml('exportHint', t('hint_export', '&#128196; If the <code>.db</code> file does not exist, it is created from the PostgreSQL schema. If it already exists, its structure is preserved and only the data is replaced.'));
+                setText('exportProgressHeading', t('heading_export_progress', 'Export progress'));
+                setText('btnStartExport', t('button_start_export', 'Start export to SQLite'));
+                setInputLabel('exportTargetPath', t('field_export_target_path', 'Target .db file path'));
+                setText('exportTargetPathHelp', t('help_export_target_path', 'Auto-detected native Jellyfin path. You can change it before starting.'));
 
                 setInputLabel('pgHost', t('field_host', 'Host', 'LabelHost'));
                 setInputLabel('pgPort', t('field_port', 'Port', 'LabelPort'));
@@ -679,8 +968,7 @@
                 setInputLabel('sqlitePath', t('field_sqlite_path', 'SQLite file path'));
                 setInputLabel('restoreBackupPath', t('field_restore_backup_path', 'Backup path to restore (.sql or .zip)'));
                 setInputLabel('configBackupDirectory', t('field_backup_directory_default', 'Default backup directory'));
-                setInputLabel('configPgDumpPath', t('field_pgdump_path', 'pg_dump path (optional)'));
-                setInputLabel('configPgRestorePath', t('field_pgrestore_path', 'psql path (optional)'));
+                setInputLabel('configPgBinPath', t('field_pgbin_path', 'PostgreSQL bin directory (optional)'));
 
                 var tabs = document.querySelectorAll('.pg-tab-btn');
                 if (tabs.length >= 3) {
@@ -688,7 +976,17 @@
                     tabs[1].innerHTML = '&#128260; ' + t('tab_migration', 'Migration', 'HeaderMigrate');
                     tabs[2].innerHTML = '&#128295; ' + t('tab_maintenance', 'Maintenance', 'HeaderMaintenance');
                 }
-            }
+                if (tabs.length >= 4) {
+                    tabs[3].innerHTML = '&#128138; ' + t('tab_health', 'Health');
+                }
+
+                setText('exportHeading', t('heading_export', 'Export PostgreSQL \u2192 SQLite'));
+                setHtml('exportDescription', t('desc_export', 'Writes all PostgreSQL data directly into a SQLite <code>.db</code> file. Useful to recover the original database or revert to SQLite.'));
+                setHtml('exportHint', t('hint_export', '&#128196; If the <code>.db</code> file does not exist, it is created from the PostgreSQL schema. If it already exists, its structure is preserved and only the data is replaced.'));
+                setText('exportProgressHeading', t('heading_export_progress', 'Export progress'));
+                setText('btnStartExport', t('button_start_export', 'Start export to SQLite'));
+                setInputLabel('exportTargetPath', t('field_export_target_path', 'Target .db file path'));
+                setText('exportTargetPathHelp', t('help_export_target_path', 'Auto-detected native Jellyfin path. You can change it before starting.'));            }
 
             function parseConnStr(s) {
                 var result = {};
@@ -740,7 +1038,33 @@
                     });
                     btn.classList.remove('button-default');
                     btn.classList.add('button-submit');
-                    if (target === 'maintenance') loadStats();
+                    if (target === 'maintenance') { loadStats(); loadBackupList(); }
+                    if (target === 'health') { loadHealthCheck(); }
+                    if (target === 'migration') {
+                        // Pre-fill export target path with the auto-detected native SQLite path
+                        var exportField = document.getElementById('exportTargetPath');
+                        if (exportField && !exportField.value) {
+                            apiGet('/ExportToSqliteDefaultPath')
+                                .then(function(r) { return r.json(); })
+                                .then(function(d) { if (d && d.path) exportField.value = d.path; })
+                                .catch(function() {});
+                        }
+                        // Recover export status if a task is running or just finished
+                        apiGet('/ExportToSqliteProgress')
+                            .then(function(r) { return r.json(); })
+                            .then(function(raw) {
+                                var isRunning   = raw.IsRunning   !== undefined ? raw.IsRunning   : raw.isRunning;
+                                var isCompleted = raw.IsCompleted !== undefined ? raw.IsCompleted : raw.isCompleted;
+                                var hasError    = raw.HasError    !== undefined ? raw.HasError    : raw.hasError;
+                                if (isRunning || isCompleted || hasError) {
+                                    document.getElementById('exportProgressSection').style.display = '';
+                                    document.getElementById('btnStartExport').disabled = !!isRunning;
+                                    updateExportProgress(raw);
+                                    if (isRunning) startExportPoll();
+                                }
+                            })
+                            .catch(function() {});
+                    }
                 });
             });
 
@@ -775,17 +1099,48 @@
                 banner.style.display = 'none';
             }
 
-            function showConfirm(message, onConfirm) {
-                var dialog = document.getElementById('pgConfirmDialog');
-                var text = document.getElementById('pgConfirmText');
-                var yes = document.getElementById('pgConfirmYes');
-                var no = document.getElementById('pgConfirmNo');
-                text.textContent = message;
-                yes.textContent = t('button_confirm', 'Confirm');
-                no.textContent = t('button_cancel', 'Cancel');
-                dialog.style.display = '';
-                yes.onclick = function() { dialog.style.display = 'none'; onConfirm(); };
-                no.onclick = function() { dialog.style.display = 'none'; };
+            // Uses the native HTML5 <dialog> element which works correctly
+            // inside Jellyfin's plugin iframe without needing RequireJS modules.
+            var _dlg     = document.getElementById('pgNativeDialog');
+            var _dlgText = document.getElementById('pgDlgText');
+            var _dlgAct  = document.getElementById('pgDlgActions');
+
+            // Close on backdrop click
+            _dlg.addEventListener('click', function(e) {
+                var r = _dlg.getBoundingClientRect();
+                if (e.clientX < r.left || e.clientX > r.right ||
+                    e.clientY < r.top  || e.clientY > r.bottom) {
+                    _dlg.close('cancel');
+                }
+            });
+
+            // Button palette matching the plugin colour system
+            var DLG_COLORS = {
+                cancel:    'background:rgba(60,72,100,.85);color:#c8d4ee;',
+                confirm:   'background:linear-gradient(135deg,#3a6dd8,#5a8ff0);color:#fff;',
+                danger:    'background:linear-gradient(135deg,#b71c1c,#e53935);color:#fff;',
+                warning:   'background:linear-gradient(135deg,#e65100,#f57c00);color:#fff;',
+                safe:      'background:linear-gradient(135deg,#1b5e20,#388e3c);color:#fff;',
+            };
+
+            function makeDlgBtn(label, colorKey, closeVal) {
+                var b = document.createElement('button');
+                b.textContent = label;
+                b.style.cssText = DLG_COLORS[colorKey] || DLG_COLORS.confirm;
+                b.onclick = function() { _dlg.close(closeVal); };
+                return b;
+            }
+
+            function showConfirm(message, onConfirm, opts) {
+                opts = opts || {};
+                document.getElementById('pgDlgIcon').textContent      = opts.icon  || '\u26a0\ufe0f';
+                document.getElementById('pgDlgTitleText').textContent  = opts.title || t('msg_confirm', 'Confirmar acci\u00f3n');
+                _dlgText.textContent = message;
+                _dlgAct.innerHTML = '';
+                _dlgAct.appendChild(makeDlgBtn(t('button_cancel',  'Cancelar'),  'cancel',  'no'));
+                _dlgAct.appendChild(makeDlgBtn(opts.confirmLabel || t('button_confirm', 'Confirmar'), opts.confirmColor || 'confirm', 'yes'));
+                _dlg.onclose = function() { if (_dlg.returnValue === 'yes') { onConfirm(); } };
+                _dlg.showModal();
             }
 
             function loadStatus() {
@@ -813,7 +1168,7 @@
                     }
 
                     fillFieldsFromConnStr(data.SavedConnectionString);
-                    if (data.SavedCommandTimeout) document.getElementById('pgCommandTimeout').value = data.SavedCommandTimeout;
+                    if (data.SavedCommandTimeout != null) document.getElementById('pgCommandTimeout').value = data.SavedCommandTimeout;
                     if (data.SqliteDefaultPath)    document.getElementById('sqlitePath').value = data.SqliteDefaultPath;
                     if (data.SavedBackupDirectory) {
                         document.getElementById('configBackupDirectory').value = data.SavedBackupDirectory;
@@ -821,11 +1176,8 @@
                     if (typeof data.SavedBackupCompression === 'boolean') {
                         document.getElementById('configBackupCompress').checked = data.SavedBackupCompression;
                     }
-                    if (typeof data.SavedPgDumpPath === 'string') {
-                        document.getElementById('configPgDumpPath').value = data.SavedPgDumpPath;
-                    }
-                    if (typeof data.SavedPgRestorePath === 'string') {
-                        document.getElementById('configPgRestorePath').value = data.SavedPgRestorePath;
+                    if (typeof data.SavedPgBinPath === 'string') {
+                        document.getElementById('configPgBinPath').value = data.SavedPgBinPath;
                     }
 
                     if (data.MigrationState === 'InProgress') {
@@ -862,19 +1214,17 @@
 
             document.getElementById('btnSaveConfig').addEventListener('click', function() {
                 var connStr = buildConnStr();
-                var timeout = parseInt(document.getElementById('pgCommandTimeout').value, 10) || 60;
+                var timeout = parseInt(document.getElementById('pgCommandTimeout').value, 10); if (isNaN(timeout) || timeout < 0) timeout = 60;
                 var backupDirectory = document.getElementById('configBackupDirectory').value.trim();
                 var backupCompression = !!document.getElementById('configBackupCompress').checked;
-                var pgDumpPath = document.getElementById('configPgDumpPath').value.trim();
-                var pgRestorePath = document.getElementById('configPgRestorePath').value.trim();
+                var pgBinPath = document.getElementById('configPgBinPath').value.trim();
                 if (!document.getElementById('pgHost').value.trim()) { showBanner(t('msg_enter_host', 'Enter the PostgreSQL host.'), 'error'); return; }
                 apiPost('/SaveConfig', {
                     connectionString: connStr,
                     commandTimeout: timeout,
                     backupDirectory: backupDirectory,
                     backupCompression: backupCompression,
-                    pgDumpPath: pgDumpPath,
-                    pgRestorePath: pgRestorePath
+                    pgBinPath: pgBinPath
                 })
                     .then(function(r) { return r.json(); })
                     .then(function(data) {
@@ -891,7 +1241,7 @@
                 var resultEl = document.getElementById('activateResult');
                 if (!document.getElementById('pgHost').value.trim()) { showBanner(t('msg_enter_connection_first', 'Complete the connection details in the Configuration tab.'), 'error'); return; }
                 resultEl.textContent = t('msg_activating', 'Activating...');
-                apiPost('/Activate', { connectionString: connStr, commandTimeout: timeout || 60 })
+                apiPost('/Activate', { connectionString: connStr, commandTimeout: (isNaN(timeout) || timeout < 0) ? 60 : timeout })
                     .then(function(r) { return r.json(); })
                     .then(function(data) {
                         resultEl.innerHTML = '&#10003; ' + escapeHtml(data.Status || data.Error);
@@ -900,26 +1250,59 @@
             }
 
             function askActivate(timeout) {
-                showConfirm(t('msg_activate_restart_confirm', 'This will write database.xml and restart Jellyfin. Continue?'), function() {
-                    doActivate(timeout);
-                });
+                showConfirm(
+                    t('msg_activate_restart_confirm', 'Esto escribirá database.xml y reiniciará Jellyfin. ¿Continuar?'),
+                    function() { doActivate(timeout); },
+                    { icon: '\uD83D\uDE80', title: t('heading_activate', 'Activar PostgreSQL'), confirmLabel: t('button_activate', 'Activar y reiniciar'), confirmColor: 'safe' }
+                );
             }
 
             function askDeactivate() {
-                showConfirm(t('msg_deactivate_confirm', 'This will remove database.xml and switch back to SQLite. Continue?'), function() {
-                    apiPost('/Deactivate', {}).then(function(r) { return r.json(); })
-                        .then(function(data) { showBanner(data.Status || data.Error, 'info'); })
-                        .catch(function(err) { showBanner('Error: ' + err, 'error'); });
-                });
+                showConfirm(
+                    t('msg_deactivate_confirm', 'Esto eliminará database.xml y revertirá a SQLite. ¿Continuar?'),
+                    function() {
+                        apiPost('/Deactivate', {}).then(function(r) { return r.json(); })
+                            .then(function(data) { showBanner(data.Status || data.Error, 'info'); })
+                            .catch(function(err) { showBanner('Error: ' + err, 'error'); });
+                    },
+                    { icon: '\u21A9\uFE0F', title: t('button_deactivate', 'Revertir a SQLite'), confirmLabel: t('button_deactivate', 'Revertir y reiniciar'), confirmColor: 'warning' }
+                );
             }
 
             document.getElementById('btnActivate').addEventListener('click', function() {
-                askActivate(parseInt(document.getElementById('pgCommandTimeout').value, 10) || 60);
+                var t0 = parseInt(document.getElementById('pgCommandTimeout').value, 10); askActivate(isNaN(t0) || t0 < 0 ? 60 : t0);
             });
             document.getElementById('btnActivateAfterMigration').addEventListener('click', function() {
-                askActivate(parseInt(document.getElementById('pgCommandTimeout').value, 10) || 60);
+                var t1 = parseInt(document.getElementById('pgCommandTimeout').value, 10); askActivate(isNaN(t1) || t1 < 0 ? 60 : t1);
             });
             document.getElementById('btnDeactivate').addEventListener('click', askDeactivate);
+
+            document.getElementById('btnTruncatePg').addEventListener('click', function() {
+                var r = document.getElementById('truncateResult');
+                showConfirm(
+                    t('msg_truncate_confirm', 'Esto eliminará TODOS los datos de Jellyfin en PostgreSQL.\n\nEl schema se conserva. Operación irreversible sin backup previo.\n\n¿Confirmar limpieza?'),
+                    function() {
+                        r.style.color = '#f3c969';
+                        r.textContent = t('msg_truncate_running', 'Cleaning...');
+                        apiPost('/TruncateAllTables', {})
+                            .then(function(resp) { return resp.json(); })
+                            .then(function(d) {
+                                if (d.Error) {
+                                    r.style.color = '#ff7070';
+                                    r.textContent = '\u274C Error: ' + d.Error;
+                                } else {
+                                    r.style.color = '#81c784';
+                                    r.textContent = '\u2713 ' + d.TablesAffected + t('msg_truncate_done', ' tables cleaned.') + ' ' + (d.TotalRowsRemoved || 0).toLocaleString() + t('msg_truncate_rows', ' rows deleted.');
+                                }
+                            })
+                            .catch(function(e) {
+                                r.style.color = '#ff7070';
+                                r.textContent = '\u274C Error: ' + e;
+                            });
+                    },
+                    { icon: '\uD83D\uDDD1\uFE0F', title: t('truncate_heading', 'Limpiar PostgreSQL'), confirmLabel: t('button_truncate_pg', 'Limpiar (TRUNCATE ALL)'), confirmColor: 'danger' }
+                );
+            });
 
             document.getElementById('btnStartMigration').addEventListener('click', function() {
                 var sqlitePath = document.getElementById('sqlitePath').value.trim();
@@ -972,8 +1355,13 @@
             }
 
             function loadStats() {
-                apiGet('/Stats?schema=public').then(function(r) { return r.json(); }).then(function(data) {
-                    if (data.Error) { document.getElementById('maintenanceResult').textContent = data.Error; return; }
+                var r = document.getElementById('maintenanceResult');
+                return apiGet('/Stats?schema=public').then(function(resp) { return resp.json(); }).then(function(data) {
+                    if (data.Error) {
+                        r.style.color = '#ff7070';
+                        r.textContent = '\u274C ' + data.Error;
+                        return;
+                    }
                     document.getElementById('statsSection').style.display = '';
                     document.getElementById('dbOverview').innerHTML =
                         escapeHtml(t('msg_db_size_prefix', 'DB size: ')) + '<strong>' + escapeHtml(data.DatabaseSize) + '</strong> &nbsp;|&nbsp; ' + escapeHtml(t('msg_active_connections_prefix', 'Active connections: ')) + '<strong>' + data.ActiveConnections + '</strong>';
@@ -990,73 +1378,554 @@
                             '<td style="padding:6px 12px; text-align:right;">' + escapeHtml(row.IndexSize)  + '</td>';
                         tbody.appendChild(tr);
                     });
-                }).catch(function(err) { document.getElementById('maintenanceResult').textContent = 'Error: ' + err; });
+                    r.style.color = '#81c784';
+                    r.textContent = '\u2713 Estad\u00EDsticas actualizadas (' + (data.Tables || []).length + ' tablas)';
+                }).catch(function(err) {
+                    r.style.color = '#ff7070';
+                    r.textContent = '\u274C Error: ' + err;
+                });
             }
 
-            document.getElementById('btnRefreshStats').addEventListener('click', loadStats);
+            document.getElementById('btnRefreshStats').addEventListener('click', function() {
+                var r = document.getElementById('maintenanceResult');
+                r.style.color = '#90caf9';
+                r.textContent = '\uD83D\uDCCA Actualizando estad\u00EDsticas...';
+                loadStats();
+            });
+
             document.getElementById('btnVacuum').addEventListener('click', function() {
                 var r = document.getElementById('maintenanceResult');
-                r.textContent = t('msg_vacuum_running', 'Running VACUUM ANALYZE in background...');
-                apiPost('/Vacuum', {}).then(function(resp) { return resp.json(); })
-                    .then(function(d) { r.textContent = d.Status || d.Error; })
-                    .catch(function(e) { r.textContent = 'Error: ' + e; });
+                var btn = document.getElementById('btnVacuum');
+                r.style.color = '#f3c969';
+                r.textContent = '\u23F3 VACUUM ANALYZE ejecut\u00E1ndose... (puede tardar varios segundos)';
+                btn.disabled = true;
+                apiPost('/Vacuum', {})
+                    .then(function(resp) { return resp.json(); })
+                    .then(function(d) {
+                        if (d.Error) {
+                            r.style.color = '#ff7070';
+                            r.textContent = '\u274C Error: ' + d.Error;
+                        } else {
+                            r.style.color = '#81c784';
+                            r.textContent = '\u2713 ' + (d.Status || d.status);
+                        }
+                        btn.disabled = false;
+                    })
+                    .catch(function(e) {
+                        r.style.color = '#ff7070';
+                        r.textContent = 'Error: ' + e;
+                        btn.disabled = false;
+                    });
             });
+
             document.getElementById('btnReindex').addEventListener('click', function() {
                 var r = document.getElementById('maintenanceResult');
-                showConfirm(t('msg_reindex_confirm', 'REINDEX may take several minutes. Continue?'), function() {
-                    r.textContent = t('msg_reindex_running', 'Running REINDEX in background...');
-                    apiPost('/Reindex', {}).then(function(resp) { return resp.json(); })
-                        .then(function(d) { r.textContent = d.Status || d.Error; })
-                        .catch(function(e) { r.textContent = 'Error: ' + e; });
-                });
+                var btn = document.getElementById('btnReindex');
+                showConfirm(t('msg_reindex_confirm', 'REINDEX puede tardar varios minutos. ¿Continuar?'), function() {
+                    r.style.color = '#f3c969';
+                    r.textContent = '\u23F3 REINDEX DATABASE ejecut\u00E1ndose... (puede tardar varios minutos)';
+                    btn.disabled = true;
+                    apiPost('/Reindex', {})
+                        .then(function(resp) { return resp.json(); })
+                        .then(function(d) {
+                            if (d.Error) {
+                                r.style.color = '#ff7070';
+                                r.textContent = '\u274C Error: ' + d.Error;
+                            } else {
+                                r.style.color = '#81c784';
+                                r.textContent = '\u2713 ' + (d.Status || d.status);
+                            }
+                            btn.disabled = false;
+                        })
+                        .catch(function(e) {
+                            r.style.color = '#ff7070';
+                            r.textContent = 'Error: ' + e;
+                            btn.disabled = false;
+                        });
+                    },
+                    { icon: '\uD83D\uDD0D', title: 'REINDEX DATABASE', confirmLabel: 'Iniciar REINDEX', confirmColor: 'confirm' }
+                );
             });
+
+            // ── Backup list ──────────────────────────────────────────────────
+            var _backupFiles = [];
+
+            function loadBackupList() {
+                var sel = document.getElementById('backupSelector');
+                var meta = document.getElementById('backupSelectorMeta');
+                sel.innerHTML = '<option value="">' + t('backup_selector_loading', 'Loading backups...') + '</option>';
+                meta.textContent = '';
+
+                apiGet('/ListBackups')
+                    .then(function(resp) { return resp.json(); })
+                    .then(function(data) {
+                        _backupFiles = data.Files || data.files || [];
+                        sel.innerHTML = '';
+
+                        if (_backupFiles.length === 0) {
+                            sel.innerHTML = '<option value="">' + t('backup_selector_empty', '\u2014 no backups found \u2014') + '</option>';
+                            meta.textContent = (data.Directory || data.directory || '');
+                            return;
+                        }
+
+                        _backupFiles.forEach(function(f, i) {
+                            var opt = document.createElement('option');
+                            var name = f.Name || f.name || '';
+                            var size = f.SizeFormatted || f.sizeFormatted || '';
+                            var date = f.CreatedAtUtc || f.createdAtUtc || '';
+                            var dateStr = date ? new Date(date).toLocaleString() : '';
+                            opt.value = i;
+                            opt.textContent = name + '  \u2014  ' + size + (dateStr ? '  \u2014  ' + dateStr : '');
+                            sel.appendChild(opt);
+                        });
+
+                        // Show first item meta
+                        updateBackupMeta();
+                        meta.style.color = '#78909c';
+                        meta.textContent = (data.Directory || data.directory || '');
+                    })
+                    .catch(function(e) {
+                        sel.innerHTML = '<option value="">' + t('backup_selector_empty', '\u2014 no backups found \u2014') + '</option>';
+                        meta.style.color = '#ff7070';
+                        meta.textContent = 'Error: ' + e;
+                    });
+            }
+
+            function updateBackupMeta() {
+                var sel = document.getElementById('backupSelector');
+                var meta = document.getElementById('backupSelectorMeta');
+                var idx = parseInt(sel.value, 10);
+                if (isNaN(idx) || !_backupFiles[idx]) { return; }
+                var f = _backupFiles[idx];
+                var size = f.SizeFormatted || f.sizeFormatted || '';
+                var date = f.CreatedAtUtc || f.createdAtUtc || '';
+                var dateStr = date ? new Date(date).toLocaleString() : '';
+                var path = f.Path || f.path || '';
+                meta.style.color = '#78909c';
+                meta.textContent = t('backup_meta_size', 'Size: ') + size + (dateStr ? t('backup_meta_date', '  |  Date: ') + dateStr : '') + '\n' + path;
+            }
+
+            function getSelectedBackupPath() {
+                var sel = document.getElementById('backupSelector');
+                var manual = document.getElementById('restoreBackupPath').value.trim();
+                if (manual) { return manual; }
+                var idx = parseInt(sel.value, 10);
+                if (!isNaN(idx) && _backupFiles[idx]) {
+                    return _backupFiles[idx].Path || _backupFiles[idx].path || '';
+                }
+                return '';
+            }
+
+            document.getElementById('backupSelector').addEventListener('change', updateBackupMeta);
+            document.getElementById('btnRefreshBackups').addEventListener('click', loadBackupList);
 
             document.getElementById('btnCreateBackup').addEventListener('click', function() {
                 var r = document.getElementById('maintenanceResult');
+                var btn = document.getElementById('btnCreateBackup');
+                r.style.color = '#f3c969';
                 r.textContent = t('msg_backup_running', 'Creating backup...');
-                apiPost('/Backup', {}).then(function(resp) { return resp.json(); })
+                btn.disabled = true;
+                apiPost('/Backup', {})
+                    .then(function(resp) { return resp.json(); })
                     .then(function(d) {
                         if (d.Success) {
-                            r.textContent = t('msg_backup_done_prefix', 'Backup created: ') + (d.BackupPath || '');
+                            r.style.color = '#81c784';
+                            var size = d.SizeFormatted || d.sizeFormatted || '';
+                            r.textContent = '\u2713 ' + t('msg_backup_done_size', 'Backup created: ') + (d.BackupPath || '') + (size ? '  (' + size + ')' : '');
+                            loadBackupList(); // refresh selector automatically
                         } else {
-                            r.textContent = t('msg_backup_error_prefix', 'Backup failed: ') + (d.Error || t('msg_unknown_error', 'unknown error'));
+                            r.style.color = '#ff7070';
+                            r.textContent = '\u274C ' + t('msg_backup_error_prefix', 'Backup failed: ') + (d.Error || t('msg_unknown_error', 'unknown error'));
                         }
+                        btn.disabled = false;
                     })
-                    .catch(function(e) { r.textContent = t('msg_backup_error_prefix', 'Backup failed: ') + e; });
+                    .catch(function(e) {
+                        r.style.color = '#ff7070';
+                        r.textContent = '\u274C ' + t('msg_backup_error_prefix', 'Backup failed: ') + e;
+                        btn.disabled = false;
+                    });
             });
 
             document.getElementById('btnRestoreBackup').addEventListener('click', function() {
                 var r = document.getElementById('maintenanceResult');
-                var backupPath = document.getElementById('restoreBackupPath').value.trim();
-                var pgRestorePath = document.getElementById('configPgRestorePath').value.trim();
+                var backupPath = getSelectedBackupPath();
 
                 if (!backupPath) {
-                    r.textContent = t('msg_restore_path_required', 'Enter the backup path to restore.');
+                    r.style.color = '#f3c969';
+                    r.textContent = t('msg_restore_path_required', 'Select or enter a backup path to restore.');
                     return;
                 }
 
-                showConfirm(t('msg_restore_confirm', 'This will restore data into PostgreSQL and may overwrite current data. Continue?'), function() {
+                showConfirm(
+                    t('msg_restore_confirm', 'Esto restaurará datos en PostgreSQL y puede sobrescribir el contenido actual. ¿Continuar?'),
+                    function() {
+                    var btn = document.getElementById('btnRestoreBackup');
+                    r.style.color = '#f3c969';
                     r.textContent = t('msg_restore_running', 'Restoring backup...');
+                    btn.disabled = true;
                     apiPost('/RestoreBackup', {
                         backupPath: backupPath,
-                        pgRestorePath: pgRestorePath,
+                        pgBinPath: document.getElementById('configPgBinPath').value.trim(),
                         replaceExistingObjects: true
                     }).then(function(resp) { return resp.json(); })
                         .then(function(d) {
                             if (d.Success) {
-                                r.textContent = t('msg_restore_done_prefix', 'Restore completed from: ') + (d.RestoredFrom || backupPath);
+                                r.style.color = '#81c784';
+                                r.textContent = '\u2713 ' + t('msg_restore_done_size', 'Restore completed from: ') + (d.RestoredFrom || backupPath);
                             } else {
-                                r.textContent = t('msg_restore_error_prefix', 'Restore failed: ') + (d.Error || t('msg_unknown_error', 'unknown error'));
+                                r.style.color = '#ff7070';
+                                r.textContent = '\u274C ' + t('msg_restore_error_prefix', 'Restore failed: ') + (d.Error || t('msg_unknown_error', 'unknown error'));
                             }
+                            btn.disabled = false;
                         })
-                        .catch(function(e) { r.textContent = t('msg_restore_error_prefix', 'Restore failed: ') + e; });
-                });
+                        .catch(function(e) {
+                            r.style.color = '#ff7070';
+                            r.textContent = '\u274C ' + t('msg_restore_error_prefix', 'Restore failed: ') + e;
+                            btn.disabled = false;
+                        });
+                    },
+                    { icon: '\u267B\uFE0F', title: t('heading_backup', 'Restaurar backup'), confirmLabel: t('button_restore_backup', 'Restaurar'), confirmColor: 'warning' }
+                );
             });
 
             function escapeHtml(str) {
                 if (!str) return '';
                 return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
             }
+
+            // ── Performance Optimization ──────────────────────────────────────
+            function loadOptimizationStatus() {
+                apiGet('/OptimizationStatus')
+                    .then(function(r) { return r.json(); })
+                    .then(function(d) {
+                        var section = document.getElementById('optStatusSection');
+                        var badge   = document.getElementById('optTrgmBadge');
+                        var list    = document.getElementById('optIndexList');
+                        section.style.display = '';
+                        // cover both camelCase (System.Text.Json) and PascalCase serializers
+                        var trgmOk = !!(d.trgmAvailable != null ? d.trgmAvailable : d.TrgmAvailable);
+                        if (trgmOk) {
+                            badge.style.background = '#1b3a1b';
+                            badge.style.color       = '#81c784';
+                            badge.style.border      = '1px solid #388e3c';
+                            badge.textContent       = '\u2713 pg_trgm disponible';
+                        } else {
+                            badge.style.background = '#3a1b1b';
+                            badge.style.color       = '#e57373';
+                            badge.style.border      = '1px solid #c62828';
+                            badge.textContent       = '\u2717 pg_trgm no disponible';
+                        }
+                        var html = '';
+                        var indexes = d.ginIndexes != null ? d.ginIndexes : d.GinIndexes;
+                        if (Array.isArray(indexes)) {
+                            indexes.forEach(function(idx) {
+                                // GinIndexInfo.IsValid — handle both casings
+                                var valid = idx.isValid != null ? idx.isValid : idx.IsValid;
+                                var name  = idx.indexName != null ? idx.indexName : idx.IndexName;
+                                html += '<span style="color:' + (valid ? '#81c784' : '#ef9a9a') + '">'
+                                      + (valid ? '\u2713' : '\u2717') + ' '
+                                      + escapeHtml(name) + '</span><br>';
+                            });
+                        }
+                        list.innerHTML = html;
+                    })
+                    .catch(function() {});
+            }
+
+            document.getElementById('btnApplyOptimizations').addEventListener('click', function() {
+                var r = document.getElementById('optResult');
+                r.style.color   = '#a0c4ff';
+                r.textContent   = t('msg_opt_running', 'Applying optimizations in background...');
+                document.getElementById('btnApplyOptimizations').disabled = true;
+                apiPost('/ApplyOptimizations', {})
+                    .then(function(resp) { return resp.json(); })
+                    .then(function(d) {
+                        r.style.color = '#81c784';
+                        r.textContent = t('msg_opt_done', 'Optimization job started. GIN indexes may take a few minutes on large databases.');
+                        // Poll until pg_trgm is confirmed available (max ~60 s)
+                        var attempts = 0;
+                        function pollUntilReady() {
+                            attempts++;
+                            loadOptimizationStatus();
+                            if (attempts < 12) { setTimeout(pollUntilReady, 5000); }
+                        }
+                        setTimeout(pollUntilReady, 3000);
+                    })
+                    .catch(function(e) {
+                        r.style.color = '#ef9a9a';
+                        r.textContent = 'Error: ' + e;
+                    })
+                    .finally(function() {
+                        document.getElementById('btnApplyOptimizations').disabled = false;
+                    });
+            });
+
+            // ── Export to SQLite ──────────────────────────────────────────────
+            var exportPollTimer = null;
+
+            function stopExportPoll() {
+                if (exportPollTimer) { clearInterval(exportPollTimer); exportPollTimer = null; }
+            }
+
+            function updateExportProgress(raw) {
+                // Normalize PascalCase → camelCase (ASP.NET default serialization)
+                var d = {
+                    isRunning:        raw.IsRunning        !== undefined ? raw.IsRunning        : raw.isRunning,
+                    isCompleted:      raw.IsCompleted      !== undefined ? raw.IsCompleted      : raw.isCompleted,
+                    hasError:         raw.HasError         !== undefined ? raw.HasError         : raw.hasError,
+                    percentComplete:  raw.PercentComplete  !== undefined ? raw.PercentComplete  : raw.percentComplete,
+                    currentTable:     raw.CurrentTable     !== undefined ? raw.CurrentTable     : raw.currentTable,
+                    exportedRows:     raw.ExportedRows     !== undefined ? raw.ExportedRows     : raw.exportedRows,
+                    totalRows:        raw.TotalRows        !== undefined ? raw.TotalRows        : raw.totalRows,
+                    logLines:         raw.LogLines         !== undefined ? raw.LogLines         : raw.logLines,
+                    targetSqlitePath: raw.TargetSqlitePath !== undefined ? raw.TargetSqlitePath : raw.targetSqlitePath,
+                    errorMessage:     raw.ErrorMessage     !== undefined ? raw.ErrorMessage     : raw.errorMessage
+                };
+
+                var bar   = document.getElementById('exportProgressBar');
+                var label = document.getElementById('exportProgressLabel');
+                var log   = document.getElementById('exportLogBox');
+                var res   = document.getElementById('exportResult');
+
+                var pct = d.percentComplete || 0;
+                bar.style.width = pct + '%';
+                bar.textContent = pct + '%';
+
+                var labelParts = [];
+                if (d.currentTable) labelParts.push(t('msg_export_table_prefix', 'Current table: ') + d.currentTable);
+                if (d.totalRows > 0) labelParts.push(t('msg_export_rows_prefix', 'Exported rows: ') + (d.exportedRows || 0).toLocaleString() + ' / ' + (d.totalRows || 0).toLocaleString());
+                label.textContent = labelParts.join('   ');
+
+                if (d.logLines && d.logLines.length) {
+                    log.textContent = d.logLines.join('\n');
+                    log.scrollTop = log.scrollHeight;
+                }
+
+                if (!d.isRunning && d.isCompleted && !d.hasError) {
+                    stopExportPoll();
+                    res.style.color = '#6bc47f';
+                    res.textContent = t('msg_export_done_prefix', 'Export completed: ') + (d.targetSqlitePath || '');
+                    document.getElementById('btnStartExport').disabled = false;
+                }
+
+                if (!d.isRunning && d.hasError) {
+                    stopExportPoll();
+                    res.style.color = '#ff7070';
+                    res.textContent = 'Error: ' + (d.errorMessage || '');
+                    document.getElementById('btnStartExport').disabled = false;
+                }
+            }
+
+            function startExportPoll() {
+                stopExportPoll();
+                exportPollTimer = setInterval(function() {
+                    apiGet('/ExportToSqliteProgress')
+                        .then(function(r) { return r.json(); })
+                        .then(function(d) { updateExportProgress(d); })
+                        .catch(function() {});
+                }, 1500);
+            }
+
+            document.getElementById('btnStartExport').addEventListener('click', function() {
+                var targetPath = document.getElementById('exportTargetPath').value.trim();
+                var res = document.getElementById('exportResult');
+                res.textContent = '';
+
+                function doExport(overwriteMode) {
+
+                    var bar = document.getElementById('exportProgressBar');
+                    bar.style.width = '0%'; bar.textContent = '0%';
+                    document.getElementById('exportProgressLabel').textContent = t('msg_export_running', 'Export in progress...');
+                    document.getElementById('exportLogBox').textContent = '';
+                    document.getElementById('exportProgressSection').style.display = '';
+                    document.getElementById('btnStartExport').disabled = true;
+
+                    apiPost('/StartExportToSqlite', { targetSqlitePath: targetPath || null, overwriteMode: overwriteMode })
+                        .then(function(resp) {
+                            if (resp.status === 409) {
+                                res.style.color = '#f3c969';
+                                res.textContent = t('msg_export_conflict', 'An export is already in progress.');
+                                document.getElementById('btnStartExport').disabled = false;
+                                startExportPoll();
+                                return null;
+                            }
+                            if (resp.status === 400) {
+                                return resp.json().then(function(d) {
+                                    res.style.color = '#ff7070';
+                                    res.textContent = 'Error: ' + (d.Error || d.error || 'Bad request');
+                                    document.getElementById('btnStartExport').disabled = false;
+                                    return null;
+                                });
+                            }
+                            return resp.json();
+                        })
+                        .then(function(d) {
+                            if (d && d.targetSqlitePath) {
+                                document.getElementById('exportTargetPath').value = d.targetSqlitePath;
+                            }
+                            if (d && (d.Status || d.status || d.TargetSqlitePath || d.targetSqlitePath)) startExportPoll();
+                        })
+                        .catch(function(e) {
+                            res.style.color = '#ff7070';
+                            res.textContent = t('msg_export_start_error', 'Error starting export: ') + e;
+                            document.getElementById('btnStartExport').disabled = false;
+                        });
+                }
+
+                // Step 1: check if a previous export is running
+                apiGet('/ExportToSqliteProgress')
+                    .then(function(r) { return r.json(); })
+                    .then(function(prog) {
+                        var isRunning = prog.IsRunning !== undefined ? prog.IsRunning : prog.isRunning;
+                        if (isRunning) {
+                            res.style.color = '#f3c969';
+                            res.textContent = t('msg_export_conflict', 'An export is already in progress.');
+                            startExportPoll();
+                            return;
+                        }
+
+                        // Step 2: ask the server if the target file already exists
+                        var checkUrl = '/CheckExportTarget' + (targetPath ? '?path=' + encodeURIComponent(targetPath) : '');
+                        apiGet(checkUrl)
+                            .then(function(r2) { return r2.json(); })
+                            .then(function(check) {
+                                var fileExists = check.Exists !== undefined ? check.Exists : check.exists;
+                                var resolvedPath = check.Path || check.path || targetPath || 'auto';
+
+                                if (!fileExists) {
+                                    // File does not exist — create schema and export directly
+                                    doExport('use');
+                                    return;
+                                }
+
+                                // File exists — 3-option dialog via native <dialog>
+                                document.getElementById('pgDlgIcon').textContent     = '\uD83D\uDCC4';
+                                document.getElementById('pgDlgTitleText').textContent = 'Exportar PostgreSQL \u2192 SQLite';
+                                _dlgText.textContent = 'El archivo de destino ya existe:\n' + resolvedPath + '\n\n\u00BFQu\u00E9 deseas hacer?';
+                                _dlgAct.innerHTML = '';
+                                _dlgAct.appendChild(makeDlgBtn('\u274C Cancelar',                          'cancel',  'cancel'));
+                                _dlgAct.appendChild(makeDlgBtn('\u26A0\uFE0F Sobreescribir sin backup',    'danger',  'overwrite'));
+                                _dlgAct.appendChild(makeDlgBtn('\uD83D\uDCBE Renombrar a .bkp y exportar','confirm', 'backup'));
+                                _dlg.onclose = function() {
+                                    var v = _dlg.returnValue;
+                                    if (v === 'backup')         { doExport('backup'); }
+                                    else if (v === 'overwrite') { doExport('overwrite'); }
+                                    else { document.getElementById('btnStartExport').disabled = false; }
+                                };
+                                _dlg.showModal();
+                            })
+                            .catch(function() { doExport('use'); });
+                    })
+                    .catch(function() { doExport('use'); });
+            });
+
+            // ── Health Check ──────────────────────────────────────────────────
+            var _healthFindings = [];
+
+            function healthSevInfo(sev) {
+                sev = String(sev || 'Ok').toLowerCase();
+                if (sev === 'warn')  return { icon: '\uD83D\uDFE1', label: t('health_sev_warn', 'Warnings detected'), color: '#f3c969' };
+                if (sev === 'error') return { icon: '\uD83D\uDD34', label: t('health_sev_error', 'Critical issues detected'), color: '#ef9a9a' };
+                return { icon: '\uD83D\uDFE2', label: t('health_sev_ok', 'All checks passed'), color: '#81c784' };
+            }
+
+            function renderHealthFindings(d) {
+                var overall  = d.OverallSeverity !== undefined ? d.OverallSeverity : d.overallSeverity;
+                var findings = d.Findings !== undefined ? d.Findings : (d.findings || []);
+                var duration = d.DurationMs !== undefined ? d.DurationMs : d.durationMs;
+                _healthFindings = findings;
+
+                var info = healthSevInfo(overall);
+                var r = document.getElementById('healthResult');
+                r.innerHTML = '<span style="font-size:16px;">' + info.icon + '</span> <strong style="color:' + info.color + ';">' + escapeHtml(info.label) + '</strong>'
+                    + ' &nbsp;|&nbsp; ' + escapeHtml(String(overall || ''))
+                    + ' &nbsp;|&nbsp; ' + findings.length + t('msg_health_findings_suffix', ' finding(s)')
+                    + (duration != null ? ' &nbsp;|&nbsp; ' + duration + ' ms' : '');
+
+                var box = document.getElementById('healthFindings');
+                box.style.display = findings.length ? '' : 'none';
+                var html = '';
+                findings.forEach(function(f) {
+                    var fsev = f.Severity !== undefined ? f.Severity : f.severity;
+                    var finfo = healthSevInfo(fsev);
+                    var check = f.Check !== undefined ? f.Check : f.check;
+                    var msg = f.Message !== undefined ? f.Message : f.message;
+                    var det = f.Detail !== undefined ? f.Detail : f.detail;
+                    var repairable = (f.Repairable !== undefined ? f.Repairable : f.repairable) === true;
+                    html += '<div style="display:flex; gap:8px; align-items:flex-start; padding:6px 0; border-bottom:1px solid rgba(124,146,196,.12);">'
+                        + '<span>' + finfo.icon + '</span>'
+                        + '<div style="flex:1;">'
+                        + '<strong style="color:' + finfo.color + ';">' + escapeHtml(String(check || '')) + '</strong>'
+                        + (repairable ? ' <span style="color:#81c784;">' + t('msg_health_repairable_tag', '[auto-repairable]') + '</span>' : '')
+                        + '<div>' + escapeHtml(String(msg || '')) + '</div>'
+                        + (det ? '<div style="color:#78909c; font-size:11px;">' + escapeHtml(String(det)) + '</div>' : '')
+                        + '</div></div>';
+                });
+                box.innerHTML = html;
+
+                var repairable = findings.some(function(f) {
+                    return (f.Repairable !== undefined ? f.Repairable : f.repairable) === true;
+                });
+                document.getElementById('btnHealthRepair').style.display = repairable ? '' : 'none';
+            }
+
+            function loadHealthCheck() {
+                var r = document.getElementById('healthResult');
+                r.style.color = '#a0c4ff';
+                r.textContent = '\uD83D\uDD2C ' + t('msg_health_running', 'Running health check...');
+                apiGet('/HealthCheck')
+                    .then(function(resp) { return resp.json(); })
+                    .then(function(d) {
+                        if (d.Error) {
+                            r.style.color = '#ff7070';
+                            r.textContent = '\u274C ' + d.Error;
+                            return;
+                        }
+                        renderHealthFindings(d);
+                        r.style.color = '';
+                    })
+                    .catch(function(e) {
+                        r.style.color = '#ff7070';
+                        r.textContent = '\u274C ' + t('msg_network_error', 'Network error: ') + e;
+                    });
+            }
+
+            function runHealthRepair() {
+                var r = document.getElementById('healthResult');
+                var btn = document.getElementById('btnHealthRepair');
+                r.style.color = '#f3c969';
+                r.textContent = '\uD83D\uDD27 ' + t('msg_health_repair_running', 'Repairing database...');
+                btn.disabled = true;
+                apiPost('/HealthCheck/Repair', {})
+                    .then(function(resp) { return resp.json(); })
+                    .then(function(d) {
+                        if (d.Error) {
+                            r.style.color = '#ff7070';
+                            r.textContent = '\u274C ' + d.Error;
+                        } else {
+                            var items = d.Items !== undefined ? d.Items : (d.items || []);
+                            var ok = items.filter(function(i) {
+                                return (i.Success !== undefined ? i.Success : i.success) === true;
+                            }).length;
+                            var failed = items.length - ok;
+                            r.style.color = '#81c784';
+                            r.textContent = '\u2713 ' + t('msg_health_repair_done_prefix', 'Auto-repair finished: ') + items.length
+                                + t('msg_health_repair_actions_suffix', ' actions (') + ok
+                                + t('msg_health_repair_ok', ' ok, ') + failed
+                                + t('msg_health_repair_failed', ' failed).');
+                            loadHealthCheck(); // refresh status after repair
+                        }
+                        btn.disabled = false;
+                    })
+                    .catch(function(e) {
+                        r.style.color = '#ff7070';
+                        r.textContent = '\u274C ' + t('msg_network_error', 'Network error: ') + e;
+                        btn.disabled = false;
+                    });
+            }
+
+            document.getElementById('btnHealthCheck').addEventListener('click', loadHealthCheck);
+            document.getElementById('btnHealthRepair').addEventListener('click', runHealthRepair);
 
             applyLocalization();
             document.getElementById('currentStatusBox').textContent = t('msg_loading', 'Loading...');

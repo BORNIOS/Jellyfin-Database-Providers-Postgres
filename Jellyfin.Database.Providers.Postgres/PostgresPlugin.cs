@@ -1,8 +1,10 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
+using Jellyfin.Database.Providers.Postgres.Logging;
+using Jellyfin.Database.Providers.Postgres.Services;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
 using MediaBrowser.Model.Plugins;
@@ -19,9 +21,10 @@ namespace Jellyfin.Database.Providers.Postgres;
 /// </summary>
 public class PostgresPlugin : BasePlugin<PluginConfiguration>, IHasWebPages
 {
-    private static PostgresPlugin? _instance;
     private const string PluginDisplayName = "PostgreSQL Database Provider";
     private const string PluginAssemblyName = "Jellyfin.Database.Providers.Postgres.dll";
+
+    private static PostgresPlugin? _instance;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PostgresPlugin"/> class.
@@ -32,6 +35,31 @@ public class PostgresPlugin : BasePlugin<PluginConfiguration>, IHasWebPages
         : base(applicationPaths, xmlSerializer)
     {
         _instance = this;
+        PostgresLog.SetLogDirectory(applicationPaths.LogDirectoryPath);
+        PostgresLog.Info($"PostgreSQL Database Provider v{Version} loaded. Log directory: {applicationPaths.LogDirectoryPath}");
+
+        // Log the active database engine so the plugin log always shows which mode Jellyfin is in
+        var isPostgresActive = IsPostgresActive(applicationPaths);
+        if (isPostgresActive)
+        {
+            var activeConnStr = ReadActivePgConnectionString(applicationPaths);
+            // Mask password for safety
+            var maskedConn = activeConnStr is not null
+                ? System.Text.RegularExpressions.Regex.Replace(
+                    activeConnStr,
+                    @"(?i)(Password\s*=)[^;]+",
+                    "$1*****")
+                : "(unknown)";
+            PostgresLog.Warn($"[ENGINE] Modo activo: PostgreSQL. Connection: {maskedConn}");
+        }
+        else
+        {
+            var sqlitePath = System.IO.Path.Combine(applicationPaths.DataPath, "jellyfin.db");
+            var sqliteSize = System.IO.File.Exists(sqlitePath)
+                ? $"{new System.IO.FileInfo(sqlitePath).Length / 1_048_576.0:F1} MB"
+                : "(no encontrado)";
+            PostgresLog.Warn($"[ENGINE] Modo activo: SQLite. Archivo: {sqlitePath} ({sqliteSize})");
+        }
     }
 
     /// <summary>Gets the singleton instance of the plugin.</summary>
@@ -49,6 +77,7 @@ public class PostgresPlugin : BasePlugin<PluginConfiguration>, IHasWebPages
     /// <summary>
     /// Returns the embedded HTML configuration page served by the Jellyfin dashboard.
     /// </summary>
+    /// <returns>A collection of plugin page descriptors.</returns>
     public IEnumerable<PluginPageInfo> GetPages()
     {
         yield return new PluginPageInfo
@@ -74,7 +103,7 @@ public class PostgresPlugin : BasePlugin<PluginConfiguration>, IHasWebPages
         var filePath = Path.Combine(configDir, "database.xml");
 
         // Escape XML special characters in the connection string (passwords can contain &, <, > etc.)
-        var escapedConnStr = SecurityElement.Escape(connectionString) ?? connectionString;
+        var escapedConnStr = SecurityElementHelper.Escape(connectionString) ?? connectionString;
 
         var xml = new StringBuilder();
         xml.AppendLine("<?xml version=\"1.0\" encoding=\"utf-8\"?>");
@@ -108,6 +137,8 @@ public class PostgresPlugin : BasePlugin<PluginConfiguration>, IHasWebPages
     /// Reads the current <c>database.xml</c> and returns the connection string if the
     /// PostgreSQL provider is currently active, otherwise <see langword="null"/>.
     /// </summary>
+    /// <param name="applicationPaths">Jellyfin application paths.</param>
+    /// <returns>The active PostgreSQL connection string, or <see langword="null"/> if not active.</returns>
     public static string? ReadActivePgConnectionString(IApplicationPaths applicationPaths)
     {
         var filePath = Path.Combine(applicationPaths.ConfigurationDirectoryPath, "database.xml");
@@ -146,26 +177,8 @@ public class PostgresPlugin : BasePlugin<PluginConfiguration>, IHasWebPages
     /// Returns <see langword="true"/> if <c>database.xml</c> currently points to the
     /// PostgreSQL provider.
     /// </summary>
+    /// <param name="applicationPaths">Jellyfin application paths.</param>
+    /// <returns><see langword="true"/> if PostgreSQL is the active provider.</returns>
     public static bool IsPostgresActive(IApplicationPaths applicationPaths)
         => ReadActivePgConnectionString(applicationPaths) is not null;
-}
-
-// Shim for System.Security.SecurityElement.Escape which is not in netstandard but IS in net9.0.
-// We use a simple manual approach to keep the dependency surface small.
-file static class SecurityElement
-{
-    public static string? Escape(string? text)
-    {
-        if (text is null)
-        {
-            return null;
-        }
-
-        return text
-            .Replace("&", "&amp;", StringComparison.Ordinal)
-            .Replace("<", "&lt;", StringComparison.Ordinal)
-            .Replace(">", "&gt;", StringComparison.Ordinal)
-            .Replace("\"", "&quot;", StringComparison.Ordinal)
-            .Replace("'", "&apos;", StringComparison.Ordinal);
-    }
 }

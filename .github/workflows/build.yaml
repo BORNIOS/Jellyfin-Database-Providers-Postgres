@@ -1,0 +1,43 @@
+name: '🏗️ Build Plugin'
+
+on:
+  push:
+    branches:
+      - main
+      - 'release/*'
+    paths-ignore:
+      - '**/*.md'
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - '**/*.md'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Restore
+        run: dotnet restore Jellyfin.Database.Providers.Postgres.sln
+
+      - name: Build (Release)
+        run: dotnet build Jellyfin.Database.Providers.Postgres.sln -c Release --no-restore
+
+      - name: Publish
+        run: dotnet publish Jellyfin.Database.Providers.Postgres/Jellyfin.Database.Providers.Postgres.csproj -c Release --no-restore -o artifacts
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Jellyfin.Database.Providers.Postgres
+          path: artifacts/

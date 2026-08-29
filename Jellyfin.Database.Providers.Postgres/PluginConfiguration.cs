@@ -55,32 +55,45 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool BackupCompression { get; set; } = true;
 
     /// <summary>
-    /// Gets or sets an optional full path to pg_dump executable.
-    /// Leave empty to use pg_dump from PATH.
+    /// Gets or sets the directory that contains the PostgreSQL client binaries
+    /// (pg_dump, psql, pg_restore, etc.).
+    /// Example on Windows: C:\Program Files\PostgreSQL\17\bin
+    /// Example on Linux:   /usr/lib/postgresql/17/bin
+    /// Leave empty to auto-detect (searches well-known paths) or rely on PATH.
     /// </summary>
-    public string PgDumpPath { get; set; } = string.Empty;
+    public string PgBinPath { get; set; } = string.Empty;
+
+    // ── Connection Pool Tuning ──────────────────────────────────────────────
 
     /// <summary>
-    /// Gets or sets an optional full path to psql executable for restore operations.
-    /// Leave empty to use psql from PATH.
+    /// Gets or sets the minimum number of connections kept alive in the pool.
+    /// Keeping a few connections warm avoids cold-start latency on bursts.
     /// </summary>
-    public string PgRestorePath { get; set; } = string.Empty;
-}
+    public int MinPoolSize { get; set; } = 4;
 
-/// <summary>
-/// Represents the state of the SQLite → PostgreSQL migration.
-/// </summary>
-public enum MigrationState
-{
-    /// <summary>Migration has not been started yet.</summary>
-    NotStarted,
+    /// <summary>
+    /// Gets or sets the maximum number of connections in the pool.
+    /// </summary>
+    public int MaxPoolSize { get; set; } = 100;
 
-    /// <summary>Migration is currently in progress.</summary>
-    InProgress,
+    /// <summary>
+    /// Gets or sets the maximum number of statements Npgsql will auto-prepare
+    /// server-side (caches query plans). 0 disables the feature.
+    /// </summary>
+    public int MaxAutoPrepare { get; set; } = 50;
 
-    /// <summary>Migration completed successfully.</summary>
-    Completed,
+    // ── Search &amp; Index Optimizations ─────────────────────────────────────
 
-    /// <summary>Migration failed. See LastMigrationError for details.</summary>
-    Failed
+    /// <summary>
+    /// Gets or sets a value indicating whether to create pg_trgm GIN indexes at startup
+    /// for near-instant full-text search. Requires pg_trgm extension and CREATE EXTENSION
+    /// privilege. Disable if your DB user lacks that privilege.
+    /// </summary>
+    public bool EnableSearchOptimizations { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to apply aggressive autovacuum settings
+    /// on high-churn tables (UserData, ActivityLogs) to prevent bloat.
+    /// </summary>
+    public bool EnableAutovacuumTuning { get; set; } = true;
 }

@@ -1,0 +1,62 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build-and-copy",
+            "dependsOrder": "sequence",
+            "dependsOn": ["build", "make-plugin-dir", "copy-dll"],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "build",
+            "command": "dotnet",
+            "type": "shell",
+            "args": [
+                "build",
+                "${workspaceFolder}/${config:pluginName}.sln",
+                "/property:GenerateFullPaths=true",
+                "/consoleloggerparameters:NoSummary",
+                "--configuration",
+                "Debug"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "silent"
+            },
+            "problemMatcher": "$msCompile"
+        },
+        {
+            "label": "make-plugin-dir",
+            "type": "shell",
+            "command": "New-Item",
+            "args": [
+                "-ItemType",
+                "Directory",
+                "-Force",
+                "-Path",
+                "${config:jellyfinDataDir}/plugins/${config:pluginName}/"
+            ],
+            "presentation": {
+                "reveal": "silent"
+            }
+        },
+        {
+            "label": "copy-dll",
+            "type": "shell",
+            "command": "Copy-Item",
+            "args": [
+                "-Force",
+                "-Path",
+                "${workspaceFolder}/${config:pluginName}/bin/Debug/net9.0/*",
+                "-Destination",
+                "${config:jellyfinDataDir}/plugins/${config:pluginName}/"
+            ],
+            "presentation": {
+                "reveal": "silent"
+            }
+        }
+    ]
+}

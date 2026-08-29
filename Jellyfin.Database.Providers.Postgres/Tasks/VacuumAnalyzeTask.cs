@@ -15,7 +15,10 @@ public class VacuumAnalyzeTask : IScheduledTask
 {
     private readonly MaintenanceService _maintenance;
 
-    /// <summary>Initializes a new instance of <see cref="VacuumAnalyzeTask"/>.</summary>
+    /// <summary>
+    /// Initializes a new instance of the <see cref="VacuumAnalyzeTask"/> class.
+    /// </summary>
+    /// <param name="maintenance">The maintenance service.</param>
     public VacuumAnalyzeTask(MaintenanceService maintenance)
         => _maintenance = maintenance;
 

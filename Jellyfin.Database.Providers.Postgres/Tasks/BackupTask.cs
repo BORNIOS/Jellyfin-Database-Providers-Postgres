@@ -17,7 +17,11 @@ public class BackupTask : IScheduledTask
     private readonly MaintenanceService _maintenance;
     private readonly IApplicationPaths _applicationPaths;
 
-    /// <summary>Initializes a new instance of <see cref="BackupTask"/>.</summary>
+    /// <summary>
+    /// Initializes a new instance of the <see cref="BackupTask"/> class.
+    /// </summary>
+    /// <param name="maintenance">The maintenance service.</param>
+    /// <param name="applicationPaths">Jellyfin application paths.</param>
     public BackupTask(MaintenanceService maintenance, IApplicationPaths applicationPaths)
     {
         _maintenance = maintenance;
@@ -64,7 +68,7 @@ public class BackupTask : IScheduledTask
             config.ConnectionString,
             backupDir,
             config.BackupCompression,
-            config.PgDumpPath,
+            config.PgBinPath,
             cancellationToken).ConfigureAwait(false);
         progress.Report(100);
     }

@@ -1,0 +1,23 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Attach to Jellyfin",
+            "type": "coreclr",
+            "request": "attach",
+            "processName": "jellyfin",
+            "justMyCode": false
+        },
+        {
+            "name": "Launch Jellyfin (Debug Plugin)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-and-copy",
+            "program": "${config:jellyfinDir}/jellyfin.exe",
+            "args": [],
+            "cwd": "${config:jellyfinDir}",
+            "console": "internalConsole",
+            "justMyCode": false
+        }
+    ]
+}

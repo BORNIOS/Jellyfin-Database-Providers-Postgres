@@ -1,36 +1,55 @@
-# Build artifacts
-[Bb]in/
-[Oo]bj/
-publish_out/
-release/
-artifacts/
+# Build Folders
+bin/
+obj/
 
-# IDE/editor state
+# IA Assistant
+.claude/
+
+# Visual Studio / Rider
 .vs/
-.vscode/
 .idea/
 *.suo
 *.user
 *.userosscache
 *.sln.docstates
+*.sln.iml
 
-# Logs and diagnostics
-*.log
-*.tmp
-*.temp
-*.cache
-
-# Test and coverage output
-TestResults/
-coverage/
-*.coverage
-*.coveragexml
-
-# NuGet/package output
-packages/
-*.nupkg
-*.snupkg
-
-# OS-specific noise
+# OS generated files
 .DS_Store
 Thumbs.db
+
+# NuGet
+*.nupkg
+**/packages/*
+!**/packages/build/
+
+# Visual Studio cache/options
+*.aps
+*.cache
+*.dbmdl
+*.bak
+*.backup
+*.log
+*.vspscc
+*.vssscc
+
+# .NET Core
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# Publish output
+publish/
+publish_out/
+release/
+*.publish.xml
+
+# Local secrets
+secrets.json
+.local.settings.json
+.env
+
+# Temp / scratch
+.tmp/
+cleanup*.sql
+diag.sql

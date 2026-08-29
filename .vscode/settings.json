@@ -1,0 +1,8 @@
+{
+    // jellyfinDir: directorio del servidor Jellyfin portable
+    "jellyfinDir": "D:/jellyfin-portable",
+    // jellyfinDataDir: directorio de datos de Jellyfin (configs, plugins, metadata)
+    "jellyfinDataDir": "${env:LOCALAPPDATA}/jellyfin",
+    // Nombre del plugin (debe coincidir con el AssemblyName)
+    "pluginName": "Jellyfin.Database.Providers.Postgres"
+}
