@@ -14,8 +14,8 @@ internal sealed class PostgresDesignTimeDbFactory : IDesignTimeDbContextFactory<
 {
     public JellyfinDbContext CreateDbContext(string[] args)
     {
-        // Legacy timestamp behavior must match runtime configuration.
-        AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
+        // Note: Npgsql.EnableLegacyTimestampBehavior is NOT set — DateTime.Kind=Unspecified
+        // is handled at runtime by DateTimeKindNormalizingInterceptor, not by the global switch.
 
         // A real connection is not required for migration generation — EF Core
         // only needs to resolve the model from the DbContext.

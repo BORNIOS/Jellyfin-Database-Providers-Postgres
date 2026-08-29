@@ -2,11 +2,11 @@
   {
     "guid": "a2b5f3e8-4c1d-4f7a-9e6b-8d0c2f1a3b5e",
     "name": "PostgreSQL Database Provider",
-    "description": "Provides PostgreSQL as the Jellyfin database backend via EF Core and Npgsql, including tooling to migrate an existing Jellyfin SQLite database into a PostgreSQL schema.",
-    "overview": "Use PostgreSQL as Jellyfin's database backend",
+    "description": "Production-ready PostgreSQL backend for Jellyfin. Bidirectional SQLite migration, near-instant search, health diagnostics and scheduled maintenance — no core modifications required.",
+    "overview": "Reemplaza SQLite por PostgreSQL como motor de base de datos de Jellyfin. Incluye migración bidireccional SQLite↔PostgreSQL, búsqueda casi instantánea con índices GIN, health check automático al arrancar, mantenimiento programado (VACUUM/REINDEX/Backup) e integración opcional con JellyTrend.",
     "owner": ".:BORNIOS:.",
     "category": "Database",
-    "imageUrl": "https://raw.githubusercontent.com/BORNIOS/Jellyfin-Database-Providers-Postgres/v1.1.0.0/Jellyfin.Database.Providers.Postgres/Resources/logo.png",
+    "imageUrl": "https://raw.githubusercontent.com/BORNIOS/Jellyfin-Database-Providers-Postgres/main/Jellyfin.Database.Providers.Postgres/Resources/logo.png",
     "versions": [
       {
         "version": "1.0.0.0",

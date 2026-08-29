@@ -100,12 +100,10 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         _applicationPaths = applicationPaths;
         _logger = logger ?? NullLogger<PostgresDatabaseProvider>.Instance;
 
-        // Jellyfin passes DateTime values with Kind=Unspecified for media dates
-        // (air dates, premiere dates, etc.) sourced from external providers like TVDB.
-        // Npgsql 9.x rejects these by default when writing to 'timestamp with time zone'.
-        // This switch instructs Npgsql to treat Kind=Unspecified as UTC, preserving
-        // the same behaviour as Npgsql 6.x and earlier.
-        AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
+        // Note: Npgsql.EnableLegacyTimestampBehavior is intentionally NOT set here.
+        // DateTime.Kind=Unspecified writes are handled by DateTimeKindNormalizingInterceptor
+        // so that the PostgreSQL server timezone is respected for reads while write
+        // compatibility is preserved. See DateTimeKindNormalizingInterceptor for details.
     }
 
     // ── Properties (SA1201: after constructor) ────────────────────────────────
@@ -149,6 +147,15 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         };
 
         var tunedConnStr = csb.ToString();
+
+        // Log the *actual* pool configuration that will be used (post-tuning).
+        // Mask password before logging to avoid leaking credentials.
+        var maskedTuned = System.Text.RegularExpressions.Regex.Replace(
+            tunedConnStr,
+            @"(?i)(Password\s*=)[^;]+",
+            "$1*****");
+        Logging.PostgresLog.Warn(
+            $"[ENGINE] Conexi\u00f3n activa (tuneada): {maskedTuned}");
         Logging.PostgresLog.Warn(
             $"[Provider] Pool: min={csb.MinPoolSize} max={csb.MaxPoolSize} " +
             $"maxAutoPrepare={csb.MaxAutoPrepare} cmdTimeout={csb.CommandTimeout}s");
@@ -159,7 +166,9 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
                 npgsql => npgsql.MigrationsAssembly(typeof(PostgresDatabaseProvider).Assembly.GetName().Name!))
             .AddInterceptors(
                 new HomeQueryCacheInterceptor(_logger),
-                new UpsertConflictInterceptor());
+                new UpsertConflictInterceptor(),
+                new DbErrorLoggingInterceptor(),
+                new DateTimeKindNormalizingInterceptor());
 
         // Run the health check in background exactly once, even if Initialise is called
         // multiple times (EF Core can call it more than once during startup).
@@ -171,6 +180,9 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
                 try
                 {
                     await Task.Delay(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+                    // Log timezone so operators can detect UTC/local mismatches.
+                    await LogPostgresTimezoneAsync(tunedConnStr).ConfigureAwait(false);
+
                     var svc = new HealthCheckService(NullLogger<HealthCheckService>.Instance);
                     var result = await svc.RunHealthCheckAsync(tunedConnStr, schema, silent: true).ConfigureAwait(false);
                     LogHealthSummary(result);
@@ -180,6 +192,44 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
                     Logging.PostgresLog.Error("[HealthCheck] AUTO fall\u00f3 al iniciar", ex);
                 }
             });
+        }
+    }
+
+    private static async Task LogPostgresTimezoneAsync(string connectionString)
+    {
+        try
+        {
+            using var pg = new NpgsqlConnection(connectionString);
+            await pg.OpenAsync().ConfigureAwait(false);
+            using var cmd = new NpgsqlCommand("SHOW timezone; SHOW lc_time;", pg);
+            using var reader = await cmd.ExecuteReaderAsync().ConfigureAwait(false);
+            var tz = await reader.ReadAsync().ConfigureAwait(false) ? reader.GetString(0) : "(desconocida)";
+            await reader.NextResultAsync().ConfigureAwait(false);
+            var lc = await reader.ReadAsync().ConfigureAwait(false) ? reader.GetString(0) : "(desconocida)";
+            Logging.PostgresLog.Warn($"[ENGINE] PostgreSQL timezone={tz} | lc_time={lc}");
+
+            // Check pg_stat_statements availability.
+            await reader.CloseAsync().ConfigureAwait(false);
+            using var extCmd = new NpgsqlCommand(
+                "SELECT COUNT(*) FROM pg_extension WHERE extname='pg_stat_statements';",
+                pg);
+            var extCount = Convert.ToInt64(
+                await extCmd.ExecuteScalarAsync().ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture);
+            if (extCount == 0)
+            {
+                Logging.PostgresLog.Warn(
+                    "[ENGINE] pg_stat_statements NO est\u00e1 activo — el check SlowQueries no retornar\u00e1 datos. " +
+                    "Agrega 'pg_stat_statements' a shared_preload_libraries y reinicia PostgreSQL.");
+            }
+            else
+            {
+                Logging.PostgresLog.Info("[ENGINE] pg_stat_statements activo \u2713 (slow-query tracking disponible).");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logging.PostgresLog.Error("[ENGINE] No se pudo consultar timezone/extensiones", ex);
         }
     }
 

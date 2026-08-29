@@ -1,0 +1,114 @@
+name: '📦 Release Plugin'
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Versión del release (ej: 2.0.0 o 2.0.0.0)'
+        required: true
+        type: string
+      changelog:
+        description: 'Notas de la versión (se muestran en el catálogo de Jellyfin y en el release)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Publicar como prerelease (para pruebas)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Normalizar versión (4 partes)
+        id: version
+        run: |
+          V="${{ github.event.inputs.release_version }}"
+          PARTS=$(echo "$V" | awk -F. '{print NF}')
+          if [ "$PARTS" -eq 1 ]; then V="${V}.0.0.0"
+          elif [ "$PARTS" -eq 2 ]; then V="${V}.0.0"
+          elif [ "$PARTS" -eq 3 ]; then V="${V}.0"
+          fi
+          echo "full=$V" >> "$GITHUB_OUTPUT"
+
+      - name: Fijar versión en Directory.Build.props
+        run: |
+          sed -i "s#<Version>[^<]*</Version>#<Version>${{ steps.version.outputs.full }}</Version>#" Directory.Build.props
+          sed -i "s#<AssemblyVersion>[^<]*</AssemblyVersion>#<AssemblyVersion>${{ steps.version.outputs.full }}</AssemblyVersion>#" Directory.Build.props
+          sed -i "s#<FileVersion>[^<]*</FileVersion>#<FileVersion>${{ steps.version.outputs.full }}</FileVersion>#" Directory.Build.props
+
+      - name: Restore
+        run: dotnet restore Jellyfin.Database.Providers.Postgres.sln
+
+      - name: Build (Release)
+        run: dotnet build Jellyfin.Database.Providers.Postgres.sln -c Release --no-restore
+
+      - name: Publicar plugin
+        run: dotnet publish Jellyfin.Database.Providers.Postgres/Jellyfin.Database.Providers.Postgres.csproj -c Release --no-build -o publish
+
+      - name: Empaquetar ZIP + checksum
+        id: package
+        run: |
+          cd publish
+          # DLLs que Jellyfin NO provee en runtime y deben ir en el ZIP:
+          #   Jellyfin.Database.Providers.Postgres.dll  — el plugin
+          #   Npgsql.dll                                 — driver Npgsql
+          #   Npgsql.EntityFrameworkCore.PostgreSQL.dll  — provider EF Core para PG
+          zip -j "../Jellyfin.Database.Providers.Postgres-${{ steps.version.outputs.full }}.zip" \
+            Jellyfin.Database.Providers.Postgres.dll \
+            Npgsql.dll \
+            Npgsql.EntityFrameworkCore.PostgreSQL.dll
+          cd ..
+          # Jellyfin valida el checksum con MD5 (InstallationManager.PerformPackageInstallation).
+          CHECKSUM=$(md5sum "Jellyfin.Database.Providers.Postgres-${{ steps.version.outputs.full }}.zip" | awk '{print $1}')
+          echo "checksum=$CHECKSUM" >> "$GITHUB_OUTPUT"
+
+      - name: Actualizar manifest.json (repo)
+        run: |
+          VERSION="${{ steps.version.outputs.full }}"
+          ZIP="Jellyfin.Database.Providers.Postgres-${VERSION}.zip"
+          URL="https://github.com/${{ github.repository }}/releases/download/v${{ github.event.inputs.release_version }}/${ZIP}"
+          CHECKSUM="${{ steps.package.outputs.checksum }}"
+          TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          CHANGELOG="${{ github.event.inputs.changelog }}"
+          jq --arg v "$VERSION" --arg url "$URL" --arg sum "$CHECKSUM" --arg ts "$TS" --arg changelog "$CHANGELOG" \
+            '.[0].versions = (([.[0].versions[] | select(.version != $v)]) + [{version: $v, changelog: $changelog, targetAbi: "10.11.0.0", sourceUrl: $url, checksum: $sum, timestamp: $ts}])' \
+            manifest.json > manifest.tmp.json && mv manifest.tmp.json manifest.json
+          cp manifest.json publish/manifest.json
+
+      - name: Commit manifest actualizado
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add manifest.json Directory.Build.props
+          git diff --cached --quiet || git commit -m "chore: actualizar manifest a v${{ steps.version.outputs.full }}"
+          git push
+
+      - name: Preparar notas del release
+        run: printf '%s' "${{ github.event.inputs.changelog }}" > release-notes.md
+
+      - name: Crear release en GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.event.inputs.release_version }}
+          name: PostgreSQL Database Provider ${{ github.event.inputs.release_version }}
+          body_path: release-notes.md
+          prerelease: ${{ github.event.inputs.prerelease }}
+          files: |
+            Jellyfin.Database.Providers.Postgres-${{ steps.version.outputs.full }}.zip
+            publish/manifest.json
