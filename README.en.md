@@ -1,211 +1,312 @@
-# PostgreSQL for Jellyfin
+<div align="center">
 
 ![PostgreSQL plugin logo](Jellyfin.Database.Providers.Postgres/Resources/logo.png)
 
-Use PostgreSQL as Jellyfin's database backend without modifying Jellyfin core.
+🌐 &nbsp;[**Español**](README.md)&nbsp; · &nbsp;**English**
 
-[![Jellyfin 10.11.x](https://img.shields.io/badge/Jellyfin-10.11.x-blue?style=flat-square)](https://jellyfin.org)
-[![Release](https://img.shields.io/github/v/release/BORNIOS/Jellyfin-Database-Providers-Postgres?style=flat-square)](https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/releases/latest)
+<br>
+
+# 🐘 PostgreSQL Database Provider
+
+**Jellyfin plugin** that replaces SQLite with PostgreSQL as the database engine,
+without modifying Jellyfin core. Bidirectional migration, instant search,
+automatic health check, scheduled maintenance and optional JellyTrend integration.
+
+<br>
+
+[![Last Commit](https://img.shields.io/github/last-commit/BORNIOS/Jellyfin-Database-Providers-Postgres?style=flat-square&color=00A4DC)](https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/commits/main)
+[![CI Build](https://img.shields.io/github/actions/workflow/status/BORNIOS/Jellyfin-Database-Providers-Postgres/build.yaml?style=flat-square&color=00A4DC&label=CI)](https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/actions)
+[![Jellyfin](https://img.shields.io/badge/Jellyfin-10.11.x-00A4DC?style=flat-square&logo=jellyfin&logoColor=white)](https://jellyfin.org)
+[![Release](https://img.shields.io/github/v/release/BORNIOS/Jellyfin-Database-Providers-Postgres?style=flat-square&color=00A4DC)](https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/BORNIOS/Jellyfin-Database-Providers-Postgres/total?style=flat-square&color=00A4DC&label=downloads)](https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/releases)
 [![Discord](https://img.shields.io/badge/Discord-Jellyfin_Community-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.jellyfin.org)
-[![Reddit](https://img.shields.io/badge/Reddit-r%2Fjellyfin-FF4500?style=flat-square&logo=reddit&logoColor=white)](https://www.reddit.com/r/jellyfin)
+[![License](https://img.shields.io/github/license/BORNIOS/Jellyfin-Database-Providers-Postgres?style=flat-square&color=555)](LICENSE)
 
-Language: [Español](README.md) | [English](README.en.md)
+</div>
 
-## What it solves
+---
 
-- Better behavior with large libraries and concurrent use.
-- **Instant search** sub-15ms with GIN trigram index (pg_trgm).
-- **Automatic optimization** of indexes and autovacuum tuning in one action.
-- Backup and restore from plugin UI (pg_dump/psql).
-- Controlled switch between PostgreSQL and SQLite (both directions).
-- **PostgreSQL → SQLite export** directly to a `.db` file without external tools.
+## ✨ Features
 
-## Compatibility
+- 🐘 **PostgreSQL as native backend** — EF Core + Npgsql, no Jellyfin core changes required.
+- 🔍 **Instant search** sub-15 ms with GIN trigram index (`pg_trgm`); automatic fallback to `ILIKE`.
+- 🔄 **Bidirectional migration** — SQLite → PostgreSQL and PostgreSQL → SQLite without external tools.
+- 🩺 **Automatic health check** at startup: diagnoses bloat, invalid indexes, drifted sequences and slow queries.
+- 🛡️ **Error prevention** — EF Core interceptors for upserts, DB error logging and `DateTime.Kind` normalization.
+- 🔧 **Automatic optimization** — GIN indexes CONCURRENTLY, autovacuum tuning on critical tables.
+- 💾 **Scheduled backups** with `pg_dump`, optional ZIP compression and restore from the UI.
+- ⚡ **Optional JellyTrend integration** — recommendations 4-10× faster with optimized native SQL.
+- 📊 **Database statistics** — total size, active connections and per-table metrics from the UI.
+- 🔁 **One-click rollback to SQLite** from the configuration tab.
+
+## ⚙️ Compatibility
 
 | Component | Version |
-| --- | --- |
-| Jellyfin | 10.11.10 |
-| PostgreSQL | 13+ (recommended 16/17) |
+|---|---|
+| Jellyfin | **10.11.10** |
+| PostgreSQL | **13 +** (recommended 16 / 17) |
+| .NET | 9.0 |
 
-## Install
+> ℹ️ The plugin uses `IJellyfinDatabaseProvider` — the same interface as SQLite. No Jellyfin source modifications required.
 
-### Option A: plugin repository (recommended)
+---
 
-1. In Jellyfin: Admin -> Plugins -> Plugin Repositories.
-2. Add this URL:
+## 🚀 Installation
 
-```text
-https://raw.githubusercontent.com/BORNIOS/Jellyfin-Database-Providers-Postgres/main/manifest.json
-```
+### Option A — Plugin repository (recommended)
 
-3. Save, refresh catalog, install PostgreSQL Database Provider.
-4. Restart Jellyfin.
+1. In Jellyfin go to **Dashboard → Advanced → Plugin repositories**.
+2. Click **Add repository** and use this URL:
 
-### Option B: manual ZIP install
+   ```
+   https://raw.githubusercontent.com/BORNIOS/Jellyfin-Database-Providers-Postgres/main/manifest.json
+   ```
 
-1. Download latest release ZIP.
-2. Extract to Jellyfin plugin directory.
+3. Save, go to **Catalog**, search **PostgreSQL Database Provider** and **Install**.
+4. Restart Jellyfin when prompted.
+
+### Option B — Manual ZIP
+
+1. Download the latest [**Release**](https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/releases/latest) ZIP.
+2. Extract into your Jellyfin plugins directory.
 3. Restart Jellyfin.
 
-## Plugin UI overview
+> 💡 Common plugin directory locations:
+> - **Linux / Docker:** `/config/plugins/`
+> - **Windows:** `%LOCALAPPDATA%\jellyfin\plugins\`
 
-The plugin page has 3 tabs:
+---
 
-- ⚙️ **Configuration**: PostgreSQL connection, pool, timeout, binary paths and backup defaults.
-- 🔄 **Migration**: two cards:
-  - **SQLite → PostgreSQL**: copies jellyfin.db to PostgreSQL with live progress.
-  - **PostgreSQL → SQLite**: exports all data directly to a native `.db` file.
-- 🛠️ **Maintenance**: VACUUM ANALYZE, REINDEX, **Apply optimizations** (GIN indexes), backup/restore, and DB stats.
+## 🖥️ Plugin tabs
 
-## Instant Search (InstantSearch)
+### ⚙️ Configuration
 
-Starting with v1.0.0.1, the plugin exposes a dedicated search endpoint that bypasses EF Core and queries directly using a GIN trigram index (pg_trgm):
+Manage connection, connection pool and external tool paths.
 
-- Typical latency < 15 ms on medium and large libraries.
-- Searches by item name, path, and type.
-- Falls back to `ILIKE` if GIN indexes have not been created yet.
-- Activated when you apply the performance optimization from the Configuration tab.
+![Configuration Tab](Screenshots/Tab-Configurations.png)
 
-### Enable GIN indexes
+| Parameter | Description | Default |
+|---|---|---|
+| Connection string | Full Npgsql connection string | — |
+| Schema | PostgreSQL schema | `public` |
+| Command timeout | Max EF Core query time (seconds) | `60` |
+| Min pool size | Minimum connections kept alive | `4` |
+| Max pool size | Maximum connections in pool | `100` |
+| Max auto-prepare | Server-side prepared statements (0 = off) | `50` |
+| PgBin path | Path to `pg_dump` / `psql` / `pg_restore` | auto-detect |
+| Backup directory | Folder for backup files | — |
+| Backup compression | Compress backup as ZIP | `true` |
 
-1. In the plugin: **Maintenance** tab -> **Apply optimizations**.
-2. This creates 9 GIN indexes CONCURRENTLY and tunes autovacuum on critical tables.
-3. The status of each index (created / pending) is shown in the same card.
-4. The **Optimize GIN Indexes** scheduled task (weekly, Sunday 05:00) keeps indexes fresh.
-5. While GIN indexes do not exist, search falls back to `ILIKE` automatically.
+**Recommended flow:**
+1. Fill in connection fields and click **Test connection** — returns server version on success.
+2. Adjust pool and timeout for your workload.
+3. Click **Save configuration**.
+4. After migrating data, click **Activate PostgreSQL** and restart.
 
-## Export PostgreSQL → SQLite
+---
 
-Card available in the Migration tab, below "Migrate data from SQLite to PostgreSQL".
+### 🩺 Health Check
 
-**Use cases:**
-- Revert Jellyfin to SQLite without losing data.
-- Portable backup of the database in native format.
-- Local inspection or testing of database contents.
+Automatic database diagnostics. Runs **10 seconds after startup** and can be triggered manually from the UI.
 
-**How it works:**
-1. The plugin auto-detects the native `jellyfin.db` path (`{DataPath}/jellyfin.db`).
-2. If the `.db` file does not exist → it is created with the schema derived from PostgreSQL.
-3. If the `.db` file already exists → table structure is preserved; only data is replaced (`DELETE` + `INSERT`).
-4. Data is written in transactions of 10,000 rows with `PRAGMA journal_mode=WAL`.
-5. No external tools required (`sqlite3`, `pg_dump`, etc.).
+![Health Check Tab](Screenshots/Tab-Health.png)
 
-**Steps:**
-1. Go to Migration -> **Export PostgreSQL → SQLite**.
-2. Verify or change the target `.db` path.
-3. Start export and follow live progress.
+| Check | Description |
+|---|---|
+| **Connection** | Verifies PostgreSQL is reachable |
+| **Extensions** | `pg_trgm`, `pg_stat_statements` available |
+| **Invalid indexes** | Detects and can auto-repair |
+| **Table bloat** | Tables with > 20 % dead tuples |
+| **Drifted sequences** | Sequences out of range vs actual data |
+| **Stale statistics** | Tables without recent `ANALYZE` |
+| **Slow queries** | Top queries by cumulative time (`pg_stat_statements`) |
 
-## How to migrate from SQLite to PostgreSQL
+Results use a traffic-light system: `Info` / `Warn` / `Error`. Repairable issues can be fixed in one click from the same card.
 
-Installing the plugin does not migrate data by itself.
+---
 
-1. Create an empty PostgreSQL database (for example `jellyfin`).
-2. In the Configuration tab, fill in the connection and run **Test connection**.
-3. Go to Migration tab -> **Migrate data from SQLite to PostgreSQL**.
-4. Confirm the `jellyfin.db` path (auto-detected if it exists in the data directory).
-5. Adjust batch size (default 1000) and optionally enable **Truncate tables before insert**.
-6. Start migration and wait for 100% progress.
-7. Review copied rows and activate PostgreSQL.
+### 🔄 Migration
 
-### When to use --truncate
+Two operations with live progress:
 
-- Recommended when repeating a migration over an already populated PostgreSQL database.
-- Recommended on retries to avoid duplicates or stale rows.
-- Destructive on existing destination data (TRUNCATE + RESTART IDENTITY + CASCADE).
+![Migration Tab](Screenshots/Tab-Migrations.png)
 
-## How to activate PostgreSQL
+#### SQLite → PostgreSQL
 
-From plugin UI:
+Copies `jellyfin.db` to PostgreSQL table by table.
 
-1. Set connection string and timeout.
-2. Save settings.
-3. Click Activate PostgreSQL.
-4. Confirm restart.
+1. `jellyfin.db` path is auto-detected (`{DataPath}/jellyfin.db`).
+2. Adjust **batch size** (default 1000).
+3. Enable **Truncate tables before insert** when repeating migration over existing data.
+4. Click **Start migration** and follow progress.
+5. At 100 %, activate PostgreSQL from the Configuration tab.
 
-Expected result:
+> ⚠️ The `--truncate` option runs `TRUNCATE + RESTART IDENTITY + CASCADE` on destination. Use on retries to avoid duplicates; destructive on existing data.
 
-- `database.xml` is configured as `PLUGIN_PROVIDER`.
-- Jellyfin starts with `Jellyfin.Database.Providers.Postgres.dll`.
+#### PostgreSQL → SQLite
 
-## How to rollback to SQLite
+Exports the entire database to a native `.db` file without external tools.
 
-From plugin UI:
+- If `.db` doesn't exist → created with schema derived from PostgreSQL.
+- If `.db` already exists → table structure is preserved; only data is replaced (`DELETE` + `INSERT`).
+- Written in 10,000-row transactions with `PRAGMA journal_mode=WAL`.
 
-1. Click Deactivate PostgreSQL / Revert to SQLite.
-2. Plugin removes `database.xml`.
+**Use cases:** revert to SQLite, portable backup, local inspection.
+
+---
+
+### 🛠️ Maintenance
+
+Maintenance operations, backups and database statistics.
+
+![Maintenance Tab](Screenshots/Tab-Maintenance.png)
+
+| Action | Description |
+|---|---|
+| **VACUUM ANALYZE** | Free space and update planner statistics |
+| **REINDEX DATABASE** | Rebuild all indexes |
+| **Apply optimizations** | Create 9 GIN indexes CONCURRENTLY + autovacuum tuning |
+| **Create backup now** | Generate `.sql` (and optional `.zip`) with `pg_dump` |
+| **Restore backup** | Restore from `.sql` or `.zip` |
+| **Update statistics** | Show total size, active connections and per-table metrics |
+
+---
+
+## 🔍 Instant Search (InstantSearch)
+
+When GIN indexes are active, the plugin exposes its own search endpoint that bypasses EF Core:
+
+- Typical latency **< 15 ms** on medium and large libraries.
+- Searches by item name, path and type.
+- **Automatic fallback** to `ILIKE` if GIN indexes don't exist yet.
+- Activated from **Maintenance → Apply optimizations**.
+
+---
+
+## 🔁 Activate / Deactivate PostgreSQL
+
+### Activate PostgreSQL
+
+1. Configure and test the connection in the **Configuration** tab.
+2. Migrate data (**Migration → SQLite → PostgreSQL**).
+3. Click **Activate PostgreSQL** and confirm the restart.
+
+Result: `database.xml` is written in `PLUGIN_PROVIDER` mode pointing to this plugin.
+
+### Roll back to SQLite
+
+1. In **Configuration** click **Deactivate / Revert to SQLite**.
+2. The plugin removes `database.xml`.
 3. Restart Jellyfin.
 
-When rollback makes sense:
+When to roll back: PostgreSQL connectivity failure, urgent maintenance, incomplete migration.
 
-- PostgreSQL connectivity problem.
-- Maintenance window or incomplete migration.
-- You need fast service recovery while fixing PG.
+---
 
-## Backup and restore
+## 💾 Backups
 
-In plugin Configuration:
+### Configure
 
-1. Set default backup directory.
-2. Optional on Windows: set `pg_dump` and `psql` paths if not in PATH.
-3. Set default compression.
+In **Configuration**:
+- **PgBin path** — path to `pg_dump`/`psql`/`pg_restore`. Leave empty to use system PATH.
+- **Backup directory** — destination folder.
+- **Backup compression** — enable ZIP of the `.sql`.
 
-In plugin Maintenance:
+### Manual
 
-1. Run manual backup (`.sql` or `.zip`).
-2. Run restore from backup.
-3. Optionally schedule recurring backups in Jellyfin Scheduled Tasks.
+In **Maintenance**: **Create backup now** / **Restore backup** (accepts `.sql` or `.zip`).
 
-## Scheduled maintenance tasks
+---
 
-Also available in Jellyfin Scheduled Tasks:
+## 📅 Scheduled tasks
 
 | Task | Default | Description |
 |---|---|---|
-| PostgreSQL Backup | Daily 02:00 | Backup with pg_dump |
-| PostgreSQL VACUUM ANALYZE | Sunday 03:00 | Free space and update statistics |
-| PostgreSQL REINDEX DATABASE | Sunday 04:00 | Rebuild all indexes |
-| Optimize GIN Indexes | Sunday 05:00 | Keep trigram GIN indexes fresh (v1.0.0.1) |
+| **PostgreSQL Backup** | Daily 02:00 | Backup with `pg_dump` |
+| **PostgreSQL VACUUM ANALYZE** | Sunday 03:00 | Free space and update statistics |
+| **PostgreSQL REINDEX DATABASE** | Sunday 04:00 | Rebuild all indexes |
+| **Optimize GIN Indexes** | Sunday 05:00 | Keep GIN trigram indexes fresh |
 
-Operational recommendations:
+> ⚠️ Avoid overlapping REINDEX, VACUUM and Backup in the same time window.
 
-- Schedule REINDEX off-peak (can take several minutes on large databases).
-- Avoid overlapping backup, vacuum, and reindex at the same time.
-- If the database has heavy write activity, run Optimize GIN Indexes before the weekly peak.
+---
 
-## Post-migration checklist
+## ⚡ JellyTrend integration
 
-- Login works with existing users.
-- Playback progress/activity continues to update.
-- Key row counts validated (UserData, Users, TypedBaseItems).
-- No PostgreSQL connection errors in Jellyfin logs.
-- Manual backup tested at least once.
+If you have [**JellyTrend**](https://github.com/BORNIOS/JellyTrend) installed, the recommendation engine automatically detects this plugin and replaces `ILibraryManager` queries with optimized native SQL:
 
-## Short FAQ
+| Engine | Behavior |
+|---|---|
+| **SQLite** (without this plugin) | `ILibraryManager` — compatible with any installation |
+| **PostgreSQL** (with this plugin) | Direct SQL with native `&&` array operator + GIN indexes — **4-10× faster** |
 
-Q: I installed the plugin but data was not migrated.
+> ✅ No manual setup needed. If both plugins are installed, the integration activates automatically.
 
-A: Expected. Use the Migration tab (SQLite → PostgreSQL) to copy data, then activate PostgreSQL.
+---
 
-Q: Can I edit `database.xml` manually.
+## ✅ Post-migration checklist
 
-A: Yes, but the plugin UI is recommended to reduce configuration mistakes.
+1. Login works with existing users.
+2. Playback progress updating correctly.
+3. Key row counts validated (UserData, Users, BaseItems).
+4. No PostgreSQL connection errors in Jellyfin logs.
+5. Health Check run without errors (`Warn` acceptable, `Error` requires action).
+6. Manual backup tested at least once.
+7. GIN indexes applied (**Maintenance → Apply optimizations**).
 
-Q: Migration fails or gives odd results on retries.
+---
 
-A: On large databases or repeated migrations, enable --truncate to reset destination tables before inserting.
+## ❓ FAQ
 
-Q: What happens if I export to SQLite and the `.db` file already exists?
+<details>
+<summary><b>I installed the plugin but data was not migrated.</b></summary>
 
-A: The plugin preserves the table structure and replaces only the data (DELETE + INSERT). The file is not dropped or recreated.
+Expected. Run migration from **Migration → SQLite → PostgreSQL**, then activate PostgreSQL from **Configuration**.
+</details>
 
-Q: Does InstantSearch require any client changes?
+<details>
+<summary><b>Migration fails or gives odd results on retries.</b></summary>
 
-A: No. It is a server-side API endpoint. The plugin UI uses it internally when PostgreSQL is active and GIN indexes exist.
+Enable **Truncate tables before insert** to reset destination tables before inserting. Destructive on existing PostgreSQL data, but guarantees a clean result.
+</details>
 
-## Community
+<details>
+<summary><b>Can I edit database.xml manually?</b></summary>
 
-Questions or feedback? Open an issue or join the Jellyfin community:
+Yes, but the plugin UI is recommended to avoid formatting errors.
+</details>
+
+<details>
+<summary><b>What happens if I export to SQLite and the .db file already exists?</b></summary>
+
+The plugin preserves the table structure and replaces only the data (DELETE + INSERT). The file is not dropped or recreated.
+</details>
+
+<details>
+<summary><b>Does InstantSearch require client changes?</b></summary>
+
+No. It is a server-side endpoint. The plugin UI uses it internally when PostgreSQL is active and GIN indexes exist.
+</details>
+
+<details>
+<summary><b>Why do timestamps show UTC instead of my timezone?</b></summary>
+
+Earlier versions used the global `Npgsql.EnableLegacyTimestampBehavior` switch which forced UTC on all reads. Since v2.0.0.0 this was replaced by `DateTimeKindNormalizingInterceptor`, which only normalizes write parameters with `Kind=Unspecified`, respecting the PostgreSQL server timezone on reads.
+</details>
+
+---
+
+## 🤝 Community
+
+Questions or feedback? Open an [issue](https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/issues) or join the official Jellyfin community:
 
 [![Discord](https://img.shields.io/badge/Discord-Join_the_community-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.jellyfin.org)
 [![Reddit](https://img.shields.io/badge/Reddit-r%2Fjellyfin-FF4500?style=for-the-badge&logo=reddit&logoColor=white)](https://www.reddit.com/r/jellyfin)
+
+---
+
+<div align="center">
+
+Made with ❤️ for the Jellyfin community &nbsp;·&nbsp; [⭐ Star on GitHub](https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres)
+
+</div>
