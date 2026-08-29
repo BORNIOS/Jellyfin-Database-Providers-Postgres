@@ -9,7 +9,7 @@
 # 🐘 PostgreSQL Database Provider
 
 **Plugin para Jellyfin** que reemplaza SQLite por PostgreSQL como motor de base de datos,
-sin modificar el núcleo de Jellyfin. Migración bidireccional, búsqueda instantánea,
+sin modificar el núcleo de Jellyfin. Migración bidireccional, búsqueda casi instantánea,
 health check automático, mantenimiento programado e integración opcional con JellyTrend.
 
 <br>
@@ -29,7 +29,7 @@ health check automático, mantenimiento programado e integración opcional con J
 ## ✨ Características
 
 - 🐘 **PostgreSQL como backend nativo** — EF Core + Npgsql, sin tocar el core de Jellyfin.
-- 🔍 **Búsqueda instantánea** sub-15 ms con índice GIN trigram (`pg_trgm`); fallback automático a `ILIKE`.
+- 🔍 **Búsqueda casi instantánea** (< 15 ms típico) con índice GIN trigram (`pg_trgm`); fallback automático a `ILIKE`.
 - 🔄 **Migración bidireccional** — SQLite → PostgreSQL y PostgreSQL → SQLite sin herramientas externas.
 - 🩺 **Health Check automático** al arrancar: diagnostica bloat, índices inválidos, secuencias desfasadas y queries lentas.
 - 🛡️ **Prevención de errores** — interceptores EF Core para upserts, logging de errores DB y normalización de `DateTime.Kind`.
@@ -138,147 +138,18 @@ Operaciones de mantenimiento, backups y estadísticas de la base de datos.
 | **Restablecer backup** | Restaura desde `.sql` o `.zip` |
 | **Actualizar estadísticas** | Muestra tamaño total, conexiones activas y métricas por tabla |
 
-> 💡 El botón **Aplicar optimizaciones** activa también la búsqueda instantánea (InstantSearch) si `pg_trgm` está disponible.
-
----
-
-| Componente | Versión |
-|---|---|
-| Jellyfin | **10.11.10** |
-| PostgreSQL | **13 +** (recomendado 16 / 17) |
-| .NET | 9.0 |
-
-> ℹ️ El plugin usa `IJellyfinDatabaseProvider` — la misma interfaz que SQLite. No requiere modificar Jellyfin ni compilarlo desde fuente.
-
----
-
-## 🚀 Instalación
-
-### Opción A — Desde el repositorio (recomendada)
-
-1. En Jellyfin ve a **Panel → Avanzado → Repositorios de plugins**.
-2. Pulsa **Añadir repositorio** y usa esta URL:
-
-   ```
-   https://raw.githubusercontent.com/BORNIOS/Jellyfin-Database-Providers-Postgres/main/manifest.json
-   ```
-
-3. Guarda, ve a **Catálogo**, busca **PostgreSQL Database Provider** e **Instala**.
-4. Reinicia Jellyfin cuando lo solicite.
-
-### Opción B — Manual por ZIP
-
-1. Descarga el ZIP de la última [**Release**](https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/releases/latest).
-2. Extrae el contenido en el directorio de plugins de Jellyfin.
-3. Reinicia Jellyfin.
-4. Ve a **Panel → Plugins → PostgreSQL Database Provider** y configura la conexión.
-
-> 💡 Ubicaciones comunes del directorio de plugins:
-> - **Linux / Docker:** `/config/plugins/`
-> - **Windows:** `%LOCALAPPDATA%\jellyfin\plugins\`
-
----
-
-## 🖥️ Pestañas del plugin
-
-### ⚙️ Configuración
-
-Gestiona la conexión, pool de conexiones y rutas de herramientas externas.
-
-![Tab Configuración](Screenshots/Tab-Configurations.png)
-
-| Parámetro | Descripción | Default |
-|---|---|---|
-| Connection string | Cadena completa de Npgsql | — |
-| Schema | Schema PostgreSQL a usar | `public` |
-| Command timeout | Tiempo máximo de una query EF Core (seg.) | `60` |
-| Min pool size | Conexiones mínimas activas en el pool | `4` |
-| Max pool size | Conexiones máximas en el pool | `100` |
-| Max auto-prepare | Statements preparados en servidor (0 = off) | `50` |
-| PgBin path | Ruta a `pg_dump` / `psql` / `pg_restore` | auto-detect |
-| Backup directory | Carpeta donde se guardan los backups | — |
-| Backup compression | Comprimir backup en ZIP | `true` |
-
-**Flujo recomendado:**
-1. Rellena los campos y pulsa **Probar conexión** — devuelve la versión del servidor si todo es correcto.
-2. Ajusta pool y timeout según tu carga.
-3. Pulsa **Guardar configuración**.
-4. Tras migrar los datos, pulsa **Activar PostgreSQL** y reinicia.
-
----
-
-### 🩺 Health Check
-
-Diagnóstico automático de la base de datos. Se ejecuta **10 segundos después del arranque** y puede lanzarse manualmente desde la UI.
-
-![Tab Health Check](Screenshots/Tab-Health.png)
-
-| Check | Descripción |
-|---|---|
-| **Conexión** | Verifica que PostgreSQL es accesible |
-| **Extensiones** | `pg_trgm`, `pg_stat_statements` disponibles |
-| **Índices inválidos** | Detecta y puede auto-reparar |
-| **Bloat de tablas** | Tablas con > 20 % de tuplas muertas |
-| **Secuencias desfasadas** | Secuencias fuera de rango respecto a los datos |
-| **Estadísticas obsoletas** | Tablas sin `ANALYZE` reciente |
-| **Queries lentas** | Top queries por tiempo acumulado (`pg_stat_statements`) |
-
-Los resultados se clasifican con semáforo: `Info` / `Warn` / `Error`. Los problemas reparables pueden corregirse en un clic desde la misma card.
-
----
-
-### 🔄 Migración
-
-Dos operaciones con progreso en vivo:
-
-![Tab Migración](Screenshots/Tab-Migrations.png)
-
-#### SQLite → PostgreSQL
-
-Copia `jellyfin.db` a PostgreSQL tabla por tabla.
-
-1. La ruta de `jellyfin.db` se autodetecta (`{DataPath}/jellyfin.db`).
-2. Ajusta el **batch size** (default 1000).
-3. Activa **Truncar tablas antes de insertar** si repites la migración sobre datos existentes.
-4. Pulsa **Iniciar migración** y sigue el progreso.
-5. Al llegar al 100 %, activa PostgreSQL desde la pestaña Configuración.
-
-> ⚠️ La opción `--truncate` hace `TRUNCATE + RESTART IDENTITY + CASCADE`. Úsala en reintentos para evitar duplicados; es destructiva con datos existentes.
-
-#### PostgreSQL → SQLite
-
-Exporta toda la base a un archivo `.db` nativo sin herramientas externas.
-
-- Si el `.db` no existe → lo crea con el schema derivado de PostgreSQL.
-- Si el `.db` ya existe → preserva las tablas y reemplaza solo el contenido (`DELETE` + `INSERT`).
-- Escritura en transacciones de 10 000 filas con `PRAGMA journal_mode=WAL`.
-
-**Casos de uso:** revertir a SQLite, copia portable de seguridad, inspección local.
-
----
-
-### 🛠️ Mantenimiento
-
-Operaciones de mantenimiento, backups y estadísticas de la base de datos.
-
-![Tab Mantenimiento](Screenshots/Tab-Maintenance.png)
-
-| Acción | Descripción |
-|---|---|
-| **VACUUM ANALYZE** | Libera espacio y actualiza estadísticas del planificador |
-| **REINDEX DATABASE** | Reconstruye todos los índices |
-| **Aplicar optimizaciones** | Crea 9 índices GIN CONCURRENTLY + tuning de autovacuum |
+> 💡 El botón **Aplicar optimizaciones** activa también la búsqueda casi instantánea si `pg_trgm` está disponible.
 | **Crear backup ahora** | Genera `.sql` (y `.zip` opcional) con `pg_dump` |
 | **Restablecer backup** | Restaura desde `.sql` o `.zip` |
 | **Actualizar estadísticas** | Tamaño total, conexiones activas y métricas por tabla |
 
 ---
 
-## 🔍 Búsqueda instantánea (InstantSearch)
+## 🔍 Búsqueda casi instantánea
 
 Cuando los índices GIN están activos, el plugin expone un endpoint propio que evita EF Core:
 
-- Latencia típica **< 15 ms** en bibliotecas medianas y grandes.
+- Latencia típica **< 15 ms** en bibliotecas medianas y grandes (depende del hardware y del cliente).
 - Búsqueda por nombre, path y tipo de ítem.
 - **Fallback automático** a `ILIKE` si los índices GIN aún no existen.
 - Se activa en **Mantenimiento → Aplicar optimizaciones**.
@@ -385,7 +256,7 @@ El plugin preserva la estructura de tablas y reemplaza solo los datos (DELETE + 
 </details>
 
 <details>
-<summary><b>¿InstantSearch requiere cambios en el cliente Jellyfin?</b></summary>
+<summary><b>¿La búsqueda rápida requiere cambios en el cliente Jellyfin?</b></summary>
 
 No. Es un endpoint de servidor. La UI del plugin lo usa internamente cuando PostgreSQL está activo y los índices GIN existen.
 </details>

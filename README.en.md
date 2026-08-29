@@ -9,7 +9,7 @@
 # 🐘 PostgreSQL Database Provider
 
 **Jellyfin plugin** that replaces SQLite with PostgreSQL as the database engine,
-without modifying Jellyfin core. Bidirectional migration, instant search,
+without modifying Jellyfin core. Bidirectional migration, near-instant search,
 automatic health check, scheduled maintenance and optional JellyTrend integration.
 
 <br>
@@ -29,7 +29,7 @@ automatic health check, scheduled maintenance and optional JellyTrend integratio
 ## ✨ Features
 
 - 🐘 **PostgreSQL as native backend** — EF Core + Npgsql, no Jellyfin core changes required.
-- 🔍 **Instant search** sub-15 ms with GIN trigram index (`pg_trgm`); automatic fallback to `ILIKE`.
+- 🔍 **Near-instant search** (< 15 ms typical) with GIN trigram index (`pg_trgm`); automatic fallback to `ILIKE`.
 - 🔄 **Bidirectional migration** — SQLite → PostgreSQL and PostgreSQL → SQLite without external tools.
 - 🩺 **Automatic health check** at startup: diagnoses bloat, invalid indexes, drifted sequences and slow queries.
 - 🛡️ **Error prevention** — EF Core interceptors for upserts, DB error logging and `DateTime.Kind` normalization.
@@ -172,11 +172,11 @@ Maintenance operations, backups and database statistics.
 
 ---
 
-## 🔍 Instant Search (InstantSearch)
+## 🔍 Near-instant search
 
 When GIN indexes are active, the plugin exposes its own search endpoint that bypasses EF Core:
 
-- Typical latency **< 15 ms** on medium and large libraries.
+- Typical latency **< 15 ms** on medium and large libraries (depends on hardware and client).
 - Searches by item name, path and type.
 - **Automatic fallback** to `ILIKE` if GIN indexes don't exist yet.
 - Activated from **Maintenance → Apply optimizations**.
@@ -283,7 +283,7 @@ The plugin preserves the table structure and replaces only the data (DELETE + IN
 </details>
 
 <details>
-<summary><b>Does InstantSearch require client changes?</b></summary>
+<summary><b>Does the fast search require client changes?</b></summary>
 
 No. It is a server-side endpoint. The plugin UI uses it internally when PostgreSQL is active and GIN indexes exist.
 </details>
