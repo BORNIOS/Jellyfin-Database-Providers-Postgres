@@ -10,7 +10,7 @@
 
 **Jellyfin plugin** that replaces SQLite with PostgreSQL as the database engine,
 without modifying Jellyfin core. Bidirectional migration, near-instant search,
-automatic health check, scheduled maintenance and optional JellyTrend integration.
+automatic health check, scheduled maintenance and optional [JellyTrend](https://github.com/BORNIOS/JellyTrend) integration.
 
 <br>
 
@@ -35,7 +35,7 @@ automatic health check, scheduled maintenance and optional JellyTrend integratio
 - 🛡️ **Error prevention** — EF Core interceptors for upserts, DB error logging and `DateTime.Kind` normalization.
 - 🔧 **Automatic optimization** — GIN indexes CONCURRENTLY, autovacuum tuning on critical tables.
 - 💾 **Scheduled backups** with `pg_dump`, optional ZIP compression and restore from the UI.
-- ⚡ **Optional JellyTrend integration** — recommendations 4-10× faster with optimized native SQL.
+- ⚡ **Optional [JellyTrend](https://github.com/BORNIOS/JellyTrend) integration** — recommendations 4-10× faster with optimized native SQL.
 - 📊 **Database statistics** — total size, active connections and per-table metrics from the UI.
 - 🔁 **One-click rollback to SQLite** from the configuration tab.
 
@@ -237,7 +237,7 @@ In **Maintenance**: **Create backup now** / **Restore backup** (accepts `.sql` o
 
 [**JellyTrend**](https://github.com/BORNIOS/JellyTrend) is the official trending and recommendations plugin for Jellyfin — syncs TMDB trends with your library and renders a Netflix-style carousel on the home screen.
 
-When both plugins are installed, JellyTrend’s recommendation engine automatically detects this plugin and replaces `ILibraryManager` queries with optimized native SQL:
+When both plugins are installed, [JellyTrend](https://github.com/BORNIOS/JellyTrend)’s recommendation engine automatically detects this plugin and replaces `ILibraryManager` queries with optimized native SQL:
 
 | Engine | Behavior |
 |---|---|

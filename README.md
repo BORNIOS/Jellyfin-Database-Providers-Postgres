@@ -10,7 +10,7 @@
 
 **Plugin para Jellyfin** que reemplaza SQLite por PostgreSQL como motor de base de datos,
 sin modificar el núcleo de Jellyfin. Migración bidireccional, búsqueda casi instantánea,
-health check automático, mantenimiento programado e integración opcional con JellyTrend.
+health check automático, mantenimiento programado e integración opcional con [JellyTrend](https://github.com/BORNIOS/JellyTrend).
 
 <br>
 
@@ -35,7 +35,7 @@ health check automático, mantenimiento programado e integración opcional con J
 - 🛡️ **Prevención de errores** — interceptores EF Core para upserts, logging de errores DB y normalización de `DateTime.Kind`.
 - 🔧 **Optimización automática** — índices GIN CONCURRENTLY, tuning de autovacuum en tablas críticas.
 - 💾 **Backups programados** con `pg_dump`, compresión ZIP opcional y restore desde la UI.
-- ⚡ **Integración opcional con JellyTrend** — recomendaciones 4-10× más rápidas con SQL nativo optimizado.
+- ⚡ **Integración opcional con [JellyTrend](https://github.com/BORNIOS/JellyTrend)** — recomendaciones 4-10× más rápidas con SQL nativo optimizado.
 - 📊 **Estadísticas de BD** — tamaño, conexiones activas y análisis tabla por tabla desde la UI.
 - 🔁 **Rollback a SQLite** en un clic desde la configuración.
 
@@ -210,7 +210,7 @@ En **Mantenimiento**: **Crear backup ahora** / **Restablecer backup** (acepta `.
 
 [**JellyTrend**](https://github.com/BORNIOS/JellyTrend) es el plugin oficial de tendencias y recomendaciones para Jellyfin — sincroniza el trending de TMDB con tu biblioteca y genera un carrusel estilo Netflix en la pantalla de inicio.
 
-Cuando ambos plugins están instalados, el motor de recomendaciones de JellyTrend detecta automáticamente este plugin y sustituye las queries de `ILibraryManager` por SQL nativo optimizado:
+Cuando ambos plugins están instalados, el motor de recomendaciones de [JellyTrend](https://github.com/BORNIOS/JellyTrend) detecta automáticamente este plugin y sustituye las queries de `ILibraryManager` por SQL nativo optimizado:
 
 | Motor | Comportamiento |
 |---|---|
