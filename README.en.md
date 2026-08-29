@@ -233,7 +233,11 @@ In **Maintenance**: **Create backup now** / **Restore backup** (accepts `.sql` o
 
 ## ⚡ JellyTrend integration
 
-If you have [**JellyTrend**](https://github.com/BORNIOS/JellyTrend) installed, the recommendation engine automatically detects this plugin and replaces `ILibraryManager` queries with optimized native SQL:
+[![JellyTrend](https://img.shields.io/badge/JellyTrend-Plugin%20compatible-00A4DC?style=flat-square&logo=jellyfin&logoColor=white)](https://github.com/BORNIOS/JellyTrend)
+
+[**JellyTrend**](https://github.com/BORNIOS/JellyTrend) is the official trending and recommendations plugin for Jellyfin — syncs TMDB trends with your library and renders a Netflix-style carousel on the home screen.
+
+When both plugins are installed, JellyTrend’s recommendation engine automatically detects this plugin and replaces `ILibraryManager` queries with optimized native SQL:
 
 | Engine | Behavior |
 |---|---|

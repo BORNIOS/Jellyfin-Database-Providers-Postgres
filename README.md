@@ -206,7 +206,11 @@ En **Mantenimiento**: **Crear backup ahora** / **Restablecer backup** (acepta `.
 
 ## ⚡ Integración con JellyTrend
 
-Si tienes instalado [**JellyTrend**](https://github.com/BORNIOS/JellyTrend), el motor de recomendaciones detecta automáticamente este plugin y sustituye las queries de `ILibraryManager` por SQL nativo optimizado:
+[![JellyTrend](https://img.shields.io/badge/JellyTrend-Plugin%20compatible-00A4DC?style=flat-square&logo=jellyfin&logoColor=white)](https://github.com/BORNIOS/JellyTrend)
+
+[**JellyTrend**](https://github.com/BORNIOS/JellyTrend) es el plugin oficial de tendencias y recomendaciones para Jellyfin — sincroniza el trending de TMDB con tu biblioteca y genera un carrusel estilo Netflix en la pantalla de inicio.
+
+Cuando ambos plugins están instalados, el motor de recomendaciones de JellyTrend detecta automáticamente este plugin y sustituye las queries de `ILibraryManager` por SQL nativo optimizado:
 
 | Motor | Comportamiento |
 |---|---|
