@@ -24,6 +24,9 @@ public sealed class ExportToSqliteService : IDisposable
     private const int CommitEveryRows = 10_000;
     private const int MaxLogLines = 500;
 
+    // SQLite primary result code for constraint violations (SQLITE_CONSTRAINT).
+    private const int SqliteConstraintErrorCode = 19;
+
     private static readonly HashSet<string> SkipTables = new(StringComparer.OrdinalIgnoreCase)
         { "__EFMigrationsHistory", "__EFMigrationsLock" };
 
@@ -248,6 +251,13 @@ public sealed class ExportToSqliteService : IDisposable
             schema = pgSchema.Where(c => sqliteColSet.Contains(c.Name)).ToList();
         }
 
+        // Primary-key columns are copied verbatim: text key columns are case-sensitive
+        // in both engines, so normalising their case would merge distinct rows.
+        var keyColumns = await ExportHelpers.GetPrimaryKeyColumnsAsync(pgConn, table, ct).ConfigureAwait(false);
+        var isKeyColumn = schema
+            .Select(c => keyColumns.Contains(c.Name, StringComparer.OrdinalIgnoreCase))
+            .ToArray();
+
         // table comes from pg_tables (system catalog), not user input (CA2100).
         long rowCount;
         using var countCmd = CreateCountCommand(pgConn, table);
@@ -284,6 +294,7 @@ public sealed class ExportToSqliteService : IDisposable
         SqliteTransaction? activeTx = (SqliteTransaction)await sqliteConn.BeginTransactionAsync(ct).ConfigureAwait(false);
         insertCmd.Transaction = activeTx;
         long batchCount = 0;
+        long rowsRead = 0;
 
         try
         {
@@ -291,11 +302,21 @@ public sealed class ExportToSqliteService : IDisposable
             {
                 for (var col = 0; col < schema.Count; col++)
                 {
-                    parameters[col].Value = ConvertForSqlite(reader.GetValue(col));
+                    parameters[col].Value = ConvertForSqlite(reader.GetValue(col), isKeyColumn[col]);
                 }
 
-                await insertCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                try
+                {
+                    await insertCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                }
+                catch (SqliteException ex) when (ex.SqliteErrorCode == SqliteConstraintErrorCode)
+                {
+                    throw new InvalidOperationException(
+                        BuildConstraintError(table, schema, parameters, isKeyColumn, rowsRead + 1, ex), ex);
+                }
+
                 batchCount++;
+                rowsRead++;
                 _exportedRows++;
 
                 if (batchCount >= CommitEveryRows)
@@ -316,6 +337,48 @@ public sealed class ExportToSqliteService : IDisposable
         }
     }
 
+    /// <summary>
+    /// Builds an actionable error for a SQLite constraint violation, including the
+    /// primary-key values of the row that could not be inserted.
+    /// </summary>
+    /// <param name="table">Table being exported.</param>
+    /// <param name="schema">Columns being exported, in insert order.</param>
+    /// <param name="parameters">Insert parameters holding the offending row values.</param>
+    /// <param name="isKeyColumn">Flags the primary-key columns within <paramref name="schema"/>.</param>
+    /// <param name="rowNumber">1-based row number within the table.</param>
+    /// <param name="inner">The SQLite error being reported.</param>
+    /// <returns>Error message with the conflicting primary key.</returns>
+    private static string BuildConstraintError(
+        string table,
+        List<ColumnInfo> schema,
+        List<SqliteParameter> parameters,
+        bool[] isKeyColumn,
+        long rowNumber,
+        SqliteException inner)
+    {
+        var key = new List<string>();
+        for (var i = 0; i < schema.Count; i++)
+        {
+            if (isKeyColumn[i])
+            {
+                key.Add(string.Format(
+                    CultureInfo.InvariantCulture,
+                    "{0}={1}",
+                    schema[i].Name,
+                    parameters[i].Value ?? "NULL"));
+            }
+        }
+
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "Failed to export table '{0}' (row {1}): {2} Conflicting primary key: {3}. "
+            + "Verify the source rows in PostgreSQL; two rows may differ only by letter case.",
+            table,
+            rowNumber,
+            inner.Message,
+            key.Count > 0 ? string.Join(", ", key) : "(unknown)");
+    }
+
     // ── Value conversion ──────────────────────────────────────────────────────
 
     // GUID format note: Jellyfin's native SQLite stores GUIDs in UPPERCASE
@@ -323,7 +386,12 @@ public sealed class ExportToSqliteService : IDisposable
     // in lowercase. We normalise to UPPERCASE on export so that Jellyfin's
     // case-sensitive internal lookups (UserManager, DeviceManager, etc.) work
     // correctly when switching back to SQLite mode.
-    private static object ConvertForSqlite(object? value) => value switch
+    //
+    // Primary-key columns are never case-normalised: a text key column such as
+    // UserData.CustomDataKey is case-sensitive, and rows like 'AE19...' / 'ae19...'
+    // are legitimate distinct rows. Uppercasing them merges both rows and violates
+    // the primary key, aborting the export.
+    private static object ConvertForSqlite(object? value, bool preserveKeyColumn) => value switch
     {
         null or DBNull => DBNull.Value,
         bool b => b ? 1 : 0,
@@ -337,7 +405,7 @@ public sealed class ExportToSqliteService : IDisposable
         int[] arr => JsonSerializer.Serialize(arr),
         float[] arr => JsonSerializer.Serialize(arr),
         // String GUIDs from PostgreSQL (uuid columns read as string) → UPPERCASE
-        string s when GuidPattern.IsMatch(s) => s.ToUpperInvariant(),
+        string s when !preserveKeyColumn && GuidPattern.IsMatch(s) => s.ToUpperInvariant(),
         _ => value,
     };
 
