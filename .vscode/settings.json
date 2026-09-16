@@ -4,5 +4,9 @@
     // jellyfinDataDir: directorio de datos de Jellyfin (configs, plugins, metadata)
     "jellyfinDataDir": "${env:LOCALAPPDATA}/jellyfin",
     // Nombre del plugin (debe coincidir con el AssemblyName)
-    "pluginName": "Jellyfin.Database.Providers.Postgres"
+    "pluginName": "Jellyfin.Database.Providers.Postgres",
+    "sonarlint.connectedMode.project": {
+        "connectionId": "SAETICS",
+        "projectKey": "BORNIOS_Jellyfin-Database-Providers-Postgres"
+    },
 }

@@ -33,7 +33,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '9.0.x'
+          dotnet-version: '10.0.x'
 
       - name: Normalizar versión (4 partes)
         id: version
@@ -87,7 +87,7 @@ jobs:
           TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           CHANGELOG="${{ github.event.inputs.changelog }}"
           jq --arg v "$VERSION" --arg url "$URL" --arg sum "$CHECKSUM" --arg ts "$TS" --arg changelog "$CHANGELOG" \
-            '.[0].versions = (([.[0].versions[] | select(.version != $v)]) + [{version: $v, changelog: $changelog, targetAbi: "10.11.0.0", sourceUrl: $url, checksum: $sum, timestamp: $ts}])' \
+            '.[0].versions = (([.[0].versions[] | select(.version != $v)]) + [{version: $v, changelog: $changelog, targetAbi: "12.1.0.0", sourceUrl: $url, checksum: $sum, timestamp: $ts}])' \
             manifest.json > manifest.tmp.json && mv manifest.tmp.json manifest.json
           cp manifest.json publish/manifest.json
 

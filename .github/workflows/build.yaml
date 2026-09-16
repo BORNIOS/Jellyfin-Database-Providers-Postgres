@@ -18,6 +18,18 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,13 +37,18 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '9.0.x'
+          dotnet-version: '10.0.x'
 
       - name: Restore
         run: dotnet restore Jellyfin.Database.Providers.Postgres.sln
 
       - name: Build (Release)
         run: dotnet build Jellyfin.Database.Providers.Postgres.sln -c Release --no-restore
+
+      - name: Compatibility and migration checks
+        env:
+          POSTGRES_TEST_CONNECTION: Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=postgres
+        run: dotnet run --project tests/CompatibilityChecks -c Release --no-build
 
       - name: Publish
         run: dotnet publish Jellyfin.Database.Providers.Postgres/Jellyfin.Database.Providers.Postgres.csproj -c Release --no-restore -o artifacts
