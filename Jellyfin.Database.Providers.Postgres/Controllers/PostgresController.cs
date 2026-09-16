@@ -99,6 +99,9 @@ public class PostgresController : ControllerBase
             SavedConnectionString = config?.ConnectionString,
             SavedSchema = config?.Schema ?? DefaultSchema,
             SavedCommandTimeout = config?.CommandTimeout ?? 60,
+            SavedMinPoolSize = config?.MinPoolSize ?? 4,
+            SavedMaxPoolSize = config?.MaxPoolSize ?? 100,
+            SavedMaxAutoPrepare = config?.MaxAutoPrepare ?? 50,
             SavedBackupDirectory = string.IsNullOrWhiteSpace(config?.BackupDirectory)
                 ? defaultBackupDir
                 : config?.BackupDirectory ?? defaultBackupDir,
@@ -166,8 +169,31 @@ public class PostgresController : ControllerBase
             return StatusCode(StatusCodes.Status503ServiceUnavailable, new { Error = "Plugin not loaded." });
         }
 
+        if (request.MaxPoolSize > 0 && request.MinPoolSize > request.MaxPoolSize)
+        {
+            return BadRequest(new { Success = false, Error = "El tamaño máximo del pool no puede ser menor que el mínimo." });
+        }
+
         plugin.Configuration.ConnectionString = request.ConnectionString;
         plugin.Configuration.CommandTimeout = request.CommandTimeout;
+
+        // Advanced options are persisted here; the provider uses them as the default for connection
+        // strings that do not carry them, which is what made the pool fields look like they did nothing.
+        if (request.MinPoolSize > 0)
+        {
+            plugin.Configuration.MinPoolSize = request.MinPoolSize;
+        }
+
+        if (request.MaxPoolSize > 0)
+        {
+            plugin.Configuration.MaxPoolSize = request.MaxPoolSize;
+        }
+
+        if (request.MaxAutoPrepare >= 0)
+        {
+            plugin.Configuration.MaxAutoPrepare = request.MaxAutoPrepare;
+        }
+
         if (request.BackupDirectory is not null)
         {
             plugin.Configuration.BackupDirectory = request.BackupDirectory;

@@ -45,10 +45,10 @@ jobs:
       - name: Build (Release)
         run: dotnet build Jellyfin.Database.Providers.Postgres.sln -c Release --no-restore
 
-      - name: Compatibility and migration checks
+      - name: Suite de verificación
         env:
           POSTGRES_TEST_CONNECTION: Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=postgres
-        run: dotnet run --project tests/CompatibilityChecks -c Release --no-build
+        run: dotnet test Tests/Jellyfin.Database.Providers.Postgres.Tests/Jellyfin.Database.Providers.Postgres.Tests.csproj -c Release --no-build --no-restore
 
       - name: Publish
         run: dotnet publish Jellyfin.Database.Providers.Postgres/Jellyfin.Database.Providers.Postgres.csproj -c Release --no-restore -o artifacts

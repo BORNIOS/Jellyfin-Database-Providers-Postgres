@@ -1,11 +1,11 @@
 # Resumen ejecutivo de verificación
 
-> Documento generado automáticamente por `tools/Generar-ResumenEjecutivo.ps1` a partir del resultado
+> Documento generado automáticamente por `Tools/Generar-ResumenEjecutivo.ps1` a partir del resultado
 > real de la suite de pruebas. No se edita a mano.
 
 | Dato | Valor |
 | --- | --- |
-| Fecha de ejecución | 2026-09-16 02:18:57 -07:00 |
+| Fecha de ejecución | 2026-09-16 02:50:33 -07:00 |
 | Versión del plugin | 3.0.0.0 |
 | Jellyfin validado | 12.1.0 |
 | Base de datos de pruebas | Jellyfin |
@@ -15,12 +15,13 @@
 
 | Verificaciones | Correctas | Con error | Omitidas |
 | --- | --- | --- | --- |
-| 63 | 63 | 0 | 0 |
+| 68 | 68 | 0 | 0 |
 
 ## Resultado por área
 
 | Área | Verificaciones | Resultado |
 | --- | --- | --- |
+| AdvancedOptionTests | 5 | ✅ 5/5 |
 | DatabaseConfigurationTests | 2 | ✅ 2/2 |
 | LoggingTests | 3 | ✅ 3/3 |
 | PostgresIntegrationTests | 11 | ✅ 11/11 |
@@ -34,6 +35,11 @@
 
 | Verificación | Resultado |
 | --- | --- |
+| AdvancedOptionTests.CommandTimeoutIsAlwaysApplied | ✅ |
+| AdvancedOptionTests.PoolFallsBackToTheSavedConfiguration | ✅ |
+| AdvancedOptionTests.PoolFromTheConnectionStringIsRespected | ✅ |
+| AdvancedOptionTests.RequestDefaultsMatchThePluginDefaults | ✅ |
+| AdvancedOptionTests.SavedConfigurationSurvivesTheRoundTrip | ✅ |
 | DatabaseConfigurationTests.EngineSwitchIsDetectedFromDatabaseXml | ✅ |
 | DatabaseConfigurationTests.WrittenDatabaseXmlRoundTripsThroughJellyfinOptions | ✅ |
 | LoggingTests.FailuresCarryLevelMessageAndStackTrace | ✅ |
@@ -102,11 +108,11 @@
 
 ```bash
 # Sólo verificaciones sin base de datos
-dotnet test tests/Jellyfin.Database.Providers.Postgres.Tests
+dotnet test Tests/Jellyfin.Database.Providers.Postgres.Tests
 
 # Verificaciones completas, incluida la integración con PostgreSQL
 $env:POSTGRES_TEST_CONNECTION = "Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=***"
-./tools/Generar-ResumenEjecutivo.ps1
+./Tools/Generar-ResumenEjecutivo.ps1
 ```
 
 Las pruebas de integración crean su propia base de datos desechable y la eliminan al terminar:

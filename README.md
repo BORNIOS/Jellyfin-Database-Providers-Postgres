@@ -25,7 +25,20 @@ health check automático, mantenimiento programado e integración opcional con J
 </div>
 
 > **v3 / Jellyfin 12.1:** requiere .NET 10 y PostgreSQL 16+. Consulta la [guía de actualización y pruebas](docs/JELLYFIN-12.1.md) antes de sustituir el proveedor.
+>
+> **¿Vienes de Jellyfin 10.11.x con PostgreSQL?** Sigue el [manual de migración 10.11.x → 12.x](docs/migracion-10.11-a-12.md): necesitas el plugin **2.0.1** para exportar PostgreSQL a SQLite antes de actualizar el servidor y el plugin **3.0.0** para importar de vuelta a PostgreSQL.
 
+---
+
+## 📚 Documentación
+
+| Documento | Contenido |
+|---|---|
+| [Migración 10.11.x → 12.x](docs/migracion-10.11-a-12.md) · [EN](docs/migration-10.11-to-12.en.md) | Manual paso a paso, con diagrama y plan de contingencia |
+| [Novedades de 3.0.0](docs/novedades-3.0.0.md) · [EN](docs/whats-new-3.0.0.en.md) | Qué cambia en 3.0.0 frente a 2.0.1 |
+| [Plan de publicación](docs/plan-de-publicacion.md) · [EN](docs/release-plan.en.md) | Orden y runbook para publicar 2.0.1 y 3.0.0 |
+| [Adaptación a Jellyfin 12.1](docs/JELLYFIN-12.1.md) | Notas técnicas y cómo ejecutar la suite de pruebas |
+| [Verificación automatizada](docs/VERIFICACION-RESUMEN.md) | Resumen ejecutivo generado desde la suite real |
 
 ---
 

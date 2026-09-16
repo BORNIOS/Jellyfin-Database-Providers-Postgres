@@ -283,12 +283,20 @@
                             </summary>
                             <div style="margin-top:10px;">
                                 <div class="inputContainer">
-                                    <input is="emby-input" type="number" id="pgPoolSize" label="Tamano maximo del pool" value="200" min="1" max="2000"/>
+                                    <input is="emby-input" type="number" id="pgMinPoolSize" label="Tamano minimo del pool" value="4" min="0" max="200"/>
+                                </div>
+                                <div class="inputContainer">
+                                    <input is="emby-input" type="number" id="pgPoolSize" label="Tamano maximo del pool" value="100" min="1" max="2000"/>
                                     <div class="fieldDescription" id="poolSizeHelp">Numero maximo de conexiones en el pool de Npgsql.</div>
                                 </div>
                                 <div class="inputContainer">
-                                    <input is="emby-input" type="number" id="pgCommandTimeout" label="Command Timeout (segundos)" value="60" min="5" max="3600"/>
+                                    <input is="emby-input" type="number" id="pgMaxAutoPrepare" label="Sentencias preparadas por conexion" value="50" min="0" max="1000"/>
+                                    <div class="fieldDescription" id="maxAutoPrepareHelp">Cuantas sentencias mantiene Npgsql preparadas en cada conexion. 0 las desactiva.</div>
                                 </div>
+                                <div class="inputContainer">
+                                    <input is="emby-input" type="number" id="pgCommandTimeout" label="Command Timeout (segundos)" value="600" min="5" max="3600"/>
+                                </div>
+                                <div class="fieldDescription" id="advancedRestartHelp">Estas opciones se aplican al reiniciar Jellyfin.</div>
                             </div>
                         </details>
 
@@ -809,6 +817,14 @@
                     field_password: 'Password',
                     field_pool_size: 'Max pool size',
                     field_command_timeout: 'Command timeout (seconds)',
+                    field_min_pool_size: 'Min pool size',
+                    field_max_auto_prepare: 'Prepared statements per connection',
+                    help_max_auto_prepare: 'How many statements Npgsql keeps prepared on each connection. 0 disables it.',
+                    help_advanced_restart: 'These options are applied when Jellyfin restarts.',
+                    msg_advanced_invalid_pool: 'Max pool size cannot be smaller than min pool size.',
+                    msg_pool_state_prefix: 'Pool: ',
+                    msg_timeout_state_prefix: 'Timeout: ',
+                    msg_prepare_state_prefix: 'Prepared statements: ',
                     field_sqlite_path: 'SQLite file path'
                 },
                 es: {
@@ -998,6 +1014,14 @@
                     field_password: 'Contraseña',
                     field_pool_size: 'Tamaño máximo del pool',
                     field_command_timeout: 'Timeout de comandos (segundos)',
+                    field_min_pool_size: 'Tamano minimo del pool',
+                    field_max_auto_prepare: 'Sentencias preparadas por conexion',
+                    help_max_auto_prepare: 'Cuantas sentencias mantiene Npgsql preparadas en cada conexion. 0 las desactiva.',
+                    help_advanced_restart: 'Estas opciones se aplican al reiniciar Jellyfin.',
+                    msg_advanced_invalid_pool: 'El tamano maximo del pool no puede ser menor que el minimo.',
+                    msg_pool_state_prefix: 'Pool: ',
+                    msg_timeout_state_prefix: 'Timeout: ',
+                    msg_prepare_state_prefix: 'Sentencias preparadas: ',
                     field_sqlite_path: 'Ruta del archivo SQLite'
                 }
             };
@@ -1134,6 +1158,10 @@
                 setInputLabel('pgPassword', t('field_password', 'Password', 'LabelPassword'));
                 setInputLabel('pgPoolSize', t('field_pool_size', 'Max pool size'));
                 setInputLabel('pgCommandTimeout', t('field_command_timeout', 'Command Timeout (seconds)'));
+                setInputLabel('pgMinPoolSize', t('field_min_pool_size', 'Min pool size'));
+                setInputLabel('pgMaxAutoPrepare', t('field_max_auto_prepare', 'Prepared statements per connection'));
+                setText('maxAutoPrepareHelp', t('help_max_auto_prepare', 'How many statements Npgsql keeps prepared on each connection. 0 disables it.'));
+                setText('advancedRestartHelp', t('help_advanced_restart', 'These options are applied when Jellyfin restarts.'));
                 setInputLabel('sqlitePath', t('field_sqlite_path', 'SQLite file path'));
                 setInputLabel('restoreBackupPath', t('field_restore_backup_path', 'Backup path to restore (.sql or .zip)'));
                 setInputLabel('configBackupDirectory', t('field_backup_directory_default', 'Default backup directory'));
@@ -1190,13 +1218,17 @@
                 var db    = (document.getElementById('pgDatabase').value  || '').trim();
                 var user  = (document.getElementById('pgUsername').value  || '').trim();
                 var pass  = (document.getElementById('pgPassword').value  || '');
-                var pool  = (document.getElementById('pgPoolSize').value  || '').trim() || '200';
+                var pool  = (document.getElementById('pgPoolSize').value  || '').trim() || '100';
+                var minPool = (document.getElementById('pgMinPoolSize').value || '').trim() || '4';
+                var prepare = (document.getElementById('pgMaxAutoPrepare').value || '').trim() || '50';
                 var parts = ['Host=' + host, 'Port=' + port];
                 if (db)   parts.push('Database='        + db);
                 if (user) parts.push('Username='        + user);
                 if (pass) parts.push('Password='        + pass);
                 parts.push('Pooling=true');
+                parts.push('Minimum Pool Size='         + minPool);
                 parts.push('Maximum Pool Size='         + pool);
+                parts.push('Max Auto Prepare='          + prepare);
                 return parts.join(';');
             }
 
@@ -1208,7 +1240,9 @@
                 document.getElementById('pgDatabase').value = p['database'] || p['initialcatalog']   || '';
                 document.getElementById('pgUsername').value = p['username'] || p['userid'] || p['uid'] || '';
                 document.getElementById('pgPassword').value = p['password'] || p['pwd']              || '';
-                document.getElementById('pgPoolSize').value = p['maximumpoolsize'] || p['maxpoolsize'] || '200';
+                document.getElementById('pgPoolSize').value = p['maximumpoolsize'] || p['maxpoolsize'] || '100';
+                document.getElementById('pgMinPoolSize').value = p['minimumpoolsize'] || p['minpoolsize'] || '4';
+                document.getElementById('pgMaxAutoPrepare').value = p['maxautoprepare'] || '50';
             }
 
             document.querySelectorAll('.pg-tab-btn').forEach(function(btn) {
@@ -1522,6 +1556,17 @@
 
                     fillFieldsFromConnStr(data.SavedConnectionString);
                     if (data.SavedCommandTimeout != null) document.getElementById('pgCommandTimeout').value = data.SavedCommandTimeout;
+                    if (data.SavedMinPoolSize != null)   document.getElementById('pgMinPoolSize').value = data.SavedMinPoolSize;
+                    if (data.SavedMaxPoolSize != null)   document.getElementById('pgPoolSize').value = data.SavedMaxPoolSize;
+                    if (data.SavedMaxAutoPrepare != null) document.getElementById('pgMaxAutoPrepare').value = data.SavedMaxAutoPrepare;
+
+                    // The advanced options were invisible in the status, which made saving them look like a no-op.
+                    box.innerHTML += '<br><span style="font-size:12px; opacity:.85;">'
+                        + escapeHtml(t('msg_pool_state_prefix', 'Pool: ')) + '<strong>' + escapeHtml(String(data.SavedMinPoolSize != null ? data.SavedMinPoolSize : 4))
+                        + '-' + escapeHtml(String(data.SavedMaxPoolSize != null ? data.SavedMaxPoolSize : 100)) + '</strong>'
+                        + ' \u00b7 ' + escapeHtml(t('msg_timeout_state_prefix', 'Timeout: ')) + '<strong>' + escapeHtml(String(data.SavedCommandTimeout != null ? data.SavedCommandTimeout : 600)) + ' s</strong>'
+                        + ' \u00b7 ' + escapeHtml(t('msg_prepare_state_prefix', 'Prepared statements: ')) + '<strong>' + escapeHtml(String(data.SavedMaxAutoPrepare != null ? data.SavedMaxAutoPrepare : 50)) + '</strong>'
+                        + '</span>';
                     if (data.SqliteDefaultPath)    document.getElementById('sqlitePath').value = data.SqliteDefaultPath;
                     if (data.SavedBackupDirectory) {
                         document.getElementById('configBackupDirectory').value = data.SavedBackupDirectory;
@@ -1567,14 +1612,21 @@
 
             document.getElementById('btnSaveConfig').addEventListener('click', function() {
                 var connStr = buildConnStr();
-                var timeout = parseInt(document.getElementById('pgCommandTimeout').value, 10); if (isNaN(timeout) || timeout < 0) timeout = 60;
+                var timeout = parseInt(document.getElementById('pgCommandTimeout').value, 10); if (isNaN(timeout) || timeout < 0) timeout = 600;
+                var minPool = parseInt(document.getElementById('pgMinPoolSize').value, 10); if (isNaN(minPool) || minPool < 0) minPool = 4;
+                var maxPool = parseInt(document.getElementById('pgPoolSize').value, 10); if (isNaN(maxPool) || maxPool < 1) maxPool = 100;
+                var maxPrepare = parseInt(document.getElementById('pgMaxAutoPrepare').value, 10); if (isNaN(maxPrepare) || maxPrepare < 0) maxPrepare = 50;
                 var backupDirectory = document.getElementById('configBackupDirectory').value.trim();
                 var backupCompression = !!document.getElementById('configBackupCompress').checked;
                 var pgBinPath = document.getElementById('configPgBinPath').value.trim();
                 if (!document.getElementById('pgHost').value.trim()) { showBanner(t('msg_enter_host', 'Enter the PostgreSQL host.'), 'error'); return; }
+                if (minPool > maxPool) { showBanner(t('msg_advanced_invalid_pool', 'El tamano maximo del pool no puede ser menor que el minimo.'), 'error'); return; }
                 apiPost('/SaveConfig', {
                     connectionString: connStr,
                     commandTimeout: timeout,
+                    minPoolSize: minPool,
+                    maxPoolSize: maxPool,
+                    maxAutoPrepare: maxPrepare,
                     backupDirectory: backupDirectory,
                     backupCompression: backupCompression,
                     pgBinPath: pgBinPath
@@ -1583,6 +1635,7 @@
                     .then(function(data) {
                         if (data.Success) {
                             showBanner(t('msg_connection_saved', 'Configuration saved.'), 'success');
+                            loadStatus();
                         } else {
                             showBanner(t('msg_connection_save_error', 'Error while saving: ') + (data.Error || ''), 'error');
                         }

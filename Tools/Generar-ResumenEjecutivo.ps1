@@ -19,7 +19,7 @@
 
 .EXAMPLE
     $env:POSTGRES_TEST_CONNECTION = 'Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=...'
-    ./tools/Generar-ResumenEjecutivo.ps1
+    ./Tools/Generar-ResumenEjecutivo.ps1
 #>
 [CmdletBinding()]
 param(
@@ -30,9 +30,9 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$testProject = Join-Path $repoRoot 'tests/Jellyfin.Database.Providers.Postgres.Tests/Jellyfin.Database.Providers.Postgres.Tests.csproj'
+$testProject = Join-Path $repoRoot 'Tests/Jellyfin.Database.Providers.Postgres.Tests/Jellyfin.Database.Providers.Postgres.Tests.csproj'
 $pluginProject = Join-Path $repoRoot 'Jellyfin.Database.Providers.Postgres/Jellyfin.Database.Providers.Postgres.csproj'
-$resultsDir = Join-Path $repoRoot 'tests/TestResults'
+$resultsDir = Join-Path $repoRoot 'Tests/TestResults'
 $trxName = 'verificacion.trx'
 if (-not $OutputPath) { $OutputPath = Join-Path $repoRoot 'docs/VERIFICACION-RESUMEN.md' }
 
@@ -102,7 +102,7 @@ else {
 $lines = [System.Collections.Generic.List[string]]::new()
 $lines.Add('# Resumen ejecutivo de verificación')
 $lines.Add('')
-$lines.Add('> Documento generado automáticamente por `tools/Generar-ResumenEjecutivo.ps1` a partir del resultado')
+$lines.Add('> Documento generado automáticamente por `Tools/Generar-ResumenEjecutivo.ps1` a partir del resultado')
 $lines.Add('> real de la suite de pruebas. No se edita a mano.')
 $lines.Add('')
 $lines.Add('| Dato | Valor |')
@@ -158,11 +158,11 @@ $lines.Add('## Cómo reproducirlo')
 $lines.Add('')
 $lines.Add('```bash')
 $lines.Add('# Sólo verificaciones sin base de datos')
-$lines.Add('dotnet test tests/Jellyfin.Database.Providers.Postgres.Tests')
+$lines.Add('dotnet test Tests/Jellyfin.Database.Providers.Postgres.Tests')
 $lines.Add('')
 $lines.Add('# Verificaciones completas, incluida la integración con PostgreSQL')
 $lines.Add('$env:POSTGRES_TEST_CONNECTION = "Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=***"')
-$lines.Add('./tools/Generar-ResumenEjecutivo.ps1')
+$lines.Add('./Tools/Generar-ResumenEjecutivo.ps1')
 $lines.Add('```')
 $lines.Add('')
 $lines.Add('Las pruebas de integración crean su propia base de datos desechable y la eliminan al terminar:')

@@ -39,7 +39,7 @@ project.fragment.lock.json
 artifacts/
 
 # Test results (artefactos de la suite de verificacion)
-tests/TestResults/
+Tests/TestResults/
 *.trx
 
 # Publish output

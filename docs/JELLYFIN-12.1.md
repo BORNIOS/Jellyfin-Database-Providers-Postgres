@@ -53,17 +53,16 @@ la versión anterior no representaba.
 
 ```powershell
 dotnet build Jellyfin.Database.Providers.Postgres.sln -c Release
-dotnet run --project tests/CompatibilityChecks -c Release
+dotnet test Tests/Jellyfin.Database.Providers.Postgres.Tests -c Release
 ```
 
 Las comprobaciones sin variables de entorno no abren conexiones PostgreSQL.
 Para integración, proporcionar una instancia **exclusiva de pruebas** con permiso
-para crear bases; el runner crea bases nuevas con prefijo `jellyfin_provider_test_`:
+para crear bases; la suite crea bases nuevas con prefijo `jellyfin_provider_test_`:
 
 ```powershell
 $env:POSTGRES_TEST_CONNECTION = 'Host=localhost;Port=55439;Database=postgres;Username=postgres'
-$env:POSTGRES_TEST_BACKUPS = '1' # Requiere pg_dump y psql en PATH
-dotnet run --project tests/CompatibilityChecks -c Release
+dotnet test Tests/Jellyfin.Database.Providers.Postgres.Tests -c Release
 ```
 
 Las pruebas cubren esquema inicial, actualización con datos, UUID, duplicados y

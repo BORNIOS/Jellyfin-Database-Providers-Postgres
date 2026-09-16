@@ -148,13 +148,7 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         // Apply pool tuning and prepared-statement cache from plugin config
         var config = PostgresPlugin.Instance?.Configuration;
         var commandTimeout = config?.CommandTimeout ?? 600;
-        var csb = new NpgsqlConnectionStringBuilder(connStr)
-        {
-            MinPoolSize = config?.MinPoolSize ?? 4,
-            MaxPoolSize = config?.MaxPoolSize ?? 100,
-            MaxAutoPrepare = config?.MaxAutoPrepare ?? 50,
-            CommandTimeout = commandTimeout,
-        };
+        var csb = BuildTunedConnectionString(connStr, config, commandTimeout);
 
         var tunedConnStr = csb.ToString();
 
@@ -221,6 +215,50 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
                 }
             });
         }
+    }
+
+    /// <summary>
+    /// Builds the connection string the provider actually opens connections with, combining the saved
+    /// connection string with the advanced options of the plugin configuration.
+    /// </summary>
+    /// <remarks>
+    /// A value already present in the connection string wins: the dashboard writes the pool settings there,
+    /// so overriding them with the plugin defaults was the reason editing "Max pool size" appeared to do
+    /// nothing. The configuration only fills in what the connection string does not specify.
+    /// </remarks>
+    /// <param name="connectionString">Connection string saved in the plugin configuration or in database.xml.</param>
+    /// <param name="config">Plugin configuration; may be null before the plugin is loaded.</param>
+    /// <param name="commandTimeout">Command timeout in seconds; ignored when not positive.</param>
+    /// <returns>The connection string to use.</returns>
+    internal static NpgsqlConnectionStringBuilder BuildTunedConnectionString(
+        string connectionString,
+        PluginConfiguration? config,
+        int commandTimeout)
+    {
+        var builder = new NpgsqlConnectionStringBuilder(connectionString);
+
+        // ShouldSerialize tells whether the key was explicitly present in the connection string.
+        if (!builder.ShouldSerialize("Minimum Pool Size") && (config?.MinPoolSize ?? 0) > 0)
+        {
+            builder.MinPoolSize = config!.MinPoolSize;
+        }
+
+        if (!builder.ShouldSerialize("Maximum Pool Size") && (config?.MaxPoolSize ?? 0) > 0)
+        {
+            builder.MaxPoolSize = config!.MaxPoolSize;
+        }
+
+        if (!builder.ShouldSerialize("Max Auto Prepare") && (config?.MaxAutoPrepare ?? 0) > 0)
+        {
+            builder.MaxAutoPrepare = config!.MaxAutoPrepare;
+        }
+
+        if (commandTimeout > 0)
+        {
+            builder.CommandTimeout = commandTimeout;
+        }
+
+        return builder;
     }
 
     private static async Task LogPostgresTimezoneAsync(string connectionString)
