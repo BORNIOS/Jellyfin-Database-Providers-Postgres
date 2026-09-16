@@ -5,7 +5,7 @@
 
 | Dato | Valor |
 | --- | --- |
-| Fecha de ejecución | 2026-09-16 02:50:33 -07:00 |
+| Fecha de ejecución | 2026-09-16 02:55:18 -07:00 |
 | Versión del plugin | 3.0.0.0 |
 | Jellyfin validado | 12.1.0 |
 | Base de datos de pruebas | Jellyfin |
