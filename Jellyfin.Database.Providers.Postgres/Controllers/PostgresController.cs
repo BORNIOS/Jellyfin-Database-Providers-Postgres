@@ -330,8 +330,18 @@ public class PostgresController : ControllerBase
         // Schedule restart after response is sent
         _ = Task.Run(async () =>
         {
-            await Task.Delay(500).ConfigureAwait(false);
-            _systemManager.Restart();
+            try
+            {
+                await Task.Delay(500).ConfigureAwait(false);
+                _systemManager.Restart();
+            }
+            catch (Exception ex)
+            {
+                // A restart that fails here would leave the user with a plugin that is configured
+                // for PostgreSQL but a server still running SQLite, so it has to be logged.
+                _logger.LogError(ex, "Failed to restart Jellyfin after activating PostgreSQL.");
+                Logging.PostgresLog.Error("[ENGINE SWITCH] No se pudo reiniciar Jellyfin tras activar PostgreSQL", ex);
+            }
         });
 
         return Accepted(new
@@ -361,10 +371,10 @@ public class PostgresController : ControllerBase
                 ? $"{new System.IO.FileInfo(sqlitePath).Length / 1_048_576.0:F1} MB"
                 : "(file not found)";
 
-            Logging.PostgresLog.Warn("[ENGINE SWITCH] PostgreSQL → SQLite");
-            Logging.PostgresLog.Warn($"[ENGINE SWITCH] database.xml eliminado — Jellyfin usará SQLite al reiniciar.");
-            Logging.PostgresLog.Warn($"[ENGINE SWITCH] SQLite destino: {sqlitePath} ({sqliteSize})");
-            Logging.PostgresLog.Warn("[ENGINE SWITCH] Reiniciando Jellyfin...");
+            Logging.PostgresLog.Info("[ENGINE SWITCH] PostgreSQL → SQLite");
+            Logging.PostgresLog.Info($"[ENGINE SWITCH] database.xml eliminado — Jellyfin usará SQLite al reiniciar.");
+            Logging.PostgresLog.Info($"[ENGINE SWITCH] SQLite destino: {sqlitePath} ({sqliteSize})");
+            Logging.PostgresLog.Info("[ENGINE SWITCH] Reiniciando Jellyfin...");
         }
         else
         {
@@ -373,8 +383,16 @@ public class PostgresController : ControllerBase
 
         _ = Task.Run(async () =>
         {
-            await Task.Delay(500).ConfigureAwait(false);
-            _systemManager.Restart();
+            try
+            {
+                await Task.Delay(500).ConfigureAwait(false);
+                _systemManager.Restart();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to restart Jellyfin after reverting to SQLite.");
+                Logging.PostgresLog.Error("[ENGINE SWITCH] No se pudo reiniciar Jellyfin tras volver a SQLite", ex);
+            }
         });
 
         return Accepted(new { Status = "Reverted to SQLite. Jellyfin is restarting..." });
@@ -405,7 +423,7 @@ public class PostgresController : ControllerBase
         {
             var result = await MaintenanceService.TruncateAllTablesAsync(connStr, cancellationToken)
                 .ConfigureAwait(false);
-            Logging.PostgresLog.Warn($"[Maintenance] TruncateAllTables: {result.TablesAffected} tablas truncadas.");
+            Logging.PostgresLog.Info($"[Maintenance] TruncateAllTables: {result.TablesAffected} tablas truncadas.");
             return Ok(result);
         }
         catch (Exception ex)
@@ -439,7 +457,7 @@ public class PostgresController : ControllerBase
         var connCount = await MaintenanceService.GetConnectionCountAsync(connStr, cancellationToken)
             .ConfigureAwait(false);
 
-        Logging.PostgresLog.Warn(
+        Logging.PostgresLog.Info(
             $"[Stats] BD: {dbSize} | Conexiones activas: {connCount} | Tablas: {tables.Count} | Schema: {effectiveSchema}");
 
         return Ok(new
@@ -594,7 +612,7 @@ public class PostgresController : ControllerBase
         var compress = request?.Compress ?? config?.BackupCompression ?? true;
         var pgBinPath = string.IsNullOrWhiteSpace(request?.PgBinPath)
             ? config?.PgBinPath
-            : request?.PgBinPath;
+            : request.PgBinPath;
 
         try
         {
@@ -743,7 +761,7 @@ public class PostgresController : ControllerBase
 
         var rawPath = string.IsNullOrWhiteSpace(request?.TargetSqlitePath)
             ? ExportToSqliteService.DetectDefaultSqlitePath(_appPaths.DataPath)
-            : request?.TargetSqlitePath ?? ExportToSqliteService.DetectDefaultSqlitePath(_appPaths.DataPath);
+            : request.TargetSqlitePath;
 
         // Resolve final .db file path: if the user gave a directory, append jellyfin.db.
         var sqlitePath = ResolveExportFilePath(rawPath);
@@ -761,12 +779,18 @@ public class PostgresController : ControllerBase
                 }
 
                 ValidatedFileMove(sqlitePath, bkpPath);
-                _logger.LogInformation("Existing SQLite file renamed to {Bkp}", bkpPath);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Existing SQLite file renamed to {Bkp}", bkpPath);
+                }
             }
             else if (mode == "overwrite")
             {
                 ValidatedFileDelete(sqlitePath);
-                _logger.LogInformation("Existing SQLite file deleted for overwrite: {Path}", sqlitePath);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Existing SQLite file deleted for overwrite: {Path}", sqlitePath);
+                }
             }
 
             // mode == "use": keep as-is
@@ -943,12 +967,84 @@ public class PostgresController : ControllerBase
 
         _ = Task.Run(async () =>
         {
-            await PostgresDatabaseProvider.RunOptimizationsAsync(
-                connStr, enableSearch, enableVacuum, _logger, CancellationToken.None)
-                .ConfigureAwait(false);
+            try
+            {
+                await PostgresDatabaseProvider.RunOptimizationsAsync(
+                    connStr, enableSearch, enableVacuum, _logger, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                // The job runs unattended after the 202 response, so nothing else can surface it.
+                _logger.LogError(ex, "Background database optimization job failed.");
+                Logging.PostgresLog.Error("[Optimization] El trabajo en segundo plano fall\u00f3", ex);
+            }
         });
 
         return Accepted(new { Status = "Optimization job started in background." });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Read-only SQL console
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Runs a read-only statement sent from the in-dashboard SQL console. Only SELECT-like statements are
+    /// accepted, one per request, with a bounded number of rows and a short command timeout.
+    /// </summary>
+    /// <param name="request">Statement, row limit and whether to return the execution plan.</param>
+    /// <param name="queryConsole">Service that validates and executes the statement.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The result set, or the reason why the statement was rejected.</returns>
+    [HttpPost("Query")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<object>> RunQuery(
+        [FromBody] QueryRequest request,
+        [FromServices] QueryConsoleService queryConsole,
+        CancellationToken cancellationToken)
+    {
+        var connectionString = GetActiveConnectionString();
+        if (connectionString is null)
+        {
+            return NoActiveConnection();
+        }
+
+        var schema = PostgresPlugin.Instance?.Configuration.Schema ?? DefaultSchema;
+
+        try
+        {
+            var result = await queryConsole
+                .ExecuteAsync(connectionString, request.Sql, schema, request.MaxRows, request.Explain, cancellationToken)
+                .ConfigureAwait(false);
+
+            return Ok(new
+            {
+                Success = true,
+                result.Columns,
+                result.Rows,
+                result.RowCount,
+                result.Truncated,
+                result.DurationMs,
+                MaxRows = QueryConsoleService.MaxRowsLimit,
+                TimeoutSeconds = QueryConsoleService.DefaultTimeoutSeconds
+            });
+        }
+        catch (ArgumentException ex)
+        {
+            Logging.PostgresLog.Warn($"[QueryConsole] Consulta rechazada: {ex.Message}");
+            return BadRequest(new { Success = false, Error = ex.Message });
+        }
+        catch (Npgsql.PostgresException ex)
+        {
+            Logging.PostgresLog.Error($"[QueryConsole] PostgreSQL rechazó la consulta ({ex.SqlState})", ex);
+            return BadRequest(new { Success = false, Error = $"({ex.SqlState}) {ex.MessageText}" });
+        }
+        catch (Exception ex)
+        {
+            Logging.PostgresLog.Error("[QueryConsole] Error ejecutando la consulta", ex);
+            return BadRequest(new { Success = false, Error = ex.Message });
+        }
     }
 
     // ───────────────────────────────────────────────────────────────────────────    // Helpers
@@ -1036,7 +1132,11 @@ public class PostgresController : ControllerBase
         try
         {
             CreateSqliteSchemaViaEfCore(sqlitePath);
-            logger.LogInformation("SQLite schema created via Jellyfin SQLite provider at {Path}", sqlitePath);
+            if (logger.IsEnabled(LogLevel.Information))
+            {
+                logger.LogInformation("SQLite schema created via Jellyfin SQLite provider at {Path}", sqlitePath);
+            }
+
             return true;
         }
         catch (Exception ex)
@@ -1073,7 +1173,10 @@ public class PostgresController : ControllerBase
                 "Jellyfin.Database.Providers.Sqlite.dll not found. " +
                 $"Searched: {string.Join(", ", candidates)}");
 
-        _logger.LogInformation("Loading SQLite provider from: {Path}", sqliteDllPath);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Loading SQLite provider from: {Path}", sqliteDllPath);
+        }
 
         // Load into the default ALC — all EF Core dependencies are already present in the server.
         var sqliteAsm = System.Runtime.Loader.AssemblyLoadContext.Default

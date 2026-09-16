@@ -196,6 +196,7 @@
                     <button type="button" class="pg-tab-btn raised emby-button" data-tab="migration"   style="border-radius:4px 4px 0 0; padding:8px 18px;">&#128260; Migracion</button>
                     <button type="button" class="pg-tab-btn raised emby-button" data-tab="maintenance" style="border-radius:4px 4px 0 0; padding:8px 18px;">&#128295; Mantenimiento</button>
                     <button type="button" class="pg-tab-btn raised emby-button" data-tab="health"      style="border-radius:4px 4px 0 0; padding:8px 18px;">&#128138; Health</button>
+                    <button type="button" class="pg-tab-btn raised emby-button" data-tab="query"       style="border-radius:4px 4px 0 0; padding:8px 18px;">&#128203; SQL</button>
                 </div>
 
                 <!-- TAB 1: CONFIGURACION -->
@@ -518,6 +519,49 @@
                     </div>
                 </div>
 
+                <!-- TAB 5: CONSOLA SQL -->
+                <div id="pg-tab-query" class="pg-tab-content" style="display:none;">
+                    <div class="verticalSection pg-card" style="background:rgba(18,26,48,.88); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2); margin-bottom:16px;">
+                        <h2 id="queryHeading">Consola SQL de solo lectura</h2>
+                        <p class="fieldDescription" id="queryDescription">Ejecuta sentencias de solo lectura sobre PostgreSQL.</p>
+
+                        <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end; margin-bottom:10px;">
+                            <div class="inputContainer" style="flex:1 1 320px; min-width:240px;">
+                                <select is="emby-select" id="queryTemplate" label="Plantilla"></select>
+                            </div>
+                            <div class="inputContainer" style="flex:0 0 150px;">
+                                <input is="emby-input" type="number" id="queryMaxRows" label="Filas maximas" value="200" min="1" max="5000"/>
+                            </div>
+                            <label style="display:flex; align-items:center; gap:8px; font-size:13px; padding-bottom:10px; color:#c8d4ee;">
+                                <input type="checkbox" id="queryExplain"/>
+                                <span id="queryExplainLabel">Solo plan (EXPLAIN)</span>
+                            </label>
+                        </div>
+
+                        <textarea id="querySql" rows="7" spellcheck="false" placeholder="SELECT ..." style="width:100%; box-sizing:border-box; font-family:ui-monospace,Consolas,'Courier New',monospace; font-size:13px; line-height:1.5; padding:12px; border-radius:8px; background:rgba(9,14,28,.85); color:#dbe7ff; border:1px solid rgba(124,146,196,.35); resize:vertical;"></textarea>
+
+                        <div style="display:flex; gap:10px; flex-wrap:wrap; margin:12px 0 10px 0;">
+                            <button is="emby-button" type="button" id="btnRunQuery" class="raised button-submit">&#9654; <span id="btnRunQueryLabel">Ejecutar sentencia</span></button>
+                            <button is="emby-button" type="button" id="btnClearQuery" class="raised button-default">&#10007; <span id="btnClearQueryLabel">Limpiar</span></button>
+                        </div>
+
+                        <div id="queryStatus" style="font-size:13px; min-height:18px; margin-bottom:10px; color:#90caf9;"></div>
+
+                        <div id="queryResultWrap" style="display:none; max-height:420px; overflow:auto; border:1px solid rgba(124,146,196,.28); border-radius:8px; background:rgba(9,14,28,.55);">
+                            <table id="queryResultTable" style="width:100%; border-collapse:collapse; font-size:12px; color:#dbe7ff;">
+                                <thead><tr id="queryResultHead"></tr></thead>
+                                <tbody id="queryResultBody"></tbody>
+                            </table>
+                        </div>
+
+                        <div id="queryHistoryWrap" style="display:none; margin-top:16px;">
+                            <h3 id="queryHistoryHeading" style="margin:0 0 4px 0; font-size:15px;">Historial</h3>
+                            <p class="fieldDescription" id="queryHistoryHint" style="margin-top:0;">Haz clic en una entrada para volver a cargarla.</p>
+                            <div id="queryHistory"></div>
+                        </div>
+                    </div>
+                </div>
+
             </div><!-- end content-primary -->
         </div><!-- end data-role=content -->
 
@@ -678,7 +722,35 @@
                     msg_health_repairable_tag: '[auto-repairable]',
                     health_sev_ok: 'All checks passed',
                     health_sev_warn: 'Warnings detected',
-                    health_sev_error: 'Critical issues detected'
+                    health_sev_error: 'Critical issues detected',
+                    tab_query: 'SQL console',
+                    heading_query: 'Read-only SQL console',
+                    desc_query: 'Run read-only statements against PostgreSQL: SELECT, WITH, TABLE, VALUES, EXPLAIN or SHOW. One statement per query, a bounded row count and a 30 second timeout. Everything executed here is written to the plugin log.',
+                    field_query_template: 'Template',
+                    preset_query_empty: '\u2014 Choose a template \u2014',
+                    preset_query_tables: 'Largest tables',
+                    preset_query_slow: 'Slowest queries (pg_stat_statements)',
+                    preset_query_activity: 'Current activity',
+                    preset_query_connections: 'Connections by state',
+                    preset_query_unused_indexes: 'Unused indexes',
+                    preset_query_dead_tuples: 'Dead tuples and pending maintenance',
+                    preset_query_locks: 'Waiting locks',
+                    preset_query_extensions: 'Installed extensions',
+                    preset_query_server: 'Server and database info',
+                    field_query_max_rows: 'Max rows',
+                    label_query_explain: 'Plan only (EXPLAIN)',
+                    button_run_query: 'Run statement',
+                    button_clear_query: 'Clear',
+                    heading_query_history: 'History',
+                    hint_query_history: 'Click an entry to load it again.',
+                    msg_query_running: 'Running statement...',
+                    msg_query_empty: 'Write a statement first.',
+                    msg_query_error: 'Error: ',
+                    msg_query_rows_prefix: 'Rows: ',
+                    msg_query_ms_suffix: ' ms',
+                    msg_query_truncated_suffix: ' (truncated to the row limit)',
+                    msg_query_null: 'NULL',
+                    msg_query_plan_note: 'Execution plan: the statement was planned, not executed.'
                 },
                 es: {
                     title_main: 'PostgreSQL Database Provider',
@@ -829,7 +901,35 @@
                     msg_health_repairable_tag: '[auto-reparable]',
                     health_sev_ok: 'Todos los checks pasaron',
                     health_sev_warn: 'Advertencias detectadas',
-                    health_sev_error: 'Problemas criticos detectados'
+                    health_sev_error: 'Problemas criticos detectados',
+                    tab_query: 'Consola SQL',
+                    heading_query: 'Consola SQL de solo lectura',
+                    desc_query: 'Ejecuta sentencias de solo lectura sobre PostgreSQL: SELECT, WITH, TABLE, VALUES, EXPLAIN o SHOW. Una sentencia por consulta, con limite de filas y 30 s de timeout. Todo lo que se ejecuta queda registrado en el log del plugin.',
+                    field_query_template: 'Plantilla',
+                    preset_query_empty: '\u2014 Elegir una plantilla \u2014',
+                    preset_query_tables: 'Tablas mas grandes',
+                    preset_query_slow: 'Consultas mas lentas (pg_stat_statements)',
+                    preset_query_activity: 'Actividad actual',
+                    preset_query_connections: 'Conexiones por estado',
+                    preset_query_unused_indexes: 'Indices sin uso',
+                    preset_query_dead_tuples: 'Tuplas muertas y mantenimiento pendiente',
+                    preset_query_locks: 'Bloqueos en espera',
+                    preset_query_extensions: 'Extensiones instaladas',
+                    preset_query_server: 'Informacion del servidor y la base',
+                    field_query_max_rows: 'Filas maximas',
+                    label_query_explain: 'Solo plan (EXPLAIN)',
+                    button_run_query: 'Ejecutar sentencia',
+                    button_clear_query: 'Limpiar',
+                    heading_query_history: 'Historial',
+                    hint_query_history: 'Haz clic en una entrada para volver a cargarla.',
+                    msg_query_running: 'Ejecutando sentencia...',
+                    msg_query_empty: 'Escribe primero una sentencia.',
+                    msg_query_error: 'Error: ',
+                    msg_query_rows_prefix: 'Filas: ',
+                    msg_query_ms_suffix: ' ms',
+                    msg_query_truncated_suffix: ' (truncado al limite de filas)',
+                    msg_query_null: 'NULL',
+                    msg_query_plan_note: 'Plan de ejecucion: la sentencia se planifico, no se ejecuto.'
                 }
             };
 
@@ -979,6 +1079,20 @@
                 if (tabs.length >= 4) {
                     tabs[3].innerHTML = '&#128138; ' + t('tab_health', 'Health');
                 }
+                if (tabs.length >= 5) {
+                    tabs[4].innerHTML = '&#128203; ' + t('tab_query', 'SQL console');
+                }
+
+                setText('queryHeading', t('heading_query', 'Read-only SQL console'));
+                setHtml('queryDescription', t('desc_query', 'Run read-only statements against PostgreSQL.'));
+                setInputLabel('queryTemplate', t('field_query_template', 'Template'));
+                setInputLabel('queryMaxRows', t('field_query_max_rows', 'Max rows'));
+                setText('queryExplainLabel', t('label_query_explain', 'Plan only (EXPLAIN)'));
+                setText('btnRunQueryLabel', t('button_run_query', 'Run statement'));
+                setText('btnClearQueryLabel', t('button_clear_query', 'Clear'));
+                setText('queryHistoryHeading', t('heading_query_history', 'History'));
+                setText('queryHistoryHint', t('hint_query_history', 'Click an entry to load it again.'));
+                buildQueryPresets();
 
                 setText('exportHeading', t('heading_export', 'Export PostgreSQL \u2192 SQLite'));
                 setHtml('exportDescription', t('desc_export', 'Writes all PostgreSQL data directly into a SQLite <code>.db</code> file. Useful to recover the original database or revert to SQLite.'));
@@ -1142,6 +1256,148 @@
                 _dlg.onclose = function() { if (_dlg.returnValue === 'yes') { onConfirm(); } };
                 _dlg.showModal();
             }
+
+            // ── Read-only SQL console ───────────────────────────────────────
+            // Statements are validated again on the server (QueryConsoleService): this side only helps.
+            var QUERY_PRESETS = [
+                { key: 'preset_query_empty', sql: '' },
+                { key: 'preset_query_tables', sql: 'SELECT c.relname AS tabla, pg_size_pretty(pg_total_relation_size(c.oid)) AS total, s.n_live_tup AS filas\nFROM pg_class c\nJOIN pg_stat_user_tables s ON s.relid = c.oid\nWHERE c.relkind = \'r\'\nORDER BY pg_total_relation_size(c.oid) DESC\nLIMIT 25;' },
+                { key: 'preset_query_slow', sql: 'SELECT calls AS llamadas, ROUND(mean_exec_time::numeric, 1) AS ms_media, ROUND(total_exec_time::numeric) AS ms_total, rows AS filas, LEFT(query, 120) AS consulta\nFROM pg_stat_statements\nORDER BY mean_exec_time DESC\nLIMIT 20;' },
+                { key: 'preset_query_activity', sql: 'SELECT pid, state AS estado, wait_event_type AS espera, LEFT(query, 100) AS consulta\nFROM pg_stat_activity\nWHERE datname = current_database() AND pid <> pg_backend_pid()\nORDER BY query_start;' },
+                { key: 'preset_query_connections', sql: 'SELECT COALESCE(state, \'(sin estado)\') AS estado, COUNT(*) AS conexiones\nFROM pg_stat_activity\nWHERE datname = current_database()\nGROUP BY 1\nORDER BY 2 DESC;' },
+                { key: 'preset_query_unused_indexes', sql: 'SELECT relname AS tabla, indexrelname AS indice, idx_scan AS usos, pg_size_pretty(pg_relation_size(indexrelid)) AS tamano\nFROM pg_stat_user_indexes\nWHERE idx_scan = 0\nORDER BY pg_relation_size(indexrelid) DESC\nLIMIT 20;' },
+                { key: 'preset_query_dead_tuples', sql: 'SELECT relname AS tabla, n_live_tup AS filas_vivas, n_dead_tup AS tuplas_muertas, last_autovacuum, last_autoanalyze\nFROM pg_stat_user_tables\nORDER BY n_dead_tup DESC\nLIMIT 15;' },
+                { key: 'preset_query_locks', sql: 'SELECT l.pid, l.locktype, l.mode, l.granted AS concedido, LEFT(a.query, 80) AS consulta\nFROM pg_locks l\nJOIN pg_stat_activity a ON a.pid = l.pid\nWHERE NOT l.granted;' },
+                { key: 'preset_query_extensions', sql: 'SELECT extname AS extension, extversion AS version FROM pg_extension ORDER BY extname;' },
+                { key: 'preset_query_server', sql: 'SELECT current_database() AS base, current_schema() AS esquema, current_setting(\'search_path\') AS search_path, pg_size_pretty(pg_database_size(current_database())) AS tamano, version() AS version;' }
+            ];
+
+            var queryHistoryEntries = [];
+
+            function buildQueryPresets() {
+                var select = document.getElementById('queryTemplate');
+                if (!select || select.getAttribute('data-built') === '1') return;
+                select.setAttribute('data-built', '1');
+                QUERY_PRESETS.forEach(function(preset) {
+                    var option = document.createElement('option');
+                    option.value = preset.sql;
+                    option.textContent = t(preset.key, preset.key);
+                    select.appendChild(option);
+                });
+                select.addEventListener('change', function() {
+                    if (select.value) document.getElementById('querySql').value = select.value;
+                });
+            }
+
+            function runQuery() {
+                var sql   = (document.getElementById('querySql').value || '').trim();
+                var state = document.getElementById('queryStatus');
+                var button = document.getElementById('btnRunQuery');
+                if (!sql) { state.style.color = '#fff9c4'; state.textContent = t('msg_query_empty', 'Write a statement first.'); return; }
+
+                var maxRows = parseInt(document.getElementById('queryMaxRows').value, 10);
+                if (isNaN(maxRows) || maxRows < 1) maxRows = 200;
+                var explain = !!document.getElementById('queryExplain').checked;
+
+                state.style.color = '#90caf9';
+                state.textContent = t('msg_query_running', 'Running statement...');
+                button.disabled = true;
+
+                apiPost('/Query', { sql: sql, maxRows: maxRows, explain: explain })
+                    .then(function(response) { return response.json().then(function(body) { return body || {}; }); })
+                    .then(function(data) {
+                        if (!data.Success) {
+                            state.style.color = '#ef9a9a';
+                            state.textContent = t('msg_query_error', 'Error: ') + (data.Error || '');
+                            return;
+                        }
+                        renderQueryResult(data, explain);
+                        pushQueryHistory(sql);
+                    })
+                    .catch(function(err) {
+                        state.style.color = '#ef9a9a';
+                        state.textContent = t('msg_network_error', 'Network error: ') + err;
+                    })
+                    .then(function() { button.disabled = false; });
+            }
+
+            function renderQueryResult(data, explain) {
+                var state = document.getElementById('queryStatus');
+                var wrap  = document.getElementById('queryResultWrap');
+                var head  = document.getElementById('queryResultHead');
+                var body  = document.getElementById('queryResultBody');
+
+                state.style.color = explain ? '#90caf9' : '#a5d6a7';
+                state.textContent = (explain ? t('msg_query_plan_note', 'Execution plan.') + ' ' : '')
+                    + t('msg_query_rows_prefix', 'Rows: ') + data.RowCount
+                    + ' \u00b7 ' + data.DurationMs + t('msg_query_ms_suffix', ' ms')
+                    + (data.Truncated ? t('msg_query_truncated_suffix', ' (truncated)') : '');
+
+                head.innerHTML = '';
+                (data.Columns || []).forEach(function(column) {
+                    var th = document.createElement('th');
+                    th.textContent = column;
+                    th.style.cssText = 'text-align:left; padding:6px 10px; position:sticky; top:0; background:#131c33; border-bottom:1px solid rgba(124,146,196,.35); white-space:nowrap;';
+                    head.appendChild(th);
+                });
+
+                body.innerHTML = '';
+                (data.Rows || []).forEach(function(row, index) {
+                    var tr = document.createElement('tr');
+                    tr.style.background = index % 2 === 0 ? 'rgba(255,255,255,.02)' : 'transparent';
+                    row.forEach(function(value) {
+                        var td = document.createElement('td');
+                        td.style.cssText = 'padding:5px 10px; border-bottom:1px solid rgba(124,146,196,.12); white-space:nowrap; max-width:520px; overflow:hidden; text-overflow:ellipsis;';
+                        if (value === null || value === undefined) {
+                            td.textContent = t('msg_query_null', 'NULL');
+                            td.style.color = '#8a94ad';
+                            td.style.fontStyle = 'italic';
+                        } else {
+                            td.textContent = value;
+                        }
+                        tr.appendChild(td);
+                    });
+                    body.appendChild(tr);
+                });
+
+                wrap.style.display = (data.Columns && data.Columns.length) ? '' : 'none';
+            }
+
+            function pushQueryHistory(sql) {
+                queryHistoryEntries = queryHistoryEntries.filter(function(entry) { return entry !== sql; });
+                queryHistoryEntries.unshift(sql);
+                if (queryHistoryEntries.length > 10) queryHistoryEntries.length = 10;
+                renderQueryHistory();
+            }
+
+            function renderQueryHistory() {
+                var wrap = document.getElementById('queryHistoryWrap');
+                var list = document.getElementById('queryHistory');
+                if (!wrap || !list) return;
+                list.innerHTML = '';
+                if (!queryHistoryEntries.length) { wrap.style.display = 'none'; return; }
+
+                queryHistoryEntries.forEach(function(entry) {
+                    var item = document.createElement('button');
+                    item.type = 'button';
+                    item.className = 'raised emby-button';
+                    item.style.cssText = 'display:block; width:100%; text-align:left; margin:0 0 6px 0; padding:8px 10px; font-size:12px; font-family:ui-monospace,Consolas,monospace;';
+                    item.textContent = entry.length > 160 ? entry.substring(0, 160) + '\u2026' : entry;
+                    item.addEventListener('click', function() { document.getElementById('querySql').value = entry; });
+                    list.appendChild(item);
+                });
+                wrap.style.display = '';
+            }
+
+            document.getElementById('btnRunQuery').addEventListener('click', runQuery);
+            document.getElementById('btnClearQuery').addEventListener('click', function() {
+                document.getElementById('querySql').value = '';
+                document.getElementById('queryResultWrap').style.display = 'none';
+                document.getElementById('queryStatus').textContent = '';
+            });
+            document.getElementById('querySql').addEventListener('keydown', function(event) {
+                if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); runQuery(); }
+            });
 
             function loadStatus() {
                 hideBanner();
