@@ -81,13 +81,15 @@ jobs:
       - name: Actualizar manifest.json (repo)
         run: |
           VERSION="${{ steps.version.outputs.full }}"
+          # ABI que declara esta rama: 10.11.0.0 corresponde a Jellyfin 10.11.x.
+          TARGETABI="10.11.0.0"
           ZIP="Jellyfin.Database.Providers.Postgres-${VERSION}.zip"
           URL="https://github.com/${{ github.repository }}/releases/download/v${{ github.event.inputs.release_version }}/${ZIP}"
           CHECKSUM="${{ steps.package.outputs.checksum }}"
           TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           CHANGELOG="${{ github.event.inputs.changelog }}"
-          jq --arg v "$VERSION" --arg url "$URL" --arg sum "$CHECKSUM" --arg ts "$TS" --arg changelog "$CHANGELOG" \
-            '.[0].versions = (([.[0].versions[] | select(.version != $v)]) + [{version: $v, changelog: $changelog, targetAbi: "10.11.0.0", sourceUrl: $url, checksum: $sum, timestamp: $ts}])' \
+          jq --arg v "$VERSION" --arg url "$URL" --arg sum "$CHECKSUM" --arg ts "$TS" --arg changelog "$CHANGELOG" --arg abi "$TARGETABI" \
+            '.[0].versions = (([.[0].versions[] | select(.version != $v)]) + [{version: $v, changelog: $changelog, targetAbi: $abi, sourceUrl: $url, checksum: $sum, timestamp: $ts}])' \
             manifest.json > manifest.tmp.json && mv manifest.tmp.json manifest.json
           cp manifest.json publish/manifest.json
 
@@ -98,6 +100,35 @@ jobs:
           git add manifest.json Directory.Build.props
           git diff --cached --quiet || git commit -m "chore: actualizar manifest a v${{ steps.version.outputs.full }}"
           git push
+
+      # El catálogo que consulta Jellyfin es el manifest.json de main. Si el release se
+      # publica desde una rama (release/*), la entrada debe replicarse en main o la
+      # versión no aparece en el catálogo aunque el release exista.
+      - name: Publicar la entrada en el catálogo servido (main)
+        if: github.ref_name != 'main'
+        env:
+          TARGETABI: '10.11.0.0'
+        run: |
+          VERSION="${{ steps.version.outputs.full }}"
+          ZIP="Jellyfin.Database.Providers.Postgres-${VERSION}.zip"
+          URL="https://github.com/${{ github.repository }}/releases/download/v${{ github.event.inputs.release_version }}/${ZIP}"
+          CHECKSUM="${{ steps.package.outputs.checksum }}"
+          TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          CHANGELOG="${{ github.event.inputs.changelog }}"
+          git fetch origin main
+          git worktree add --detach ../catalogo origin/main
+          cd ../catalogo
+          jq --arg v "$VERSION" --arg url "$URL" --arg sum "$CHECKSUM" --arg ts "$TS" --arg changelog "$CHANGELOG" --arg abi "$TARGETABI" \
+            '.[0].versions = (([.[0].versions[] | select(.version != $v)]) + [{version: $v, changelog: $changelog, targetAbi: $abi, sourceUrl: $url, checksum: $sum, timestamp: $ts}])' \
+            manifest.json > manifest.tmp.json && mv manifest.tmp.json manifest.json
+          git add manifest.json
+          if git diff --cached --quiet; then
+            echo "manifest.json de main ya contiene v${VERSION}"
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" -c user.email="github-actions[bot]@users.noreply.github.com" \
+            commit -m "chore: publicar v${VERSION} en el catálogo (targetAbi ${TARGETABI})"
+          git push origin HEAD:main
 
       - name: Preparar notas del release
         run: printf '%s' "${{ github.event.inputs.changelog }}" > release-notes.md
