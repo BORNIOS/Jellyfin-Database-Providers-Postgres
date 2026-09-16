@@ -208,6 +208,23 @@ public class PostgresController : ControllerBase
 
         plugin.SaveConfiguration();
 
+        // When PostgreSQL is already the active engine, Jellyfin reads the connection string from
+        // database.xml instead of the plugin configuration. Refresh that file so an edit in the
+        // advanced options reaches the provider on the next restart and does not stay as a value
+        // the panel shows but the runtime ignores.
+        if (PostgresPlugin.IsPostgresActive(_appPaths))
+        {
+            var tuned = PostgresDatabaseProvider.BuildTunedConnectionString(
+                plugin.Configuration.ConnectionString,
+                plugin.Configuration,
+                plugin.Configuration.CommandTimeout).ToString();
+
+            PostgresPlugin.WriteDatabaseXml(_appPaths, tuned, plugin.Configuration.CommandTimeout);
+            Logging.PostgresLog.Info(
+                "[ENGINE SWITCH] database.xml actualizado con la configuracion guardada "
+                + "(pool y timeout incluidos). Reinicia Jellyfin para aplicarla.");
+        }
+
         return Ok(new { Success = true });
     }
 
@@ -329,12 +346,21 @@ public class PostgresController : ControllerBase
             return BadRequest(new { Error = "ConnectionString is required." });
         }
 
+        var plugin = PostgresPlugin.Instance;
+
+        // The active connection string must carry the advanced options: Jellyfin reads it from
+        // database.xml, and anything missing there falls back to Npgsql defaults.
+        var activationConnStr = PostgresDatabaseProvider.BuildTunedConnectionString(
+            request.ConnectionString,
+            plugin?.Configuration,
+            request.CommandTimeout).ToString();
+
         _logger.LogInformation(
             "Activating PostgreSQL provider. Writing database.xml and scheduling restart...");
 
         try
         {
-            PostgresPlugin.WriteDatabaseXml(_appPaths, request.ConnectionString, request.CommandTimeout);
+            PostgresPlugin.WriteDatabaseXml(_appPaths, activationConnStr, request.CommandTimeout);
         }
         catch (Exception ex)
         {
@@ -345,7 +371,6 @@ public class PostgresController : ControllerBase
         }
 
         // Update plugin config to reflect active state
-        var plugin = PostgresPlugin.Instance;
         if (plugin is not null)
         {
             plugin.Configuration.ConnectionString = request.ConnectionString;
