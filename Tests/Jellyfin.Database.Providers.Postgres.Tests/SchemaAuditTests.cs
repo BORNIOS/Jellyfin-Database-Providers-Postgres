@@ -13,8 +13,9 @@ public sealed partial class SchemaAuditTests
     // Objects the plugin uses that are not part of Jellyfin's EF model (EF Core bookkeeping).
     private static readonly string[] BookkeepingTables = ["__EFMigrationsHistory", "__EFMigrationsLock"];
 
-    // Directories of the plugin whose raw SQL does not target the live schema.
-    private static readonly string[] IgnoredSourcePaths = ["\\bin\\", "\\obj\\", "\\Migrations\\"];
+    // Directories of the plugin whose raw SQL does not target the live schema. Paths use forward
+    // slashes and the file path is normalised before comparing, so Windows and Linux behave the same.
+    private static readonly string[] IgnoredSourcePaths = ["/bin/", "/obj/", "/Migrations/"];
 
     [Fact]
     public void EveryTableAndQualifiedColumnUsedByRawSqlExistsInTheModel()
@@ -31,7 +32,7 @@ public sealed partial class SchemaAuditTests
 
         foreach (var file in Directory.EnumerateFiles(TestEnvironment.PluginSourceDirectory, "*.cs", SearchOption.AllDirectories))
         {
-            if (IgnoredSourcePaths.Any(path => file.Contains(path, StringComparison.OrdinalIgnoreCase)))
+            if (IsIgnoredSourcePath(file))
             {
                 continue;
             }
@@ -76,6 +77,28 @@ public sealed partial class SchemaAuditTests
     {
         using var context = TestEnvironment.CreateModelContext();
         Assert.False(context.Database.HasPendingModelChanges());
+    }
+
+    /// <summary>
+    /// Path filtering has to behave identically on the developer machine (backslashes) and on the Linux
+    /// runners (forward slashes): a separator-specific filter silently audited the migration files in CI.
+    /// </summary>
+    /// <param name="filePath">Source file path to classify.</param>
+    /// <param name="expected">Whether the file must be skipped by the audit.</param>
+    [Theory]
+    [InlineData(@"D:\repo\Jellyfin.Database.Providers.Postgres\Migrations\20260915211546_Jellyfin121.cs", true)]
+    [InlineData("/home/runner/work/repo/Jellyfin.Database.Providers.Postgres/Migrations/20260915211546_Jellyfin121.cs", true)]
+    [InlineData(@"D:\repo\Jellyfin.Database.Providers.Postgres\obj\Debug\x.cs", true)]
+    [InlineData("/home/runner/work/repo/Jellyfin.Database.Providers.Postgres/obj/Debug/x.cs", true)]
+    [InlineData(@"D:\repo\Jellyfin.Database.Providers.Postgres\Services\MaintenanceService.cs", false)]
+    [InlineData("/home/runner/work/repo/Jellyfin.Database.Providers.Postgres/Services/MaintenanceService.cs", false)]
+    public void IgnoredSourcePathsMatchOnEveryPlatform(string filePath, bool expected)
+        => Assert.Equal(expected, IsIgnoredSourcePath(filePath));
+
+    private static bool IsIgnoredSourcePath(string filePath)
+    {
+        var normalized = filePath.Replace('\\', '/');
+        return IgnoredSourcePaths.Any(path => normalized.Contains(path, StringComparison.OrdinalIgnoreCase));
     }
 
     // Table references in raw SQL: FROM/JOIN/INTO/ON/UPDATE/COPY/TRUNCATE followed by a quoted identifier,
