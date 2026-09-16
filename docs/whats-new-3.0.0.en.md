@@ -162,5 +162,4 @@ and the current status never showed them. In 3.0.0:
 ## 10. Keep reading
 
 - [Migration manual from 10.11.x to 12.x](migration-10.11-to-12.en.md)
-- [Release plan for 2.0.1 and 3.0.0](release-plan.en.md)
 - [Technical guide for the Jellyfin 12.1 adaptation](JELLYFIN-12.1.md)

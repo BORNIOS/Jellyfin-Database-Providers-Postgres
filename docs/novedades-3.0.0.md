@@ -168,5 +168,4 @@ la configuración con un valor fijo, y el estado actual no los mostraba. En 3.0.
 ## 10. Sigue leyendo
 
 - [Manual de migración de 10.11.x a 12.x](migracion-10.11-a-12.md)
-- [Plan de publicación de 2.0.1 y 3.0.0](plan-de-publicacion.md)
 - [Guía técnica de la adaptación a Jellyfin 12.1](JELLYFIN-12.1.md)

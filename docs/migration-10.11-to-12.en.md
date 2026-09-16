@@ -46,8 +46,8 @@ plugin's *Migration* tab. That export had a defect in 2.0.0.0 that **2.0.1** fix
   adds a **diagnostic** reporting table, row number and key values on constraint violations.
 
 Practical consequence: **anyone reaching Jellyfin 12 without a successful export from 10.11
-has no clean route for their data**. That is why 2.0.1 ships **before** 3.0.0 (see
-[`release-plan.en.md`](release-plan.en.md)).
+has no clean route for their data**. That is why 2.0.1 ships **before** 3.0.0: without an
+export there is no bridge between both servers.
 
 ---
 
@@ -129,8 +129,27 @@ In the **Configuration** tab press **Deactivate / Revert to SQLite** (*Revert to
 restart*). The plugin removes `<config>/database.xml`, so **Jellyfin starts in SQLite** next
 time.
 
+Check right after pressing the button that the file is gone:
+
 ```powershell
 Test-Path "$env:LOCALAPPDATA\jellyfin\config\database.xml"   # must be False
+```
+
+> ℹ️ On startup Jellyfin **recreates** `config/database.xml` declaring SQLite. That is normal
+> and it is the confirmation that the active engine is the right one:
+>
+> ```xml
+> <?xml version="1.0" encoding="utf-8"?>
+> <DatabaseConfigurationOptions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+>   <DatabaseType>Jellyfin-SQLite</DatabaseType>
+>   <LockingBehavior>NoLock</LockingBehavior>
+> </DatabaseConfigurationOptions>
+> ```
+
+What must **not** appear in that file is `PLUGIN_PROVIDER`:
+
+```powershell
+Select-String -Path "$env:LOCALAPPDATA\jellyfin\config\database.xml" -Pattern 'PLUGIN_PROVIDER'   # no output
 ```
 
 ### Step 4 — Install Jellyfin 12.1
@@ -145,10 +164,24 @@ log (`log/Postgres-YYYY-MM-DD.log`).
 
 ### Step 5 — Install plugin 3.0.0
 
-1. Download the **3.0.0.0** release ZIP into
-   `<DataPath>/plugins/PostgreSQL Database Provider_3.0.0.0/`.
-2. Restart Jellyfin and confirm in **Dashboard → Plugins** that version 3.0.0.0 is listed and
-   the plugin log reports the active engine:
+Two ways to do it; the first one is the smoothest:
+
+**Option A — from the catalog (recommended)**
+
+1. In Jellyfin 12.1 open **Dashboard → Plugins → Catalog**.
+2. Find **PostgreSQL Database Provider** and install version **3.0.0.0**.
+3. Accept the restart Jellyfin offers.
+
+**Option B — manual install**
+
+1. Download `Jellyfin.Database.Providers.Postgres-3.0.0.0.zip` from release **v3.0.0**.
+2. Create `<DataPath>/plugins/PostgreSQL Database Provider_3.0.0.0/` and unzip its three
+   DLLs there: `Jellyfin.Database.Providers.Postgres.dll`, `Npgsql.dll` and
+   `Npgsql.EntityFrameworkCore.PostgreSQL.dll`.
+3. Restart Jellyfin.
+
+Either way, confirm in **Dashboard → Plugins** that version 3.0.0.0 is listed and the plugin
+log reports the active engine:
 
    ```
    [ENGINE] Modo activo: SQLite. Archivo: ...\data\jellyfin.db (NNN.N MB)
@@ -156,20 +189,33 @@ log (`log/Postgres-YYYY-MM-DD.log`).
 
 ### Step 6 — Configure the connection
 
-In the plugin's **Configuration** tab:
+In the plugin's **Configuration** tab, enter the connection string and pick one of these two
+variants:
 
-1. Enter a connection string to a **new, empty database** (do not reuse the 2.x database).
-2. Press **Test connection**; it must answer `OK`.
-3. Optional: tune **Advanced options** (minimum/maximum pool size, prepared statements,
+| Option | When to use it | What to watch out for |
+|---|---|---|
+| **A. New, empty database** | You want a clean slate and to compare the result against your backup | Create the database and its role first; the plugin does not create databases |
+| **B. Reuse the 10.11.x database** | You already had PostgreSQL and do not want to move anything | It works: enable **Truncate tables before insert** in Step 7 so the import replaces the existing content instead of colliding with existing primary keys |
+
+Reusing the original database is perfectly valid —it is the route used in this manual's tests—
+and you only need to review leftovers from earlier tests:
+
+- temporary check databases (`jellyfin_provider_test_*`) left behind;
+- `pg_stat_statements` noise after running diagnostics: clear it with
+  `SELECT pg_stat_statements_reset();`.
+
+1. Press **Test connection**; it must answer `OK`.
+2. Optional: tune **Advanced options** (minimum/maximum pool size, prepared statements,
    command timeout) and press **Save configuration**. Values are reflected in
-   **Current status**.
+   **Current status** and the provider applies them when PostgreSQL is activated.
 
 ### Step 7 — Import SQLite into PostgreSQL
 
 1. **Migration** tab → **Migrate data from SQLite to PostgreSQL**.
 2. Check the `jellyfin.db` path (auto-detected).
-3. Leave **Truncate tables before insert** off on an empty database; enable it when repeating
-   the import over existing data.
+3. With a new database leave **Truncate tables before insert** off; when reusing the 10.11.x
+   database (option B in Step 6) **enable it** so the existing content is replaced instead of
+   duplicated.
 4. Press **Start migration** and wait for 100 %.
 5. When done, the panel enables **Activate PostgreSQL and restart Jellyfin**.
 
@@ -267,6 +313,5 @@ minutes; disk, not CPU, is the bottleneck.
 ## 9. Keep reading
 
 - [What is new in 3.0.0 vs 2.0.1](whats-new-3.0.0.en.md)
-- [Release plan for 2.0.1 and 3.0.0](release-plan.en.md)
 - [Technical guide for the Jellyfin 12.1 adaptation](JELLYFIN-12.1.md)
 - [Automated verification summary](VERIFICACION-RESUMEN.md)

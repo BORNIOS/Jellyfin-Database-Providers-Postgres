@@ -36,7 +36,6 @@ health check automático, mantenimiento programado e integración opcional con J
 |---|---|
 | [Migración 10.11.x → 12.x](docs/migracion-10.11-a-12.md) · [EN](docs/migration-10.11-to-12.en.md) | Manual paso a paso, con diagrama y plan de contingencia |
 | [Novedades de 3.0.0](docs/novedades-3.0.0.md) · [EN](docs/whats-new-3.0.0.en.md) | Qué cambia en 3.0.0 frente a 2.0.1 |
-| [Plan de publicación](docs/plan-de-publicacion.md) · [EN](docs/release-plan.en.md) | Orden y runbook para publicar 2.0.1 y 3.0.0 |
 | [Adaptación a Jellyfin 12.1](docs/JELLYFIN-12.1.md) | Notas técnicas y cómo ejecutar la suite de pruebas |
 | [Verificación automatizada](docs/VERIFICACION-RESUMEN.md) | Resumen ejecutivo generado desde la suite real |
 
@@ -57,55 +56,94 @@ health check automático, mantenimiento programado e integración opcional con J
 
 ---
 
+## ⚙️ Compatibilidad
+
+| Componente | Versión |
+|---|---|
+| Jellyfin | **12.1.x** — para Jellyfin 10.11.x usa el plugin **2.0.1** |
+| PostgreSQL | **16 +** (recomendado 17) |
+| .NET | **10.0** |
+
+> ℹ️ El plugin implementa `IJellyfinDatabaseProvider`, el mismo contrato que usa el proveedor SQLite
+> incluido en Jellyfin 12.1. No requiere modificar el núcleo de Jellyfin.
+
+---
+
+## 🚀 Instalación
+
+### Opción A — repositorio de plugins (recomendada)
+
+1. En Jellyfin entra en **Panel → Avanzado → Repositorios de complementos**.
+2. Pulsa **Añadir repositorio** y usa esta URL:
+
+   ```
+   https://raw.githubusercontent.com/BORNIOS/Jellyfin-Database-Providers-Postgres/main/manifest.json
+   ```
+
+3. Guarda, ve al **Catálogo**, busca **PostgreSQL Database Provider** e **Instala**.
+4. Acepta el reinicio cuando te lo pida.
+
+### Opción B — ZIP manual
+
+1. Descarga el ZIP del [**Release**](https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/releases/latest).
+2. Descomprímelo en la carpeta de plugins de Jellyfin.
+3. Reinicia Jellyfin.
+
+> 💡 Ubicaciones habituales de la carpeta de plugins:
+> - **Linux / Docker:** `/config/plugins/`
+> - **Windows:** `%LOCALAPPDATA%\jellyfin\plugins\`
+
+---
+
 ## 🖥️ Interfaz del plugin
 
-El plugin añade una página de configuración con **cuatro pestañas**:
+El plugin añade una página propia en **Panel → Complementos → PostgreSQL Database Provider** con
+**cinco pestañas**, en este orden: **Configuración**, **Migración**, **Mantenimiento**, **Health** y
+**Consola SQL**. Cada una agrupa una parte del ciclo de vida de la base de datos.
 
-### ⚙️ Configuración
+### ⚙️ Configuración — conexión, pool y motor activo
 
-Gestiona la conexión, el pool de conexiones y las rutas de herramientas externas.
+Es el punto de entrada: define a qué PostgreSQL te conectas, con qué parámetros de pool y qué motor
+usa Jellyfin ahora mismo (SQLite o PostgreSQL).
 
 ![Tab Configuración](Screenshots/Tab-Configurations.png)
+
+**Estado actual** — resumen en vivo de lo que el plugin está usando de verdad: motor activo,
+archivo SQLite detectado, esquema y una línea con `Pool: min-max · Timeout · Prepared statements`.
+
+**Conexión PostgreSQL**
 
 | Parámetro | Descripción | Default |
 |---|---|---|
 | Connection string | Cadena completa de Npgsql | — |
 | Schema | Schema PostgreSQL a usar | `public` |
-| Command timeout | Tiempo máximo de una query EF Core (segundos) | `60` |
-| Min pool size | Conexiones mínimas activas en el pool | `4` |
-| Max pool size | Conexiones máximas en el pool | `100` |
-| Max auto-prepare | Statements preparados en servidor (0 = desactivado) | `50` |
 | PgBin path | Ruta a `pg_dump` / `psql` / `pg_restore` | auto-detect |
-| Backup directory | Carpeta donde se guardan los backups | — |
-| Backup compression | Comprimir backup en ZIP | `true` |
+| Backup directory | Carpeta donde se guardan los backups | `<DataPath>/postgres-backups` |
+| Backup compression | Comprimir el backup en ZIP | `true` |
 
-**Flujo de configuración recomendado:**
-1. Rellena los campos de conexión y pulsa **Probar conexión** — devuelve la versión del servidor si todo es correcto.
-2. Ajusta pool y timeout según tu carga.
-3. Pulsa **Guardar configuración**.
-4. Una vez migrados los datos, pulsa **Activar PostgreSQL** y reinicia.
+**Opciones avanzadas**
 
----
+| Parámetro | Descripción | Default |
+|---|---|---|
+| Min pool size | Conexiones mínimas que mantiene abiertas Npgsql | `4` |
+| Max pool size | Conexiones máximas del pool | `100` |
+| Max auto-prepare | Sentencias preparadas en el servidor (0 = desactivado) | `50` |
+| Command timeout | Tiempo máximo de una query EF Core (segundos) | `600` |
 
-### 🩺 Health Check
+> ℹ️ Si tu cadena de conexión ya incluye una de estas claves, **ese valor manda** y la configuración
+> solo rellena lo que falte. Los cambios de pool requieren **reiniciar Jellyfin** para aplicarse.
 
-Diagnóstico automático de la base de datos. Se ejecuta **10 segundos después del arranque** y puede lanzarse manualmente desde la UI.
+**Acciones**
 
-![Tab Health Check](Screenshots/Tab-Health.png)
-
-Comprueba y reporta:
-
-| Check | Descripción |
+| Botón | Función |
 |---|---|
-| **Conexión** | Verifica que PostgreSQL es accesible |
-| **Extensiones** | `pg_trgm`, `pg_stat_statements` disponibles |
-| **Índices inválidos** | Detecta y puede auto-reparar |
-| **Bloat de tablas** | Tablas con > 20 % de tuplas muertas |
-| **Secuencias desfasadas** | Secuencias fuera de rango respecto a los datos |
-| **Estadísticas obsoletas** | Tablas sin `ANALYZE` reciente |
-| **Queries lentas** | Top queries por tiempo acumulado (vía `pg_stat_statements`) |
+| **Probar conexion** | Valida la cadena y devuelve la versión del servidor PostgreSQL |
+| **Guardar configuracion** | Persiste conexión, opciones avanzadas y rutas (rechaza `max < min`) |
+| **Activar PostgreSQL y reiniciar** | Escribe `config/database.xml` en modo `PLUGIN_PROVIDER` y reinicia el servidor |
+| **Revertir a SQLite y reiniciar** | Elimina `config/database.xml` y vuelve a SQLite |
 
-Los resultados se clasifican con semáforo: `Info` / `Warn` / `Error`. Los problemas marcados como reparables pueden corregirse en un clic desde la misma card.
+**Flujo recomendado:** 1) **Probar conexión** → 2) ajustar pool y timeout → 3) **Guardar
+configuración** → 4) migrar los datos → 5) **Activar PostgreSQL**.
 
 ---
 
@@ -145,19 +183,61 @@ Operaciones de mantenimiento, backups y estadísticas de la base de datos.
 
 ![Tab Mantenimiento](Screenshots/Tab-Maintenance.png)
 
-| Acción | Descripción |
+| Acción | Función |
 |---|---|
 | **VACUUM ANALYZE** | Libera espacio y actualiza estadísticas del planificador |
 | **REINDEX DATABASE** | Reconstruye todos los índices |
-| **Aplicar optimizaciones** | Crea 9 índices GIN CONCURRENTLY + tuning de autovacuum |
-| **Crear backup ahora** | Genera `.sql` (y `.zip` si está activado) con `pg_dump` |
-| **Restablecer backup** | Restaura desde `.sql` o `.zip` |
-| **Actualizar estadísticas** | Muestra tamaño total, conexiones activas y métricas por tabla |
+| **Aplicar optimizaciones** | Crea 9 índices GIN CONCURRENTLY y ajusta autovacuum en las tablas críticas |
+| **Crear backup ahora** | Genera un `.sql` con `pg_dump` (y `.zip` si la compresión está activa) |
+| **Restablecer backup** | Restaura desde `.sql` o `.zip`, con selector de backups disponibles |
+| **Actualizar estadisticas** | Tamaño total, conexiones activas y métricas tabla por tabla |
 
-> 💡 El botón **Aplicar optimizaciones** activa también la búsqueda casi instantánea si `pg_trgm` está disponible.
-| **Crear backup ahora** | Genera `.sql` (y `.zip` opcional) con `pg_dump` |
-| **Restablecer backup** | Restaura desde `.sql` o `.zip` |
-| **Actualizar estadísticas** | Tamaño total, conexiones activas y métricas por tabla |
+> 💡 **Aplicar optimizaciones** activa también la búsqueda casi instantánea cuando `pg_trgm` está
+> disponible, y es el paso que crea los índices GIN que usa el endpoint de búsqueda.
+
+---
+
+### 🩺 Health — diagnóstico automático
+
+Comprueba la salud de la base **10 segundos después del arranque** y permite relanzar el chequeo a
+mano desde la propia pestaña.
+
+![Tab Health](Screenshots/Tab-Health.png)
+
+| Check | Qué comprueba |
+|---|---|
+| **Conexión** | Que PostgreSQL responde, y con qué latencia |
+| **Extensiones** | Que `pg_trgm` y `pg_stat_statements` están disponibles |
+| **Índices inválidos** | Índices en estado `invalid`, con reparación en un clic |
+| **Bloat de tablas** | Tablas con más de 20 % de tuplas muertas |
+| **Secuencias desfasadas** | Secuencias fuera de rango respecto a los datos |
+| **Estadísticas obsoletas** | Tablas sin `ANALYZE` reciente |
+| **Queries lentas** | Top consultas por tiempo acumulado (vía `pg_stat_statements`) |
+
+Cada resultado lleva semáforo `Info` / `Warn` / `Error`, y los problemas marcados como reparables se
+corrigen desde la misma card. El resumen del arranque queda además en el log del plugin:
+
+```
+[HealthCheck] Resumen arranque: 0 error(es), 0 advertencia(s), 65 informativo(s) | Severidad: Ok
+```
+
+---
+
+### 🧪 Consola SQL — consultas de solo lectura
+
+Herramienta de diagnóstico para lanzar `SELECT` contra la base del plugin sin salir del panel ni
+abrir una sesión `psql`.
+
+![Tab Consola SQL](Screenshots/Tab-Console.png)
+
+- **Solo lectura por diseño**: rechaza `INSERT` / `UPDATE` / `DELETE` / DDL y también varias
+  sentencias enviadas a la vez.
+- **10 plantillas** listas para usar: consultas lentas, tamaño por tabla, índices sin uso,
+  conexiones activas, bloat, bloqueos, y más.
+- Las plantillas filtran por base de datos y excluyen sentencias administrativas, así que no
+  arrastran ruido de otras bases del mismo servidor PostgreSQL.
+- **Historial** de las últimas consultas conservado en la sesión del navegador, con botón para
+  limpiarlo.
 
 ---
 

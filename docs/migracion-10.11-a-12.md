@@ -50,7 +50,7 @@ que la versión **2.0.1** corrige:
 
 Consecuencia práctica: **quien llegue a Jellyfin 12 sin haber podido exportar desde
 10.11 no tiene ruta limpia para llevar sus datos**. Por eso 2.0.1 se publica **antes**
-que 3.0.0 (ver [`plan-de-publicacion.md`](plan-de-publicacion.md)).
+que 3.0.0: sin export no hay puente entre ambos servidores.
 
 ---
 
@@ -129,13 +129,30 @@ Durante el export el plugin además:
 ### Paso 3 — Desactivar PostgreSQL
 
 En la pestaña **Configuracion**, pulsa **Desactivar / Volver a SQLite** (el texto del
-botón es *Revertir a SQLite y reiniciar*). El plugin elimina
-`<config>/database.xml` y **Jellyfin arrancará en SQLite** la próxima vez.
+botón es *Revertir a SQLite y reiniciar*). El plugin elimina `<config>/database.xml`, de
+modo que la próxima vez **Jellyfin arranca en SQLite**.
 
-Comprueba que el archivo ya no existe:
+Comprueba, justo después de pulsar el botón, que el archivo ya no está:
 
 ```powershell
 Test-Path "$env:LOCALAPPDATA\jellyfin\config\database.xml"   # debe devolver False
+```
+
+> ℹ️ Al arrancar, Jellyfin **vuelve a crear** `config/database.xml` declarando SQLite. Es
+> normal y es la confirmación de que el motor activo es el correcto:
+>
+> ```xml
+> <?xml version="1.0" encoding="utf-8"?>
+> <DatabaseConfigurationOptions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+>   <DatabaseType>Jellyfin-SQLite</DatabaseType>
+>   <LockingBehavior>NoLock</LockingBehavior>
+> </DatabaseConfigurationOptions>
+> ```
+
+Lo que **no** debe aparecer en ese archivo es `PLUGIN_PROVIDER`:
+
+```powershell
+Select-String -Path "$env:LOCALAPPDATA\jellyfin\config\database.xml" -Pattern 'PLUGIN_PROVIDER'   # sin resultados
 ```
 
 ### Paso 4 — Instalar Jellyfin 12.1
@@ -150,10 +167,24 @@ del plugin (`log/Postgres-AAAA-MM-DD.log`).
 
 ### Paso 5 — Instalar el plugin 3.0.0
 
-1. Descarga el ZIP del release **3.0.0.0** y colócalo en
-   `<DataPath>/plugins/PostgreSQL Database Provider_3.0.0.0/`.
-2. Reinicia Jellyfin y confirma en **Panel → Complementos** que aparece la versión 3.0.0.0
-   y que el log del plugin muestra el modo activo:
+Tienes dos caminos; el primero es el más cómodo:
+
+**Opción A — desde el catálogo (recomendada)**
+
+1. En Jellyfin 12.1 abre **Panel → Complementos → Catálogo**.
+2. Busca **PostgreSQL Database Provider** e instala la versión **3.0.0.0**.
+3. Acepta el reinicio que propone Jellyfin.
+
+**Opción B — instalación manual**
+
+1. Descarga el ZIP `Jellyfin.Database.Providers.Postgres-3.0.0.0.zip` del release **v3.0.0**.
+2. Crea la carpeta `<DataPath>/plugins/PostgreSQL Database Provider_3.0.0.0/` y descomprime
+   dentro sus tres DLL: `Jellyfin.Database.Providers.Postgres.dll`, `Npgsql.dll` y
+   `Npgsql.EntityFrameworkCore.PostgreSQL.dll`.
+3. Reinicia Jellyfin.
+
+En cualquiera de los dos casos, confirma en **Panel → Complementos** que aparece la versión
+3.0.0.0 y que el log del plugin muestra el modo activo:
 
    ```
    [ENGINE] Modo activo: SQLite. Archivo: ...\data\jellyfin.db (NNN,N MB)
@@ -161,21 +192,33 @@ del plugin (`log/Postgres-AAAA-MM-DD.log`).
 
 ### Paso 6 — Configurar la conexión
 
-En la pestaña **Configuracion** del plugin:
+En la pestaña **Configuracion** del plugin, escribe la cadena de conexión y elige una de
+estas dos variantes:
 
-1. Escribe la cadena de conexión a una **base de datos nueva y vacía**
-   (no reutilices la base de la versión 2.x).
-2. Pulsa **Probar conexion**. Debe responder `OK`.
-3. Opcional: ajusta **Opciones avanzadas** (tamaño mínimo/máximo del pool, sentencias
+| Opción | Cuándo usarla | Qué tener en cuenta |
+|---|---|---|
+| **A. Base nueva y vacía** | Quieres partir de cero y comparar el resultado contra el backup | Crea antes la base y su usuario; el plugin no crea bases |
+| **B. Reutilizar la base de 10.11.x** | Ya tenías PostgreSQL y no quieres mover nada | Funciona igual: activa **Truncar tablas antes de insertar** en el Paso 7 para que el import reemplace el contenido en lugar de chocar con las claves primarias existentes |
+
+Reutilizar la base original es totalmente válido —es la ruta que se usó en las pruebas de
+este manual— y sólo conviene revisar los residuos de pruebas anteriores:
+
+- bases temporales de comprobación (`jellyfin_provider_test_*`) que hayan quedado atrás;
+- ruido en `pg_stat_statements` si antes se ejecutaron diagnósticos: se limpia con
+  `SELECT pg_stat_statements_reset();`.
+
+1. Pulsa **Probar conexion**. Debe responder `OK`.
+2. Opcional: ajusta **Opciones avanzadas** (tamaño mínimo/máximo del pool, sentencias
    preparadas, tiempo de espera) y pulsa **Guardar configuracion**. Los valores se reflejan
-   en **Current status**.
+   en **Current status** y los aplica el proveedor al activar PostgreSQL.
 
 ### Paso 7 — Importar SQLite a PostgreSQL
 
 1. Pestaña **Migracion**, sección **Migrar datos de SQLite a PostgreSQL**.
 2. Verifica la ruta de `jellyfin.db` (se autodetecta).
-3. Deja **Truncar tablas antes de insertar** desactivado en una base vacía; actívalo si
-   repites la importación sobre datos existentes.
+3. Con una base nueva, deja **Truncar tablas antes de insertar** desactivado; si reutilizas
+   la base de 10.11.x (opción B del Paso 6), **actívalo** para reemplazar el contenido
+   existente en lugar de duplicarlo.
 4. Pulsa **Iniciar migracion** y espera al 100 %.
 5. Al terminar, el panel habilita **Activar PostgreSQL y reiniciar Jellyfin**.
 
@@ -274,6 +317,5 @@ terminar en pocos minutos; el cuello de botella es el disco, no la CPU.
 ## 9. Sigue leyendo
 
 - [Novedades de 3.0.0 frente a 2.0.1](novedades-3.0.0.md)
-- [Plan de publicación de 2.0.1 y 3.0.0](plan-de-publicacion.md)
 - [Guía técnica de la adaptación a Jellyfin 12.1](JELLYFIN-12.1.md)
 - [Resumen de verificación automatizada](VERIFICACION-RESUMEN.md)
