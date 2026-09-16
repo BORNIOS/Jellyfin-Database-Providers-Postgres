@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -50,7 +50,7 @@ public class PostgresPlugin : BasePlugin<PluginConfiguration>, IHasWebPages
                     @"(?i)(Password\s*=)[^;]+",
                     "$1*****")
                 : "(unknown)";
-            PostgresLog.Warn($"[ENGINE] Modo activo: PostgreSQL. Connection: {maskedConn}");
+            PostgresLog.Info($"[ENGINE] Modo activo: PostgreSQL. Connection: {maskedConn}");
         }
         else
         {
@@ -58,7 +58,7 @@ public class PostgresPlugin : BasePlugin<PluginConfiguration>, IHasWebPages
             var sqliteSize = System.IO.File.Exists(sqlitePath)
                 ? $"{new System.IO.FileInfo(sqlitePath).Length / 1_048_576.0:F1} MB"
                 : "(no encontrado)";
-            PostgresLog.Warn($"[ENGINE] Modo activo: SQLite. Archivo: {sqlitePath} ({sqliteSize})");
+            PostgresLog.Info($"[ENGINE] Modo activo: SQLite. Archivo: {sqlitePath} ({sqliteSize})");
         }
     }
 
@@ -103,7 +103,13 @@ public class PostgresPlugin : BasePlugin<PluginConfiguration>, IHasWebPages
         var filePath = Path.Combine(configDir, "database.xml");
 
         // Escape XML special characters in the connection string (passwords can contain &, <, > etc.)
-        var escapedConnStr = SecurityElementHelper.Escape(connectionString) ?? connectionString;
+        var connection = new Npgsql.NpgsqlConnectionStringBuilder(connectionString);
+        if (string.IsNullOrWhiteSpace(connection.SearchPath))
+        {
+            connection.SearchPath = "\"" + (Instance?.Configuration.Schema ?? "public").Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
+        }
+
+        var escapedConnStr = SecurityElementHelper.Escape(connection.ConnectionString) ?? connection.ConnectionString;
 
         var xml = new StringBuilder();
         xml.AppendLine("<?xml version=\"1.0\" encoding=\"utf-8\"?>");

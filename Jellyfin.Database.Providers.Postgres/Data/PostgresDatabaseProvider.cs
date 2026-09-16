@@ -1,6 +1,10 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
+using System.IO;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations;
@@ -86,6 +90,9 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
     // Ensures the startup health check runs exactly once across all Initialise calls.
     private static int _startupHealthCheckFired;
 
+    // Ensures the unobserved task handler is attached only once.
+    private static int _unobservedHandlerRegistered;
+
     // ── Constructor ───────────────────────────────────────────────────────────
 
     /// <summary>
@@ -127,7 +134,9 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
                 : null)
             ?? PostgresPlugin.Instance?.Configuration?.ConnectionString;
 
-        Logging.PostgresLog.Warn($"[Provider] Initialise llamado. ConnectionString resuelto: {(string.IsNullOrWhiteSpace(connStr) ? "(vacío)" : "OK")}");
+        RegisterUnobservedTaskHandler();
+
+        Logging.PostgresLog.Info($"[Provider] Initialise llamado: inicio del pipeline de EF Core (connection string {(string.IsNullOrWhiteSpace(connStr) ? "vacía" : "resuelta")}).");
 
         if (string.IsNullOrWhiteSpace(connStr))
         {
@@ -138,12 +147,13 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 
         // Apply pool tuning and prepared-statement cache from plugin config
         var config = PostgresPlugin.Instance?.Configuration;
+        var commandTimeout = config?.CommandTimeout ?? 600;
         var csb = new NpgsqlConnectionStringBuilder(connStr)
         {
             MinPoolSize = config?.MinPoolSize ?? 4,
             MaxPoolSize = config?.MaxPoolSize ?? 100,
             MaxAutoPrepare = config?.MaxAutoPrepare ?? 50,
-            CommandTimeout = config?.CommandTimeout ?? 60,
+            CommandTimeout = commandTimeout,
         };
 
         var tunedConnStr = csb.ToString();
@@ -154,21 +164,36 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
             tunedConnStr,
             @"(?i)(Password\s*=)[^;]+",
             "$1*****");
-        Logging.PostgresLog.Warn(
-            $"[ENGINE] Conexi\u00f3n activa (tuneada): {maskedTuned}");
-        Logging.PostgresLog.Warn(
+        Logging.PostgresLog.Info(
+            $"[ENGINE] Conexión activa (tuneada): {maskedTuned}");
+        Logging.PostgresLog.Info(
             $"[Provider] Pool: min={csb.MinPoolSize} max={csb.MaxPoolSize} " +
             $"maxAutoPrepare={csb.MaxAutoPrepare} cmdTimeout={csb.CommandTimeout}s");
 
         options
             .UseNpgsql(
                 tunedConnStr,
-                npgsql => npgsql.MigrationsAssembly(typeof(PostgresDatabaseProvider).Assembly.GetName().Name!))
+                npgsql =>
+                {
+                    npgsql.MigrationsAssembly(MigrationAssemblyResolver.EnsureRegistered());
+
+                    // Set the timeout on the provider as well, so it does not depend solely on the
+                    // connection string (Jellyfin's startup code migrations need a long one).
+                    if (commandTimeout > 0)
+                    {
+                        npgsql.CommandTimeout(commandTimeout);
+                    }
+                })
             .AddInterceptors(
+                new Jellyfin121MigrationInterceptor(),
                 new HomeQueryCacheInterceptor(_logger),
                 new UpsertConflictInterceptor(),
                 new DbErrorLoggingInterceptor(),
                 new DateTimeKindNormalizingInterceptor());
+
+        // SQLite-compatibility objects (min/max over uuid) have to exist before Jellyfin runs its
+        // first query, otherwise home-page queries fail with 'no existe la función min(uuid)'.
+        SqliteCompatibilityBootstrap.Ensure(tunedConnStr);
 
         // Run the health check in background exactly once, even if Initialise is called
         // multiple times (EF Core can call it more than once during startup).
@@ -180,6 +205,9 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
                 try
                 {
                     await Task.Delay(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+                    // Real state of the target database first: version, size, schema, extensions.
+                    await LogStartupStateAsync(tunedConnStr, schema).ConfigureAwait(false);
+
                     // Log timezone so operators can detect UTC/local mismatches.
                     await LogPostgresTimezoneAsync(tunedConnStr).ConfigureAwait(false);
 
@@ -206,7 +234,7 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
             var tz = await reader.ReadAsync().ConfigureAwait(false) ? reader.GetString(0) : "(desconocida)";
             await reader.NextResultAsync().ConfigureAwait(false);
             var lc = await reader.ReadAsync().ConfigureAwait(false) ? reader.GetString(0) : "(desconocida)";
-            Logging.PostgresLog.Warn($"[ENGINE] PostgreSQL timezone={tz} | lc_time={lc}");
+            Logging.PostgresLog.Info($"[ENGINE] PostgreSQL timezone={tz} | lc_time={lc}");
 
             // Check pg_stat_statements availability.
             await reader.CloseAsync().ConfigureAwait(false);
@@ -233,6 +261,90 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         }
     }
 
+    /// <summary>
+    /// Reports the real state of the target database: server version, database, size, schema, table
+    /// count, search path and installed extensions. This is the block to read first when diagnosing
+    /// an installation from a log file.
+    /// </summary>
+    /// <param name="connectionString">Connection string of the active database.</param>
+    /// <param name="schema">Schema the provider works against.</param>
+    private static async Task LogStartupStateAsync(string connectionString, string schema)
+    {
+        try
+        {
+            var stopwatch = Stopwatch.StartNew();
+            using var pg = new NpgsqlConnection(connectionString);
+            await pg.OpenAsync().ConfigureAwait(false);
+            var connectMs = stopwatch.ElapsedMilliseconds;
+
+            string serverVersion;
+            string database;
+            string searchPath;
+            string size;
+            using (var cmd = new NpgsqlCommand(
+                "SELECT current_setting('server_version'), current_database(), current_setting('search_path'), " +
+                "pg_size_pretty(pg_database_size(current_database()));",
+                pg))
+            using (var reader = await cmd.ExecuteReaderAsync().ConfigureAwait(false))
+            {
+                if (!await reader.ReadAsync().ConfigureAwait(false))
+                {
+                    return;
+                }
+
+                serverVersion = reader.GetString(0);
+                database = reader.GetString(1);
+                searchPath = reader.GetString(2);
+                size = reader.GetString(3);
+            }
+
+            long tables;
+            using (var cmd = new NpgsqlCommand("SELECT count(*) FROM pg_tables WHERE schemaname = @schema;", pg))
+            {
+                cmd.Parameters.AddWithValue("schema", schema);
+                tables = Convert.ToInt64(await cmd.ExecuteScalarAsync().ConfigureAwait(false), CultureInfo.InvariantCulture);
+            }
+
+            var extensions = new List<string>();
+            using (var cmd = new NpgsqlCommand("SELECT extname FROM pg_extension ORDER BY extname;", pg))
+            using (var reader = await cmd.ExecuteReaderAsync().ConfigureAwait(false))
+            {
+                while (await reader.ReadAsync().ConfigureAwait(false))
+                {
+                    extensions.Add(reader.GetString(0));
+                }
+            }
+
+            Logging.PostgresLog.Info(
+                $"[ESTADO] PostgreSQL {serverVersion} | base={database} ({size}) | esquema={schema} ({tables} tablas) | conexión en {connectMs} ms");
+            Logging.PostgresLog.Info($"[ESTADO] search_path={searchPath} | extensiones={string.Join(", ", extensions)}");
+        }
+        catch (Exception ex)
+        {
+            Logging.PostgresLog.Error("[ESTADO] No se pudo leer el estado de la base de datos", ex);
+        }
+    }
+
+    /// <summary>
+    /// Captures the exceptions of the background jobs this provider starts. Without this handler they
+    /// would be swallowed by the task scheduler and a failing job would leave no trace at all.
+    /// </summary>
+    private static void RegisterUnobservedTaskHandler()
+    {
+        if (Interlocked.CompareExchange(ref _unobservedHandlerRegistered, 1, 0) != 0)
+        {
+            return;
+        }
+
+        TaskScheduler.UnobservedTaskException += (_, args) =>
+        {
+            Logging.PostgresLog.Error(
+                "[Runtime] Una tarea en segundo plano del plugin falló y su excepción no fue observada",
+                args.Exception);
+            args.SetObserved();
+        };
+    }
+
     private static void LogHealthSummary(HealthCheckResult result)
     {
         var findings = result.Findings;
@@ -240,9 +352,20 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         var warns = findings.Count(static f => f.Severity == HealthSeverity.Warn);
         var info = findings.Count - errors - warns;
 
-        Logging.PostgresLog.Warn(
+        var summary =
             $"[HealthCheck] Resumen arranque: {errors} error(es), {warns} advertencia(s), {info} informativo(s) | " +
-            $"Severidad: {result.OverallSeverity} | {result.DurationMs} ms");
+            $"Severidad: {result.OverallSeverity} | {result.DurationMs} ms";
+
+        // An informational level when everything is fine: otherwise every startup looks like an
+        // incident and the real warnings get lost in the noise.
+        if (errors > 0 || warns > 0)
+        {
+            Logging.PostgresLog.Warn(summary);
+        }
+        else
+        {
+            Logging.PostgresLog.Info(summary);
+        }
 
         foreach (var f in findings)
         {
@@ -284,18 +407,134 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 
     /// <inheritdoc/>
     public Task<string> MigrationBackupFast(CancellationToken cancellationToken)
-        => throw new NotImplementedException("Use the plugin backup task instead.");
+    {
+        var directory = GetMigrationBackupDirectory();
+        return new MaintenanceBackupService(_logger).CreateBackupAsync(
+            GetActiveConnectionString(),
+            directory,
+            false,
+            PostgresPlugin.Instance?.Configuration.PgBinPath,
+            includeCleanCommands: true,
+            ct: cancellationToken);
+    }
 
     /// <inheritdoc/>
-    public Task RestoreBackupFast(string key, CancellationToken cancellationToken)
-        => throw new NotImplementedException("Use the plugin restore task instead.");
+    public async Task RestoreBackupFast(string key, CancellationToken cancellationToken)
+    {
+        ValidateMigrationBackupPath(key);
+        await new MaintenanceBackupService(_logger).RestoreBackupAsync(
+            GetActiveConnectionString(),
+            key,
+            PostgresPlugin.Instance?.Configuration.PgBinPath,
+            true,
+            cancellationToken).ConfigureAwait(false);
+    }
 
     /// <inheritdoc/>
-    public Task PurgeDatabase(JellyfinDbContext dbContext, IEnumerable<string>? tableNames)
-        => throw new NotImplementedException();
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Table names come from Jellyfin's own EF model and every identifier is validated and quoted by QuoteQualifiedTableName. No user input.")]
+    public async Task PurgeDatabase(JellyfinDbContext dbContext, IEnumerable<string>? tableNames)
+    {
+        ArgumentNullException.ThrowIfNull(dbContext);
+        ArgumentNullException.ThrowIfNull(tableNames);
+
+        // Jellyfin hands over the table names of its own model, schema qualified when the provider
+        // defines a default schema ("public.BaseItems"). They cannot be parameters, so each part is
+        // validated as a plain identifier and quoted before it reaches the statement.
+        var tables = new List<string>();
+        foreach (var tableName in tableNames)
+        {
+            if (!string.IsNullOrWhiteSpace(tableName))
+            {
+                tables.Add(QuoteQualifiedTableName(tableName));
+            }
+        }
+
+        if (tables.Count == 0)
+        {
+            return;
+        }
+
+        // One statement for every table: a single TRUNCATE only succeeds when all the foreign keys
+        // between the listed tables are covered, which is exactly the case here. CASCADE mirrors what
+        // the SQLite provider does with 'PRAGMA foreign_keys = OFF', so the restore that follows can
+        // insert the rows back in any order. Only Jellyfin's own tables are listed.
+        var sql = string.Concat("TRUNCATE TABLE ", string.Join(", ", tables), " RESTART IDENTITY CASCADE;");
+        await dbContext.Database.ExecuteSqlRawAsync(sql).ConfigureAwait(false);
+        Logging.PostgresLog.Info($"[Purge] Base de datos vaciada: {tables.Count} tablas (TRUNCATE ... RESTART IDENTITY CASCADE).");
+    }
 
     /// <inheritdoc/>
-    public Task DeleteBackup(string key) => throw new NotImplementedException();
+    public Task DeleteBackup(string key)
+    {
+        ValidateMigrationBackupPath(key);
+        File.Delete(key);
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Quotes a table name coming from EF's model, accepting an optional schema prefix
+    /// (<c>schema.table</c>) with or without surrounding double quotes.
+    /// </summary>
+    /// <param name="schemaQualifiedName">Table name as returned by EF Core.</param>
+    /// <returns>The quoted, schema qualified table name.</returns>
+    private static string QuoteQualifiedTableName(string schemaQualifiedName)
+    {
+        var parts = schemaQualifiedName.Split('.', StringSplitOptions.TrimEntries);
+        if (parts.Length > 2)
+        {
+            throw new ArgumentException($"Unsupported table name '{schemaQualifiedName}'.", nameof(schemaQualifiedName));
+        }
+
+        var quoted = new string[parts.Length];
+        for (var i = 0; i < parts.Length; i++)
+        {
+            quoted[i] = MaintenanceService.QuoteIdentifier(RequireSqlIdentifier(parts[i]));
+        }
+
+        return string.Join('.', quoted);
+    }
+
+    /// <summary>
+    /// Validates that a name is a plain SQL identifier. Identifiers cannot be parameterised, so
+    /// anything else is rejected instead of being interpolated (defends against injection).
+    /// </summary>
+    /// <param name="name">Candidate identifier, possibly wrapped in double quotes.</param>
+    /// <returns>The identifier without its surrounding quotes.</returns>
+    private static string RequireSqlIdentifier(string name)
+    {
+        var identifier = name.Trim('"');
+        if (identifier.Length == 0)
+        {
+            throw new ArgumentException("Empty SQL identifier.", nameof(name));
+        }
+
+        foreach (var c in identifier)
+        {
+            if (!char.IsAsciiLetterOrDigit(c) && c != '_')
+            {
+                throw new ArgumentException($"Unsupported character '{c}' in SQL identifier '{identifier}'.", nameof(name));
+            }
+        }
+
+        return identifier;
+    }
+
+    private string GetMigrationBackupDirectory()
+        => Path.Combine((_applicationPaths ?? throw new InvalidOperationException("Application paths are required for migration backups.")).DataPath, "postgres-migration-backups");
+
+    private void ValidateMigrationBackupPath(string key)
+    {
+        if (!string.Equals(Path.GetDirectoryName(Path.GetFullPath(key)), Path.GetFullPath(GetMigrationBackupDirectory()), StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(Path.GetExtension(key), ".sql", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("Backup must be a SQL file in the migration backup directory.", nameof(key));
+        }
+    }
+
+    private string GetActiveConnectionString()
+        => (_applicationPaths is null ? null : PostgresPlugin.ReadActivePgConnectionString(_applicationPaths))
+            ?? PostgresPlugin.Instance?.Configuration.ConnectionString
+            ?? throw new InvalidOperationException("PostgreSQL connection string is not configured.");
 
     // ── Internal optimization entry point ────────────────────────────────────
 
@@ -316,19 +555,19 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         ILogger logger,
         CancellationToken ct)
     {
-        Logging.PostgresLog.Warn($"[Optimization] INICIO: enableSearch={enableSearch} enableVacuum={enableVacuum}");
+        Logging.PostgresLog.Info($"[Optimization] INICIO: enableSearch={enableSearch} enableVacuum={enableVacuum}");
 
         using var conn = new NpgsqlConnection(connectionString);
         await conn.OpenAsync(ct).ConfigureAwait(false);
 
         _trgmAvailable = await CheckTrgmAsync(conn, logger, ct).ConfigureAwait(false);
-        Logging.PostgresLog.Warn($"[Optimization] pg_trgm: {(_trgmAvailable ? "disponible \u2713" : "no disponible \u2717 \u2014 InstantSearch usar\u00e1 ILIKE")}");
+        Logging.PostgresLog.Info($"[Optimization] pg_trgm: {(_trgmAvailable ? "disponible \u2713" : "no disponible \u2717 \u2014 InstantSearch usar\u00e1 ILIKE")}");
 
         if (enableSearch && _trgmAvailable)
         {
-            Logging.PostgresLog.Warn($"[Optimization] Aplicando {GinIndexDefinitions.Length} \u00edndices GIN trigram...");
+            Logging.PostgresLog.Info($"[Optimization] Aplicando {GinIndexDefinitions.Length} \u00edndices GIN trigram...");
             await ApplySearchIndexesAsync(conn, logger, ct).ConfigureAwait(false);
-            Logging.PostgresLog.Warn("[Optimization] \u00cdndices GIN trigram aplicados (IF NOT EXISTS \u2014 instant\u00e1neo si ya exist\u00edan).");
+            Logging.PostgresLog.Info("[Optimization] \u00cdndices GIN trigram aplicados (IF NOT EXISTS \u2014 instant\u00e1neo si ya exist\u00edan).");
         }
         else if (enableSearch && !_trgmAvailable)
         {
@@ -337,26 +576,26 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 
         // Navigation indexes improve home-page, library-browser and resume performance
         // regardless of pg_trgm availability.
-        Logging.PostgresLog.Warn($"[Optimization] Aplicando {NavigationIndexDefinitions.Length} \u00edndices de navegaci\u00f3n parciales...");
+        Logging.PostgresLog.Info($"[Optimization] Aplicando {NavigationIndexDefinitions.Length} \u00edndices de navegaci\u00f3n parciales...");
         await ApplyNavigationIndexesAsync(conn, logger, ct).ConfigureAwait(false);
-        Logging.PostgresLog.Warn("[Optimization] \u00cdndices de navegaci\u00f3n aplicados (home-page, library-browser, resume).");
+        Logging.PostgresLog.Info("[Optimization] \u00cdndices de navegaci\u00f3n aplicados (home-page, library-browser, resume).");
 
         // Query-planner memory hints (work_mem) for sort-heavy queries.
         await ApplyServerMemoryTuningAsync(conn, logger, ct).ConfigureAwait(false);
-        Logging.PostgresLog.Warn("[Optimization] Ajuste de memoria de sesi\u00f3n aplicado (work_mem=16MB).");
+        Logging.PostgresLog.Info("[Optimization] Ajuste de memoria de sesi\u00f3n aplicado (work_mem=16MB).");
 
         if (enableVacuum)
         {
-            Logging.PostgresLog.Warn("[Optimization] Aplicando autovacuum tuning en tablas cr\u00edticas...");
+            Logging.PostgresLog.Info("[Optimization] Aplicando autovacuum tuning en tablas cr\u00edticas...");
             await ApplyAutovacuumTuningAsync(conn, logger, ct).ConfigureAwait(false);
-            Logging.PostgresLog.Warn($"[Optimization] Autovacuum tuning aplicado en: {string.Join(", ", AutovacuumTables)}");
+            Logging.PostgresLog.Info($"[Optimization] Autovacuum tuning aplicado en: {string.Join(", ", AutovacuumTables)}");
         }
 
         // Try to activate pg_stat_statements for slow-query visibility.
         // Requires pg_stat_statements in shared_preload_libraries (needs restart if not already active).
         await TryActivateStatStatementsAsync(conn, logger, ct).ConfigureAwait(false);
 
-        Logging.PostgresLog.Warn("[Optimization] COMPLETADO. InstantSearch activo, home-page optimizada, autovacuum tuned.");
+        Logging.PostgresLog.Info("[Optimization] COMPLETADO. InstantSearch activo, home-page optimizada, autovacuum tuned.");
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -453,8 +692,12 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
                 // sql comes from GinIndexDefinitions — hardcoded static array (CA2100).
                 using var cmd = CreateIndexCommand(connection, sql);
                 await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-                logger.LogInformation("Index applied: {IndexName}", indexName);
-                Logging.PostgresLog.Warn($"[Optimization]   \u2713 {indexName}");
+                if (logger.IsEnabled(LogLevel.Information))
+                {
+                    logger.LogInformation("Index applied: {IndexName}", indexName);
+                }
+
+                Logging.PostgresLog.Info($"[Optimization]   \u2713 {indexName}");
                 return;
             }
             catch (PostgresException pgEx) when (pgEx.SqlState == "40P01" && attempt < RetryDelays.Length)
@@ -520,7 +763,7 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
             using var createCmd = new NpgsqlCommand(
                 "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;", conn);
             await createCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-            Logging.PostgresLog.Warn("[Optimization] pg_stat_statements activado \u2713 (agrega 'pg_stat_statements' a shared_preload_libraries para que persista entre reinicios).");
+            Logging.PostgresLog.Info("[Optimization] pg_stat_statements activado \u2713 (agrega 'pg_stat_statements' a shared_preload_libraries para que persista entre reinicios).");
         }
         catch (PostgresException pgEx) when (pgEx.SqlState is "55P02" or "42501")
         {

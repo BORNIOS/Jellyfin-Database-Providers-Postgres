@@ -1,5 +1,6 @@
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.Locking;
+using Jellyfin.Database.Providers.Postgres.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -26,8 +27,7 @@ internal sealed class PostgresDesignTimeDbFactory : IDesignTimeDbContextFactory<
         var optionsBuilder = new DbContextOptionsBuilder<JellyfinDbContext>();
         optionsBuilder.UseNpgsql(
             connectionString,
-            npgsqlOptions => npgsqlOptions.MigrationsAssembly(
-                typeof(PostgresDesignTimeDbFactory).Assembly.GetName().Name!));
+            npgsqlOptions => npgsqlOptions.MigrationsAssembly(MigrationAssemblyResolver.EnsureRegistered()));
 
         return new JellyfinDbContext(
             optionsBuilder.Options,

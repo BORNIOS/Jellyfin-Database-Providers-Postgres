@@ -19,9 +19,16 @@ public class PluginConfiguration : BasePluginConfiguration
     public string Schema { get; set; } = "public";
 
     /// <summary>
-    /// Gets or sets the EF command timeout in seconds (default 60).
+    /// Gets or sets the EF command timeout in seconds (default 600).
     /// </summary>
-    public int CommandTimeout { get; set; } = 60;
+    /// <remarks>
+    /// Jellyfin runs heavyweight code migrations during startup (for example
+    /// <c>RefreshCleanNamesAndValues</c> or <c>MigrateRatingLevels</c>) that update tens of
+    /// thousands of rows inside one transaction. A short timeout aborts the migration and forces
+    /// Jellyfin to roll the database back, so the default is generous; lower it only if the
+    /// server must fail fast on slow queries.
+    /// </remarks>
+    public int CommandTimeout { get; set; } = 600;
 
     /// <summary>
     /// Gets or sets the current migration state.
@@ -96,4 +103,11 @@ public class PluginConfiguration : BasePluginConfiguration
     /// on high-churn tables (UserData, ActivityLogs) to prevent bloat.
     /// </summary>
     public bool EnableAutovacuumTuning { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether the parameter values of a failed database command are
+    /// written to the plugin log. Off by default because parameters carry user data; enable it only
+    /// while diagnosing a specific failure (mostly unique/PK violations).
+    /// </summary>
+    public bool LogCommandParameters { get; set; }
 }

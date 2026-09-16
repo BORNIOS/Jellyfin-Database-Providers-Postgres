@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.Common;
@@ -28,7 +28,11 @@ namespace Jellyfin.Database.Providers.Postgres.Services;
 /// </remarks>
 public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor, IDisposable
 {
-    // Fields first (SA1201: fields before properties)
+    // Fields first (SA1201); constants before static readonly (SA1203)
+    // Result sets larger than this are still buffered (see ReaderExecuting) but not retained
+    // in the cache, so a big query cannot pin a large DataTable in memory.
+    private const int MaxCacheableRows = 1000;
+
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(30);
 
     // Only intercept queries on the tables that Jellyfin fans out on home-page load.
@@ -94,15 +98,51 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor, IDisposabl
 
         if (_cache.TryGetValue(cacheKey, out DataTable? cached) && cached is not null)
         {
-            _logger?.LogDebug(
-                "HomeQueryCache HIT: {SqlPreview}",
-                command.CommandText[..Math.Min(command.CommandText.Length, 120)]);
+            if (_logger?.IsEnabled(LogLevel.Debug) == true)
+            {
+                _logger?.LogDebug(
+                    "HomeQueryCache HIT: {SqlPreview}",
+                    command.CommandText[..Math.Min(command.CommandText.Length, 120)]);
+            }
+
             return InterceptionResult<DbDataReader>.SuppressWithResult(new DataTableReader(cached));
         }
 
         // Miss — execute the command ourselves so we can capture the full result set
         // into a DataTable before EF Core consumes the reader.
         return await ExecuteAndCacheAsync(command, cacheKey, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Buffering matters for correctness, not only for caching: several Jellyfin routines
+    /// (for example <c>MigrateRatingLevels</c>) enumerate a synchronously streamed query and
+    /// then run <c>ExecuteUpdate</c> on the same connection. SQLite tolerates that, Npgsql does
+    /// not (no MARS) and fails with <c>NpgsqlOperationInProgressException</c>. Materialising the
+    /// reader here closes the database reader before Jellyfin issues its next command.
+    /// </remarks>
+    public override InterceptionResult<DbDataReader> ReaderExecuting(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<DbDataReader> result)
+    {
+        if (!IsCacheable(command))
+        {
+            return result;
+        }
+
+        var cacheKey = BuildCacheKey(command);
+        if (cacheKey is null)
+        {
+            return result;
+        }
+
+        if (_cache.TryGetValue(cacheKey, out DataTable? cached) && cached is not null)
+        {
+            return InterceptionResult<DbDataReader>.SuppressWithResult(new DataTableReader(cached));
+        }
+
+        return ExecuteAndCache(command, cacheKey);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -219,18 +259,17 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor, IDisposabl
             }
 
             // SizeLimit: approximate entry weight = column count (rough proxy for memory)
-            _cache.Set(cacheKey, dt, new MemoryCacheEntryOptions
-            {
-                AbsoluteExpirationRelativeToNow = CacheTtl,
-                Size = dt.Columns.Count, // proxy: more columns → heavier entry
-            });
+            CacheResult(cacheKey, dt);
 
-            _logger?.LogDebug(
-                "HomeQueryCache MISS (cached {Cols} cols x {Rows} rows, key {KeyPreview}…): {Sql}",
-                dt.Columns.Count,
-                dt.Rows.Count,
-                cacheKey[..Math.Min(cacheKey.Length, 8)],
-                command.CommandText[..Math.Min(command.CommandText.Length, 120)]);
+            if (_logger?.IsEnabled(LogLevel.Debug) == true)
+            {
+                _logger?.LogDebug(
+                    "HomeQueryCache MISS (cached {Cols} cols x {Rows} rows, key {KeyPreview}…): {Sql}",
+                    dt.Columns.Count,
+                    dt.Rows.Count,
+                    cacheKey[..Math.Min(cacheKey.Length, 8)],
+                    command.CommandText[..Math.Min(command.CommandText.Length, 120)]);
+            }
 
             return InterceptionResult<DbDataReader>.SuppressWithResult(new DataTableReader(dt));
         }
@@ -241,6 +280,57 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor, IDisposabl
             _logger?.LogWarning(ex, "HomeQueryCache execution failed — falling back to direct DB query.");
             return default; // default(InterceptionResult<DbDataReader>) = no suppression
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Self-execute + cache (synchronous)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private InterceptionResult<DbDataReader> ExecuteAndCache(DbCommand command, string cacheKey)
+    {
+        try
+        {
+            if (command.Connection!.State != ConnectionState.Open)
+            {
+                command.Connection.Open();
+            }
+
+            var dt = new DataTable();
+            using (var reader = command.ExecuteReader())
+            {
+                dt.Load(reader);
+            }
+
+            CacheResult(cacheKey, dt);
+
+            return InterceptionResult<DbDataReader>.SuppressWithResult(new DataTableReader(dt));
+        }
+        catch (Exception ex)
+        {
+            // Never break Jellyfin — if buffering fails, let EF Core execute normally.
+            _logger?.LogWarning(ex, "HomeQueryCache execution failed — falling back to direct DB query.");
+            return default;
+        }
+    }
+
+    /// <summary>
+    /// Stores a buffered result set in the short-lived cache.
+    /// </summary>
+    /// <param name="cacheKey">Cache key derived from SQL and parameters.</param>
+    /// <param name="dt">Materialised result set.</param>
+    private void CacheResult(string cacheKey, DataTable dt)
+    {
+        if (dt.Rows.Count > MaxCacheableRows)
+        {
+            // Big result sets are buffered for correctness but not retained.
+            return;
+        }
+
+        _cache.Set(cacheKey, dt, new MemoryCacheEntryOptions
+        {
+            AbsoluteExpirationRelativeToNow = CacheTtl,
+            Size = dt.Columns.Count, // proxy: more columns → heavier entry
+        });
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -290,7 +380,10 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor, IDisposabl
                 dt.Load(readerObj);
             }
 
-            _logger?.LogDebug("HomeQueryCache RANDOM rewritten with TABLESAMPLE: {Rows} rows", dt.Rows.Count);
+            if (_logger?.IsEnabled(LogLevel.Debug) == true)
+            {
+                _logger?.LogDebug("HomeQueryCache RANDOM rewritten with TABLESAMPLE: {Rows} rows", dt.Rows.Count);
+            }
 
             return InterceptionResult<DbDataReader>.SuppressWithResult(new DataTableReader(dt));
         }
@@ -345,7 +438,10 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor, IDisposabl
     public void Purge()
     {
         _cache.Compact(1.0);
-        _logger?.LogDebug("HomeQueryCache purged after external data change.");
+        if (_logger?.IsEnabled(LogLevel.Debug) == true)
+        {
+            _logger?.LogDebug("HomeQueryCache purged after external data change.");
+        }
     }
 
     // CA2100: sql comes from RewriteRandomSql which only transforms EF Core-generated SQL, never from user input.

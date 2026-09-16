@@ -24,6 +24,9 @@ public sealed class ExportToSqliteService : IDisposable
     private const int CommitEveryRows = 10_000;
     private const int MaxLogLines = 500;
 
+    // SQLite primary result code for constraint violations (SQLITE_CONSTRAINT).
+    private const int SqliteConstraintErrorCode = 19;
+
     private static readonly HashSet<string> SkipTables = new(StringComparer.OrdinalIgnoreCase)
         { "__EFMigrationsHistory", "__EFMigrationsLock" };
 
@@ -120,7 +123,7 @@ public sealed class ExportToSqliteService : IDisposable
             _logBuffer.Clear();
         }
 
-        PostgresLog.Warn($"[Export] INICIO: PostgreSQL → {sqliteDbPath}");
+        PostgresLog.Info($"[Export] INICIO: PostgreSQL → {sqliteDbPath}");
 
         _ = Task.Run(async () =>
         {
@@ -128,7 +131,7 @@ public sealed class ExportToSqliteService : IDisposable
             {
                 await RunExportAsync(pgConnStr, sqliteDbPath, CancellationToken.None).ConfigureAwait(false);
                 _isCompleted = true;
-                PostgresLog.Warn($"[Export] COMPLETADA: {_exportedRows:N0} filas exportadas → {sqliteDbPath}");
+                PostgresLog.Info($"[Export] COMPLETADA: {_exportedRows:N0} filas exportadas → {sqliteDbPath}");
             }
             catch (Exception ex)
             {
@@ -174,11 +177,11 @@ public sealed class ExportToSqliteService : IDisposable
         var tables = await ExportHelpers.GetUserTablesAsync(pgConn, ct).ConfigureAwait(false);
         tables = tables.Where(t => !SkipTables.Contains(t)).ToList();
         Log($"Tablas a exportar: {tables.Count}");
-        PostgresLog.Warn($"[Export] Tablas a exportar: {tables.Count}");
+        PostgresLog.Info($"[Export] Tablas a exportar: {tables.Count}");
 
         _totalRows = await ExportHelpers.EstimateTotalRowsAsync(pgConn, tables, ct).ConfigureAwait(false);
         Log($"Filas estimadas: {_totalRows:N0}");
-        PostgresLog.Warn($"[Export] Filas estimadas: {_totalRows:N0}");
+        PostgresLog.Info($"[Export] Filas estimadas: {_totalRows:N0}");
         _percentComplete = 2;
 
         // File existence and schema are guaranteed by the controller before StartExport is called.
@@ -209,10 +212,7 @@ public sealed class ExportToSqliteService : IDisposable
         // FOREIGN KEY constraint failures when Jellyfin operates in SQLite mode.
         await CleanOrphanedForeignKeysAsync(sqliteConn, ct).ConfigureAwait(false);
 
-        // Pre-mark all Jellyfin code migrations as applied so Jellyfin does not
-        // attempt to run legacy routines (e.g. RemoveDuplicateExtras → TypedBaseItems)
-        // when switching back to SQLite mode.
-        await PreMarkCodeMigrationsAsync(sqliteConn, ct).ConfigureAwait(false);
+        await CopyCodeMigrationsAsync(pgConn, sqliteConn, ct).ConfigureAwait(false);
 
         _percentComplete = 100;
         var fileSize = new FileInfo(sqliteDbPath).Length;
@@ -248,6 +248,13 @@ public sealed class ExportToSqliteService : IDisposable
             schema = pgSchema.Where(c => sqliteColSet.Contains(c.Name)).ToList();
         }
 
+        // Primary-key columns are copied verbatim: text key columns are case-sensitive
+        // in both engines, so normalising their case would merge distinct rows.
+        var keyColumns = await ExportHelpers.GetPrimaryKeyColumnsAsync(pgConn, table, ct).ConfigureAwait(false);
+        var isKeyColumn = schema
+            .Select(c => keyColumns.Contains(c.Name, StringComparer.OrdinalIgnoreCase))
+            .ToArray();
+
         // table comes from pg_tables (system catalog), not user input (CA2100).
         long rowCount;
         using var countCmd = CreateCountCommand(pgConn, table);
@@ -261,7 +268,7 @@ public sealed class ExportToSqliteService : IDisposable
         }
 
         Log($"  → {table} ({rowCount:N0} filas)");
-        PostgresLog.Warn($"[Export]   → {table} ({rowCount:N0} filas)");
+        PostgresLog.Info($"[Export]   → {table} ({rowCount:N0} filas)");
 
         await ExportHelpers.ExecSqliteAsync(sqliteConn, $"""DELETE FROM "{table}";""", ct).ConfigureAwait(false);
 
@@ -284,6 +291,7 @@ public sealed class ExportToSqliteService : IDisposable
         SqliteTransaction? activeTx = (SqliteTransaction)await sqliteConn.BeginTransactionAsync(ct).ConfigureAwait(false);
         insertCmd.Transaction = activeTx;
         long batchCount = 0;
+        long rowsRead = 0;
 
         try
         {
@@ -291,11 +299,21 @@ public sealed class ExportToSqliteService : IDisposable
             {
                 for (var col = 0; col < schema.Count; col++)
                 {
-                    parameters[col].Value = ConvertForSqlite(reader.GetValue(col));
+                    parameters[col].Value = ConvertForSqlite(reader.GetValue(col), isKeyColumn[col]);
                 }
 
-                await insertCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                try
+                {
+                    await insertCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                }
+                catch (SqliteException ex) when (ex.SqliteErrorCode == SqliteConstraintErrorCode)
+                {
+                    throw new InvalidOperationException(
+                        BuildConstraintError(table, schema, parameters, isKeyColumn, rowsRead + 1, ex), ex);
+                }
+
                 batchCount++;
+                rowsRead++;
                 _exportedRows++;
 
                 if (batchCount >= CommitEveryRows)
@@ -316,6 +334,48 @@ public sealed class ExportToSqliteService : IDisposable
         }
     }
 
+    /// <summary>
+    /// Builds an actionable error for a SQLite constraint violation, including the
+    /// primary-key values of the row that could not be inserted.
+    /// </summary>
+    /// <param name="table">Table being exported.</param>
+    /// <param name="schema">Columns being exported, in insert order.</param>
+    /// <param name="parameters">Insert parameters holding the offending row values.</param>
+    /// <param name="isKeyColumn">Flags the primary-key columns within <paramref name="schema"/>.</param>
+    /// <param name="rowNumber">1-based row number within the table.</param>
+    /// <param name="inner">The SQLite error being reported.</param>
+    /// <returns>Error message with the conflicting primary key.</returns>
+    private static string BuildConstraintError(
+        string table,
+        List<ColumnInfo> schema,
+        List<SqliteParameter> parameters,
+        bool[] isKeyColumn,
+        long rowNumber,
+        SqliteException inner)
+    {
+        var key = new List<string>();
+        for (var i = 0; i < schema.Count; i++)
+        {
+            if (isKeyColumn[i])
+            {
+                key.Add(string.Format(
+                    CultureInfo.InvariantCulture,
+                    "{0}={1}",
+                    schema[i].Name,
+                    parameters[i].Value ?? "NULL"));
+            }
+        }
+
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "Failed to export table '{0}' (row {1}): {2} Conflicting primary key: {3}. "
+            + "Verify the source rows in PostgreSQL; two rows may differ only by letter case.",
+            table,
+            rowNumber,
+            inner.Message,
+            key.Count > 0 ? string.Join(", ", key) : "(unknown)");
+    }
+
     // ── Value conversion ──────────────────────────────────────────────────────
 
     // GUID format note: Jellyfin's native SQLite stores GUIDs in UPPERCASE
@@ -323,7 +383,12 @@ public sealed class ExportToSqliteService : IDisposable
     // in lowercase. We normalise to UPPERCASE on export so that Jellyfin's
     // case-sensitive internal lookups (UserManager, DeviceManager, etc.) work
     // correctly when switching back to SQLite mode.
-    private static object ConvertForSqlite(object? value) => value switch
+    //
+    // Primary-key columns are never case-normalised: a text key column such as
+    // UserData.CustomDataKey is case-sensitive, and rows like 'AE19...' / 'ae19...'
+    // are legitimate distinct rows. Uppercasing them merges both rows and violates
+    // the primary key, aborting the export.
+    private static object ConvertForSqlite(object? value, bool preserveKeyColumn) => value switch
     {
         null or DBNull => DBNull.Value,
         bool b => b ? 1 : 0,
@@ -337,7 +402,7 @@ public sealed class ExportToSqliteService : IDisposable
         int[] arr => JsonSerializer.Serialize(arr),
         float[] arr => JsonSerializer.Serialize(arr),
         // String GUIDs from PostgreSQL (uuid columns read as string) → UPPERCASE
-        string s when GuidPattern.IsMatch(s) => s.ToUpperInvariant(),
+        string s when !preserveKeyColumn && GuidPattern.IsMatch(s) => s.ToUpperInvariant(),
         _ => value,
     };
 
@@ -347,7 +412,10 @@ public sealed class ExportToSqliteService : IDisposable
     {
         if (!string.IsNullOrEmpty(message))
         {
-            _logger.LogInformation("{Message}", message);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("{Message}", message);
+            }
         }
 
         lock (_logLock)
@@ -460,7 +528,7 @@ public sealed class ExportToSqliteService : IDisposable
         if (totalDeleted > 0)
         {
             Log($"[PostExport] Limpieza FK: {totalDeleted} filas huérfanas eliminadas.");
-            PostgresLog.Warn($"[Export] FK cleanup: {totalDeleted} orphaned rows removed.");
+            PostgresLog.Info($"[Export] FK cleanup: {totalDeleted} orphaned rows removed.");
         }
     }
 
@@ -496,142 +564,30 @@ public sealed class ExportToSqliteService : IDisposable
         page[23] = 32;   // leaf payload fraction
 
         File.WriteAllBytes(libraryDbPath, page);
-        PostgresLog.Warn($"[Export] library.db stub creado: {libraryDbPath}");
+        PostgresLog.Info($"[Export] library.db stub creado: {libraryDbPath}");
     }
 
-    // ── Code migration pre-marking ────────────────────────────────────────────
-    //
-    // When Jellyfin restarts in SQLite mode after an export, it runs pending code
-    // migrations. Legacy routines like RemoveDuplicateExtras look for TypedBaseItems
-    // (old library.db schema) which no longer exists. We pre-mark all code migrations
-    // as applied in __EFMigrationsHistory so Jellyfin skips them entirely.
-    //
-    // IDs use the format built by CodeMigration.BuildCodeMigrationId():
-    //   Order.ToString("yyyyMMddHHmmsss") + "_" + Name
-    // (note: 3 trailing 's' = 3 decimal digits of seconds in custom format)
-
-    private async Task PreMarkCodeMigrationsAsync(SqliteConnection conn, CancellationToken ct)
+    // Preserve pending code migrations instead of claiming every discovered routine ran.
+    private async Task CopyCodeMigrationsAsync(NpgsqlConnection pg, SqliteConnection conn, CancellationToken ct)
     {
-        Log("[PostExport] Pre-marcando migraciones de código en __EFMigrationsHistory...");
-
-        // Collect all types from every loaded assembly.
-        var allTypes = AppDomain.CurrentDomain.GetAssemblies()
-            .SelectMany(a =>
-            {
-                try
-                {
-                    return a.GetTypes();
-                }
-                catch
-                {
-                    return System.Array.Empty<Type>();
-                }
-            })
-            .ToList();
-
-        // The migration routines live in jellyfin.dll (the entry-point assembly).
-        // If not already loaded, load it explicitly from the server directory.
-        if (!allTypes.Any(t => t.GetCustomAttributes(false)
-                .Any(attr => attr.GetType().Name == "JellyfinMigrationAttribute")))
-        {
-            var serverDir = Path.GetDirectoryName(
-                AppDomain.CurrentDomain.GetAssemblies()
-                    .FirstOrDefault(a => a.GetName().Name == "Jellyfin.Database.Implementations")?.Location
-                ?? string.Empty) ?? string.Empty;
-
-            foreach (var candidate in new[] { "jellyfin.dll", "Jellyfin.Server.dll" })
-            {
-                var candidatePath = Path.Combine(serverDir, candidate);
-                if (File.Exists(candidatePath))
-                {
-                    try
-                    {
-                        var asm = System.Runtime.Loader.AssemblyLoadContext.Default
-                            .LoadFromAssemblyPath(candidatePath);
-                        try
-                        {
-                            allTypes.AddRange(asm.GetTypes());
-                        }
-                        catch
-                        {
-                            // ignore type load errors
-                        }
-
-                        break;
-                    }
-                    catch
-                    {
-                        // ignore assembly load errors
-                    }
-                }
-            }
-        }
-
-        var migrationIds = allTypes
-            .Select(t => t.GetCustomAttributes(false)
-                .FirstOrDefault(attr => attr.GetType().Name == "JellyfinMigrationAttribute"))
-            .Where(attr => attr is not null)
-            .Select(attr =>
-            {
-                // Order can be DateTime or DateTimeOffset depending on Jellyfin version
-                var orderRaw = attr!.GetType().GetProperty("Order")!.GetValue(attr)!;
-                var order = orderRaw is DateTimeOffset dto
-                    ? dto
-                    : new DateTimeOffset((DateTime)orderRaw, TimeSpan.Zero);
-                var name = (string?)attr.GetType().GetProperty("Name")!.GetValue(attr);
-                return order.ToString("yyyyMMddHHmmsss", CultureInfo.InvariantCulture) + "_" + name;
-            })
-            .OrderBy(id => id, StringComparer.Ordinal)
-            .ToList();
-
-        if (migrationIds.Count == 0)
-        {
-            Log("[PostExport] ADVERTENCIA: No se encontraron migraciones de código. El arranque SQLite puede fallar.");
-            PostgresLog.Warn("[Export] PreMarkCodeMigrations: No JellyfinMigrationAttribute types found.");
-            return;
-        }
-
-        Log($"[PostExport] {migrationIds.Count} migraciones a pre-marcar.");
-        PostgresLog.Warn($"[Export] Pre-marcando {migrationIds.Count} migraciones de código en __EFMigrationsHistory.");
-
-        // Ensure the history table exists (created by EF Core Migrate earlier)
-        const string createHistoryTable =
-            "CREATE TABLE IF NOT EXISTS \"__EFMigrationsHistory\" " +
-            "(\"MigrationId\" TEXT NOT NULL CONSTRAINT \"PK___EFMigrationsHistory\" PRIMARY KEY, " +
-            "\"ProductVersion\" TEXT NOT NULL);";
-        await ExportHelpers.ExecSqliteAsync(conn, createHistoryTable, ct).ConfigureAwait(false);
-
-        // Get already-applied migrations to avoid duplicate key errors
-        var existingIds = new HashSet<string>(StringComparer.Ordinal);
-        using var selectCmd = conn.CreateCommand();
-        selectCmd.CommandText = "SELECT \"MigrationId\" FROM \"__EFMigrationsHistory\";";
-        using var reader = await selectCmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        using var select = new NpgsqlCommand("SELECT \"MigrationId\", \"ProductVersion\" FROM \"__EFMigrationsHistory\";", pg);
+        using var reader = await select.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        var count = 0;
         while (await reader.ReadAsync(ct).ConfigureAwait(false))
         {
-            existingIds.Add(reader.GetString(0));
-        }
-
-        await reader.DisposeAsync().ConfigureAwait(false);
-
-        const string jellyfinVersion = "10.11.10";
-        var inserted = 0;
-        foreach (var id in migrationIds)
-        {
-            if (existingIds.Contains(id))
+            var id = reader.GetString(0);
+            if (!MigrationCodeMigrations.IsCodeMigrationId(id))
             {
                 continue;
             }
 
-            using var insertCmd = conn.CreateCommand();
-            insertCmd.CommandText =
-                "INSERT OR IGNORE INTO \"__EFMigrationsHistory\" (\"MigrationId\", \"ProductVersion\") VALUES (@id, @ver);";
-            insertCmd.Parameters.AddWithValue("@id", id);
-            insertCmd.Parameters.AddWithValue("@ver", jellyfinVersion);
-            await insertCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-            inserted++;
+            using var insert = conn.CreateCommand();
+            insert.CommandText = "INSERT OR IGNORE INTO \"__EFMigrationsHistory\" (\"MigrationId\", \"ProductVersion\") VALUES (@id, @version);";
+            insert.Parameters.AddWithValue("@id", id);
+            insert.Parameters.AddWithValue("@version", reader.GetString(1));
+            count += await insert.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
 
-        Log($"[PostExport] {inserted} migraciones pre-marcadas correctamente.");
-        PostgresLog.Warn($"[Export] {inserted} migraciones de código pre-marcadas en __EFMigrationsHistory.");
+        Log($"[PostExport] {count} migraciones aplicadas copiadas desde PostgreSQL.");
     }
 }

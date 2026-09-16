@@ -2,6 +2,8 @@ using System;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Text;
+using Npgsql;
 
 namespace Jellyfin.Database.Providers.Postgres.Logging;
 
@@ -16,6 +18,9 @@ internal static class PostgresLog
 {
     /// <summary>Number of days to keep log files before automatic deletion.</summary>
     internal const int RetentionDays = 14;
+
+    // Longest value written for a single exception field (PostgreSQL details can be huge).
+    private const int MaxFieldLength = 400;
 
     private static readonly object Lock = new();
 
@@ -114,17 +119,67 @@ internal static class PostgresLog
     /// <summary>Writes an error message including exception details.</summary>
     /// <param name="msg">Context description.</param>
     /// <param name="ex">The exception to include.</param>
-    public static void Error(string msg, Exception ex) =>
-        Write(
-            "ERROR",
-            string.Format(
-                CultureInfo.InvariantCulture,
-                "{0} | {1}: {2}",
-                msg,
-                ex.GetType().Name,
-                ex.Message));
+    public static void Error(string msg, Exception ex) => WriteException("ERROR", msg, ex);
+
+    /// <summary>Writes a warning including exception details.</summary>
+    /// <param name="msg">Context description.</param>
+    /// <param name="ex">The exception to include.</param>
+    public static void Warn(string msg, Exception ex) => WriteException("WARN ", msg, ex);
 
     // ── Private helpers ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Writes an exception as a lead line with the PostgreSQL detail plus the full stack trace,
+    /// which is what turns "the export failed" into something that can actually be diagnosed.
+    /// </summary>
+    /// <param name="level">Log level label.</param>
+    /// <param name="message">Context description.</param>
+    /// <param name="ex">The exception to describe.</param>
+    private static void WriteException(string level, string message, Exception ex)
+    {
+        var text = new StringBuilder();
+        text.Append(message).Append(" | ").Append(Describe(ex));
+        text.AppendLine();
+        text.Append(Indent(ex.ToString()));
+        Write(level, text.ToString());
+    }
+
+    /// <summary>Builds the one-line description of an exception, adding PostgreSQL specific fields.</summary>
+    /// <param name="ex">The exception to describe.</param>
+    /// <returns>The description.</returns>
+    private static string Describe(Exception ex)
+    {
+        var text = new StringBuilder(string.Concat(ex.GetType().FullName, ": ", ex.Message));
+        if (ex is PostgresException postgres)
+        {
+            AppendDetail(text, "SqlState", postgres.SqlState);
+            AppendDetail(text, "Detail", postgres.Detail);
+            AppendDetail(text, "Hint", postgres.Hint);
+            AppendDetail(text, "Table", postgres.TableName);
+            AppendDetail(text, "Column", postgres.ColumnName);
+            AppendDetail(text, "Constraint", postgres.ConstraintName);
+            AppendDetail(text, "Where", postgres.Where);
+        }
+
+        return text.ToString();
+    }
+
+    private static void AppendDetail(StringBuilder builder, string label, string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            builder.Append(" | ").Append(label).Append('=').Append(Truncate(value));
+        }
+    }
+
+    /// <summary>Indents every stack frame so the block reads as one entry.</summary>
+    /// <param name="text">Text to indent.</param>
+    /// <returns>The indented text.</returns>
+    private static string Indent(string text)
+        => text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace("\n", "\n    ", StringComparison.Ordinal);
+
+    private static string Truncate(string value)
+        => value.Length <= MaxFieldLength ? value : string.Concat(value.AsSpan(0, MaxFieldLength), "\u2026");
 
     private static void EnsureDirectory()
     {
