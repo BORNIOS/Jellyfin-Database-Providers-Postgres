@@ -108,6 +108,52 @@
             }
         }
 
+        /* The script toggles Jellyfin's button-submit/button-default classes; giving them the panel
+           accent makes the section the user is on unmistakable. */
+        #PostgresProviderConfigPage .pg-tab-btn.button-submit {
+            background: linear-gradient(135deg, #3a6dd8, #5a8ff0) !important;
+            border-color: rgba(140, 190, 255, 0.55);
+            color: #fff;
+        }
+
+        #PostgresProviderConfigPage .pg-tab-btn:hover {
+            background: rgba(38, 54, 92, 0.9);
+        }
+
+        /* One table style for every section: sticky header, subtle separators and readable rows. */
+        #PostgresProviderConfigPage .pg-card table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+
+        #PostgresProviderConfigPage .pg-card table th {
+            position: sticky;
+            top: 0;
+            text-align: left;
+            padding: 8px 10px;
+            background: rgba(13, 20, 38, 0.94);
+            border-bottom: 1px solid var(--pg-border);
+            color: #cfe0ff;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        #PostgresProviderConfigPage .pg-card table td {
+            padding: 7px 10px;
+            border-bottom: 1px solid rgba(124, 146, 196, 0.14);
+            vertical-align: top;
+        }
+
+        #PostgresProviderConfigPage .pg-card table tbody tr:nth-child(even) {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        #PostgresProviderConfigPage :focus-visible {
+            outline: 2px solid var(--pg-accent);
+            outline-offset: 2px;
+        }
+
         /* dialog styles are inline on the element itself to guarantee
            they apply even when Jellyfin discards the plugin <head> */
     </style>
@@ -750,7 +796,15 @@
                     msg_query_ms_suffix: ' ms',
                     msg_query_truncated_suffix: ' (truncated to the row limit)',
                     msg_query_null: 'NULL',
-                    msg_query_plan_note: 'Execution plan: the statement was planned, not executed.'
+                    msg_query_plan_note: 'Execution plan: the statement was planned, not executed.',
+                    field_host: 'Host',
+                    field_port: 'Port',
+                    field_database: 'Database',
+                    field_username: 'Username',
+                    field_password: 'Password',
+                    field_pool_size: 'Max pool size',
+                    field_command_timeout: 'Command timeout (seconds)',
+                    field_sqlite_path: 'SQLite file path'
                 },
                 es: {
                     title_main: 'PostgreSQL Database Provider',
@@ -929,7 +983,15 @@
                     msg_query_ms_suffix: ' ms',
                     msg_query_truncated_suffix: ' (truncado al limite de filas)',
                     msg_query_null: 'NULL',
-                    msg_query_plan_note: 'Plan de ejecucion: la sentencia se planifico, no se ejecuto.'
+                    msg_query_plan_note: 'Plan de ejecucion: la sentencia se planifico, no se ejecuto.',
+                    field_host: 'Host',
+                    field_port: 'Puerto',
+                    field_database: 'Base de datos',
+                    field_username: 'Usuario',
+                    field_password: 'Contraseña',
+                    field_pool_size: 'Tamaño máximo del pool',
+                    field_command_timeout: 'Timeout de comandos (segundos)',
+                    field_sqlite_path: 'Ruta del archivo SQLite'
                 }
             };
 

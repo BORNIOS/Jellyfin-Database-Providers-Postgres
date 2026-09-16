@@ -5,7 +5,7 @@
 
 | Dato | Valor |
 | --- | --- |
-| Fecha de ejecución | 2026-09-15 20:27:21 -07:00 |
+| Fecha de ejecución | 2026-09-16 02:12:02 -07:00 |
 | Versión del plugin | 3.0.0.0 |
 | Jellyfin validado | 12.1.0 |
 | Base de datos de pruebas | Jellyfin |
@@ -15,7 +15,7 @@
 
 | Verificaciones | Correctas | Con error | Omitidas |
 | --- | --- | --- | --- |
-| 57 | 57 | 0 | 0 |
+| 61 | 61 | 0 | 0 |
 
 ## Resultado por área
 
@@ -28,6 +28,7 @@
 | QueryConsoleTests | 26 | ✅ 26/26 |
 | SchemaAuditTests | 2 | ✅ 2/2 |
 | SqlRewriteTests | 9 | ✅ 9/9 |
+| WebPageTests | 4 | ✅ 4/4 |
 
 ## Detalle
 
@@ -90,6 +91,10 @@
 | SqlRewriteTests.UnrelatedStatementsAreLeftUntouched(sql: "DELETE FROM \"LinkedChildren\" WHERE \"ParentId\" "···) | ✅ |
 | SqlRewriteTests.UnrelatedStatementsAreLeftUntouched(sql: "UPDATE \"BaseItems\" SET \"Name\" = 'x' WHERE \"Id"···) | ✅ |
 | SqlRewriteTests.UnrelatedStatementsAreLeftUntouched(sql: "UPDATE \"UserData\" SET \"Played\" = true WHERE \""···) | ✅ |
+| WebPageTests.BothDictionariesContainEveryTranslatedKey | ✅ |
+| WebPageTests.ConfigurationPageResourceIsEmbedded | ✅ |
+| WebPageTests.EveryElementIdUsedByTheScriptExists | ✅ |
+| WebPageTests.EveryTabHasItsPane | ✅ |
 
 ## Cómo reproducirlo
 
