@@ -601,8 +601,11 @@
                         </div>
 
                         <div id="queryHistoryWrap" style="display:none; margin-top:16px;">
-                            <h3 id="queryHistoryHeading" style="margin:0 0 4px 0; font-size:15px;">Historial</h3>
-                            <p class="fieldDescription" id="queryHistoryHint" style="margin-top:0;">Haz clic en una entrada para volver a cargarla.</p>
+                            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                                <h3 id="queryHistoryHeading" style="margin:0; font-size:15px;">Historial</h3>
+                                <button is="emby-button" type="button" id="btnClearQueryHistory" class="raised button-default" style="margin-left:auto;">&#128465; <span id="btnClearQueryHistoryLabel">Limpiar historial</span></button>
+                            </div>
+                            <p class="fieldDescription" id="queryHistoryHint" style="margin-top:4px;">Haz clic en una entrada para volver a cargarla.</p>
                             <div id="queryHistory"></div>
                         </div>
                     </div>
@@ -776,6 +779,7 @@
                     preset_query_empty: '\u2014 Choose a template \u2014',
                     preset_query_tables: 'Largest tables',
                     preset_query_slow: 'Slowest queries (pg_stat_statements)',
+                    preset_query_databases: 'Databases in the server',
                     preset_query_activity: 'Current activity',
                     preset_query_connections: 'Connections by state',
                     preset_query_unused_indexes: 'Unused indexes',
@@ -787,6 +791,7 @@
                     label_query_explain: 'Plan only (EXPLAIN)',
                     button_run_query: 'Run statement',
                     button_clear_query: 'Clear',
+                    button_clear_history: 'Clear history',
                     heading_query_history: 'History',
                     hint_query_history: 'Click an entry to load it again.',
                     msg_query_running: 'Running statement...',
@@ -963,6 +968,7 @@
                     preset_query_empty: '\u2014 Elegir una plantilla \u2014',
                     preset_query_tables: 'Tablas mas grandes',
                     preset_query_slow: 'Consultas mas lentas (pg_stat_statements)',
+                    preset_query_databases: 'Bases de datos del servidor',
                     preset_query_activity: 'Actividad actual',
                     preset_query_connections: 'Conexiones por estado',
                     preset_query_unused_indexes: 'Indices sin uso',
@@ -974,6 +980,7 @@
                     label_query_explain: 'Solo plan (EXPLAIN)',
                     button_run_query: 'Ejecutar sentencia',
                     button_clear_query: 'Limpiar',
+                    button_clear_history: 'Limpiar historial',
                     heading_query_history: 'Historial',
                     hint_query_history: 'Haz clic en una entrada para volver a cargarla.',
                     msg_query_running: 'Ejecutando sentencia...',
@@ -1152,6 +1159,7 @@
                 setText('queryExplainLabel', t('label_query_explain', 'Plan only (EXPLAIN)'));
                 setText('btnRunQueryLabel', t('button_run_query', 'Run statement'));
                 setText('btnClearQueryLabel', t('button_clear_query', 'Clear'));
+                setText('btnClearQueryHistoryLabel', t('button_clear_history', 'Clear history'));
                 setText('queryHistoryHeading', t('heading_query_history', 'History'));
                 setText('queryHistoryHint', t('hint_query_history', 'Click an entry to load it again.'));
                 buildQueryPresets();
@@ -1324,17 +1332,42 @@
             var QUERY_PRESETS = [
                 { key: 'preset_query_empty', sql: '' },
                 { key: 'preset_query_tables', sql: 'SELECT c.relname AS tabla, pg_size_pretty(pg_total_relation_size(c.oid)) AS total, s.n_live_tup AS filas\nFROM pg_class c\nJOIN pg_stat_user_tables s ON s.relid = c.oid\nWHERE c.relkind = \'r\'\nORDER BY pg_total_relation_size(c.oid) DESC\nLIMIT 25;' },
-                { key: 'preset_query_slow', sql: 'SELECT calls AS llamadas, ROUND(mean_exec_time::numeric, 1) AS ms_media, ROUND(total_exec_time::numeric) AS ms_total, rows AS filas, LEFT(query, 120) AS consulta\nFROM pg_stat_statements\nORDER BY mean_exec_time DESC\nLIMIT 20;' },
+                { key: 'preset_query_slow', sql: 'SELECT calls AS llamadas, ROUND(mean_exec_time::numeric, 1) AS ms_media, ROUND(total_exec_time::numeric) AS ms_total, rows AS filas, LEFT(query, 120) AS consulta\nFROM pg_stat_statements\nWHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())\n  AND query !~* \'(create|drop) (database|tablespace)\'\n  AND query NOT LIKE \'%pg_stat_statements%\'\nORDER BY total_exec_time DESC\nLIMIT 20;' },
                 { key: 'preset_query_activity', sql: 'SELECT pid, state AS estado, wait_event_type AS espera, LEFT(query, 100) AS consulta\nFROM pg_stat_activity\nWHERE datname = current_database() AND pid <> pg_backend_pid()\nORDER BY query_start;' },
                 { key: 'preset_query_connections', sql: 'SELECT COALESCE(state, \'(sin estado)\') AS estado, COUNT(*) AS conexiones\nFROM pg_stat_activity\nWHERE datname = current_database()\nGROUP BY 1\nORDER BY 2 DESC;' },
                 { key: 'preset_query_unused_indexes', sql: 'SELECT relname AS tabla, indexrelname AS indice, idx_scan AS usos, pg_size_pretty(pg_relation_size(indexrelid)) AS tamano\nFROM pg_stat_user_indexes\nWHERE idx_scan = 0\nORDER BY pg_relation_size(indexrelid) DESC\nLIMIT 20;' },
                 { key: 'preset_query_dead_tuples', sql: 'SELECT relname AS tabla, n_live_tup AS filas_vivas, n_dead_tup AS tuplas_muertas, last_autovacuum, last_autoanalyze\nFROM pg_stat_user_tables\nORDER BY n_dead_tup DESC\nLIMIT 15;' },
                 { key: 'preset_query_locks', sql: 'SELECT l.pid, l.locktype, l.mode, l.granted AS concedido, LEFT(a.query, 80) AS consulta\nFROM pg_locks l\nJOIN pg_stat_activity a ON a.pid = l.pid\nWHERE NOT l.granted;' },
                 { key: 'preset_query_extensions', sql: 'SELECT extname AS extension, extversion AS version FROM pg_extension ORDER BY extname;' },
-                { key: 'preset_query_server', sql: 'SELECT current_database() AS base, current_schema() AS esquema, current_setting(\'search_path\') AS search_path, pg_size_pretty(pg_database_size(current_database())) AS tamano, version() AS version;' }
+                { key: 'preset_query_server', sql: 'SELECT current_database() AS base, current_schema() AS esquema, current_setting(\'search_path\') AS search_path, pg_size_pretty(pg_database_size(current_database())) AS tamano, version() AS version;' },
+                { key: 'preset_query_databases', sql: 'SELECT d.datname AS base, pg_size_pretty(pg_database_size(d.datname)) AS tamano, (SELECT COUNT(*) FROM pg_stat_activity a WHERE a.datname = d.datname) AS conexiones\nFROM pg_database d\nWHERE d.datistemplate = false\nORDER BY pg_database_size(d.datname) DESC;' }
             ];
 
+            // The history lives in sessionStorage so it survives a page reload, and the user can wipe it.
+            var QUERY_HISTORY_KEY = 'pg.queryHistory';
             var queryHistoryEntries = [];
+
+            function loadQueryHistory() {
+                try {
+                    var stored = JSON.parse(sessionStorage.getItem(QUERY_HISTORY_KEY) || '[]');
+                    if (Object.prototype.toString.call(stored) === '[object Array]') {
+                        queryHistoryEntries = stored.filter(function(entry) { return typeof entry === 'string' && entry.length; }).slice(0, 10);
+                    }
+                } catch (e) {
+                    queryHistoryEntries = [];
+                }
+                renderQueryHistory();
+            }
+
+            function saveQueryHistory() {
+                try { sessionStorage.setItem(QUERY_HISTORY_KEY, JSON.stringify(queryHistoryEntries)); } catch (e) { /* storage disabled */ }
+            }
+
+            function clearQueryHistory() {
+                queryHistoryEntries = [];
+                try { sessionStorage.removeItem(QUERY_HISTORY_KEY); } catch (e) { /* storage disabled */ }
+                renderQueryHistory();
+            }
 
             function buildQueryPresets() {
                 var select = document.getElementById('queryTemplate');
@@ -1429,6 +1462,7 @@
                 queryHistoryEntries = queryHistoryEntries.filter(function(entry) { return entry !== sql; });
                 queryHistoryEntries.unshift(sql);
                 if (queryHistoryEntries.length > 10) queryHistoryEntries.length = 10;
+                saveQueryHistory();
                 renderQueryHistory();
             }
 
@@ -1452,6 +1486,7 @@
             }
 
             document.getElementById('btnRunQuery').addEventListener('click', runQuery);
+            document.getElementById('btnClearQueryHistory').addEventListener('click', clearQueryHistory);
             document.getElementById('btnClearQuery').addEventListener('click', function() {
                 document.getElementById('querySql').value = '';
                 document.getElementById('queryResultWrap').style.display = 'none';
@@ -2247,6 +2282,7 @@
 
             applyLocalization();
             document.getElementById('currentStatusBox').textContent = t('msg_loading', 'Loading...');
+            loadQueryHistory();
             document.querySelector('.pg-tab-btn[data-tab="config"]').click();
             loadStatus();
         })();

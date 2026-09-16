@@ -5,7 +5,7 @@
 
 | Dato | Valor |
 | --- | --- |
-| Fecha de ejecución | 2026-09-16 02:12:02 -07:00 |
+| Fecha de ejecución | 2026-09-16 02:18:57 -07:00 |
 | Versión del plugin | 3.0.0.0 |
 | Jellyfin validado | 12.1.0 |
 | Base de datos de pruebas | Jellyfin |
@@ -15,7 +15,7 @@
 
 | Verificaciones | Correctas | Con error | Omitidas |
 | --- | --- | --- | --- |
-| 61 | 61 | 0 | 0 |
+| 63 | 63 | 0 | 0 |
 
 ## Resultado por área
 
@@ -25,7 +25,7 @@
 | LoggingTests | 3 | ✅ 3/3 |
 | PostgresIntegrationTests | 11 | ✅ 11/11 |
 | ProviderContractTests | 4 | ✅ 4/4 |
-| QueryConsoleTests | 26 | ✅ 26/26 |
+| QueryConsoleTests | 28 | ✅ 28/28 |
 | SchemaAuditTests | 2 | ✅ 2/2 |
 | SqlRewriteTests | 9 | ✅ 9/9 |
 | WebPageTests | 4 | ✅ 4/4 |
@@ -70,6 +70,8 @@
 | QueryConsoleTests.MutatingOrMultiStatementSqlIsRejected(sql: "TRUNCATE \"UserData\"") | ✅ |
 | QueryConsoleTests.MutatingOrMultiStatementSqlIsRejected(sql: "UPDATE \"BaseItems\" SET \"Name\" = 'x'") | ✅ |
 | QueryConsoleTests.MutatingOrMultiStatementSqlIsRejected(sql: "VACUUM") | ✅ |
+| QueryConsoleTests.PanelTemplatesAreReadOnlyStatements | ✅ |
+| QueryConsoleTests.PanelTemplatesDoNotShowStatisticsFromOtherDatabases | ✅ |
 | QueryConsoleTests.ReadOnlyStatementsAreAccepted(sql: "/* plan primero */ EXPLAIN SELECT 1") | ✅ |
 | QueryConsoleTests.ReadOnlyStatementsAreAccepted(sql: "SELECT 'UPDATE' AS palabra, \"SET\" FROM (VALUES ("···) | ✅ |
 | QueryConsoleTests.ReadOnlyStatementsAreAccepted(sql: "select \"Id\" from \"BaseItems\" limit 5;") | ✅ |

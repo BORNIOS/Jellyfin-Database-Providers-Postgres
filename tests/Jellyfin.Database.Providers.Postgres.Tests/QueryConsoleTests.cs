@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Jellyfin.Database.Providers.Postgres.Services;
 using Xunit;
 
@@ -59,6 +60,62 @@ public sealed class QueryConsoleTests
 
         Assert.Equal(sql, QueryConsoleService.Validate(sql));
     }
+
+    /// <summary>
+    /// The templates the panel offers have to be accepted by the console itself: a template using a blocked
+    /// keyword would be rejected the moment an administrator picked it.
+    /// </summary>
+    [Fact]
+    public void PanelTemplatesAreReadOnlyStatements()
+    {
+        var presets = PanelTemplates();
+
+        Assert.True(presets.Count >= 8, $"Se esperaban al menos 8 plantillas en el panel, encontradas {presets.Count}.");
+        foreach (var preset in presets.Where(p => !string.IsNullOrWhiteSpace(p.Sql)))
+        {
+            Assert.False(
+                string.IsNullOrWhiteSpace(QueryConsoleService.Validate(preset.Sql)),
+                $"La plantilla '{preset.Key}' quedó vacía al validarse.");
+        }
+    }
+
+    /// <summary>
+    /// pg_stat_statements accumulates statements from every database of the server, so the templates that read
+    /// it must filter by the current database. Without the filter the panel shows unrelated maintenance noise
+    /// (creating and dropping scratch databases, for instance).
+    /// </summary>
+    [Fact]
+    public void PanelTemplatesDoNotShowStatisticsFromOtherDatabases()
+    {
+        var presets = PanelTemplates()
+            .Where(p => p.Sql.Contains("pg_stat_statements", StringComparison.Ordinal))
+            .ToArray();
+
+        Assert.NotEmpty(presets);
+        foreach (var preset in presets)
+        {
+            Assert.Contains("dbid", preset.Sql, StringComparison.Ordinal);
+        }
+    }
+
+    private static List<(string Key, string Sql)> PanelTemplates()
+    {
+        var html = File.ReadAllText(Path.Combine(TestEnvironment.PluginSourceDirectory, "Web", "configurationPage.html"));
+        var presets = new List<(string Key, string Sql)>();
+
+        foreach (Match match in Regex.Matches(
+            html,
+            @"\{\s*key:\s*'(preset_[a-z0-9_]+)',\s*sql:\s*'((?:[^'\\]|\\.)*)'\s*\}",
+            RegexOptions.CultureInvariant))
+        {
+            presets.Add((match.Groups[1].Value, UnescapeSql(match.Groups[2].Value)));
+        }
+
+        return presets;
+    }
+
+    private static string UnescapeSql(string value)
+        => value.Replace("\\'", "'", StringComparison.Ordinal).Replace("\\n", "\n", StringComparison.Ordinal);
 
     /// <summary>
     /// Validating must not change what is executed: quoted identifiers of the Jellyfin schema are preserved
