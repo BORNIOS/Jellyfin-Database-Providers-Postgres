@@ -52,6 +52,7 @@ automatic health check, scheduled maintenance and optional JellyTrend integratio
 - 💾 **Scheduled backups** with `pg_dump`, optional ZIP compression and restore from the UI.
 - ⚡ **Optional JellyTrend integration** — recommendations 4-10× faster with optimized native SQL.
 - 📊 **Database statistics** — total size, active connections and per-table metrics from the UI.
+- 🧪 **Read-only SQL console** — run diagnostic queries from the panel with 10 templates and history; any data-modifying statement is rejected.
 - 🔁 **One-click rollback to SQLite** from the configuration tab.
 
 ## ⚙️ Compatibility

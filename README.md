@@ -52,6 +52,7 @@ health check automático, mantenimiento programado e integración opcional con J
 - 💾 **Backups programados** con `pg_dump`, compresión ZIP opcional y restore desde la UI.
 - ⚡ **Integración opcional con JellyTrend** — recomendaciones 4-10× más rápidas con SQL nativo optimizado.
 - 📊 **Estadísticas de BD** — tamaño, conexiones activas y análisis tabla por tabla desde la UI.
+- 🧪 **Consola SQL de solo lectura** — lanza consultas de diagnóstico desde el panel con 10 plantillas e historial; rechaza cualquier sentencia que modifique datos.
 - 🔁 **Rollback a SQLite** en un clic desde la configuración.
 
 ---
