@@ -79,15 +79,19 @@ jobs:
           echo "checksum=$CHECKSUM" >> "$GITHUB_OUTPUT"
 
       - name: Actualizar manifest.json (repo)
+        # El changelog llega por variable de entorno, no interpolado en el script: así los saltos de
+        # línea sobreviven, jq los escribe como \n reales y Jellyfin los muestra como párrafos.
+        env:
+          VERSION: ${{ steps.version.outputs.full }}
+          RELEASE_VERSION: ${{ github.event.inputs.release_version }}
+          CHECKSUM: ${{ steps.package.outputs.checksum }}
+          CHANGELOG: ${{ github.event.inputs.changelog }}
         run: |
-          VERSION="${{ steps.version.outputs.full }}"
           # ABI que declara esta rama: 12.1.0.0 corresponde a Jellyfin 12.x.
           TARGETABI="12.1.0.0"
           ZIP="Jellyfin.Database.Providers.Postgres-${VERSION}.zip"
-          URL="https://github.com/${{ github.repository }}/releases/download/v${{ github.event.inputs.release_version }}/${ZIP}"
-          CHECKSUM="${{ steps.package.outputs.checksum }}"
+          URL="https://github.com/${{ github.repository }}/releases/download/v${RELEASE_VERSION}/${ZIP}"
           TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          CHANGELOG="${{ github.event.inputs.changelog }}"
           jq --arg v "$VERSION" --arg url "$URL" --arg sum "$CHECKSUM" --arg ts "$TS" --arg changelog "$CHANGELOG" --arg abi "$TARGETABI" \
             '.[0].versions = (([.[0].versions[] | select(.version != $v)]) + [{version: $v, changelog: $changelog, targetAbi: $abi, sourceUrl: $url, checksum: $sum, timestamp: $ts}])' \
             manifest.json > manifest.tmp.json && mv manifest.tmp.json manifest.json
@@ -108,13 +112,14 @@ jobs:
         if: github.ref_name != 'main'
         env:
           TARGETABI: '12.1.0.0'
+          VERSION: ${{ steps.version.outputs.full }}
+          RELEASE_VERSION: ${{ github.event.inputs.release_version }}
+          CHECKSUM: ${{ steps.package.outputs.checksum }}
+          CHANGELOG: ${{ github.event.inputs.changelog }}
         run: |
-          VERSION="${{ steps.version.outputs.full }}"
           ZIP="Jellyfin.Database.Providers.Postgres-${VERSION}.zip"
-          URL="https://github.com/${{ github.repository }}/releases/download/v${{ github.event.inputs.release_version }}/${ZIP}"
-          CHECKSUM="${{ steps.package.outputs.checksum }}"
+          URL="https://github.com/${{ github.repository }}/releases/download/v${RELEASE_VERSION}/${ZIP}"
           TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          CHANGELOG="${{ github.event.inputs.changelog }}"
           git fetch origin main
           git worktree add --detach ../catalogo origin/main
           cd ../catalogo
@@ -131,7 +136,9 @@ jobs:
           git push origin HEAD:main
 
       - name: Preparar notas del release
-        run: printf '%s' "${{ github.event.inputs.changelog }}" > release-notes.md
+        env:
+          CHANGELOG: ${{ github.event.inputs.changelog }}
+        run: printf '%s' "$CHANGELOG" > release-notes.md
 
       - name: Crear release en GitHub
         uses: softprops/action-gh-release@v2
