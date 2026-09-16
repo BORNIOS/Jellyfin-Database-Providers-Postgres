@@ -2,8 +2,8 @@
   {
     "guid": "a2b5f3e8-4c1d-4f7a-9e6b-8d0c2f1a3b5e",
     "name": "PostgreSQL Database Provider",
-    "description": "Production-ready PostgreSQL backend for Jellyfin. Bidirectional SQLite migration, near-instant search, health diagnostics and scheduled maintenance — no core modifications required.",
-    "overview": "Reemplaza SQLite por PostgreSQL como motor de base de datos de Jellyfin. Incluye migración bidireccional SQLite↔PostgreSQL, búsqueda casi instantánea con índices GIN, health check automático al arrancar, mantenimiento programado (VACUUM/REINDEX/Backup) e integración opcional con JellyTrend.",
+    "description": "Production-ready PostgreSQL backend for Jellyfin. Bidirectional SQLite migration, near-instant search, health diagnostics, read-only SQL console and scheduled maintenance — no core modifications required.",
+    "overview": "Reemplaza SQLite por PostgreSQL como motor de base de datos de Jellyfin. Incluye migración bidireccional SQLite↔PostgreSQL, búsqueda casi instantánea con índices GIN, health check automático al arrancar, consola SQL de solo lectura, mantenimiento programado (VACUUM/REINDEX/Backup) e integración opcional con JellyTrend.",
     "owner": ".:BORNIOS:.",
     "category": "Database",
     "imageUrl": "https://raw.githubusercontent.com/BORNIOS/Jellyfin-Database-Providers-Postgres/main/Jellyfin.Database.Providers.Postgres/Resources/logo.png",
@@ -26,7 +26,7 @@
       },
       {
         "version": "2.0.1.0",
-        "changelog": "2.0.1 - Fix critico de exportacion PostgreSQL -> SQLite:\\n\\n- Fix: las columnas de la clave primaria se copian sin normalizar, asi que los pares de filas que solo difieren en mayusculas/minusculas ya no colapsan en la misma clave y el export deja de abortar.\\n- Fix: cuando hay una violacion de constraint, el log indica tabla, numero de fila y valores de la clave en lugar del error criptico de SQLite.\\n- CI: la entrada del catalogo se publica tambien en main para que Jellyfin 10.11.x pueda ver esta version.\\n\\nRequiere Jellyfin 10.11.x. Para Jellyfin 12.1 usa la version 3.0.0.",
+        "changelog": "2.0.1 - Fix critico de exportacion PostgreSQL -> SQLite:\n\n- Fix: las columnas de la clave primaria se copian sin normalizar, asi que los pares de filas que solo difieren en mayusculas/minusculas ya no colapsan en la misma clave y el export deja de abortar.\n- Fix: cuando hay una violacion de constraint, el log indica tabla, numero de fila y valores de la clave en lugar del error criptico de SQLite.\n- CI: la entrada del catalogo se publica tambien en main para que Jellyfin 10.11.x pueda ver esta version.\n\nRequiere Jellyfin 10.11.x. Para Jellyfin 12.1 usa la version 3.0.0.",
         "targetAbi": "10.11.0.0",
         "sourceUrl": "https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/releases/download/v2.0.1/Jellyfin.Database.Providers.Postgres-2.0.1.0.zip",
         "checksum": "0d2f4217825e2e1b9edbe1d992855a2f",

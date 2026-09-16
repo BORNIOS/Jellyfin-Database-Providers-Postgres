@@ -97,11 +97,14 @@ public sealed partial class HealthCheckService
                 $"Hallazgos: {findings.Count} | Schema: {schema}");
         }
 
-        _logger.LogInformation(
-            "Health check completed: {Severity} ({Count} findings) in {Ms} ms",
-            overall,
-            findings.Count,
-            sw.ElapsedMilliseconds);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Health check completed: {Severity} ({Count} findings) in {Ms} ms",
+                overall,
+                findings.Count,
+                sw.ElapsedMilliseconds);
+        }
 
         return new HealthCheckResult(overall, findings, DateTime.UtcNow, sw.ElapsedMilliseconds);
     }
@@ -124,7 +127,7 @@ public sealed partial class HealthCheckService
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var items = new List<HealthRepairItem>();
 
-        PostgresLog.Warn($"[HealthCheck] INICIO: Auto-repair en schema '{schema}'...");
+        PostgresLog.Info($"[HealthCheck] INICIO: Auto-repair en schema '{schema}'...");
 
         // Re-detect across all schemas so we never try to REINDEX an orphan in pg_toast.
         var invalidIndexes = await FindInvalidIndexesAsync(connectionString, ct).ConfigureAwait(false);
@@ -648,8 +651,12 @@ public sealed partial class HealthCheckService
             var qualified = $"{MaintenanceService.QuoteIdentifier(safeSchema)}.{MaintenanceService.QuoteIdentifier(safeIndex)}";
             await ExecuteNonQueryAsync(pg, $"REINDEX INDEX CONCURRENTLY {qualified};", ct).ConfigureAwait(false);
 
-            _logger.LogInformation("Reindexed invalid index {Target}", target);
-            PostgresLog.Warn($"[HealthCheck] REINDEX OK: {target}");
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Reindexed invalid index {Target}", target);
+            }
+
+            PostgresLog.Info($"[HealthCheck] REINDEX OK: {target}");
             return new HealthRepairItem("Reindex", target, true, "Índice reconstruido correctamente.");
         }
         catch (Exception ex)
@@ -676,8 +683,12 @@ public sealed partial class HealthCheckService
             var qualified = $"{MaintenanceService.QuoteIdentifier(safeSchema)}.{MaintenanceService.QuoteIdentifier(safeTable)}";
             await ExecuteNonQueryAsync(pg, $"VACUUM ANALYZE {qualified};", ct).ConfigureAwait(false);
 
-            _logger.LogInformation("VACUUM ANALYZE {Target} (bloat {Pct:F1}%)", target, deadPct);
-            PostgresLog.Warn($"[HealthCheck] VACUUM OK: {target}");
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("VACUUM ANALYZE {Target} (bloat {Pct:F1}%)", target, deadPct);
+            }
+
+            PostgresLog.Info($"[HealthCheck] VACUUM OK: {target}");
             return new HealthRepairItem(
                 "Vacuum",
                 target,
@@ -707,13 +718,17 @@ public sealed partial class HealthCheckService
             var sql = $"SELECT setval({MaintenanceService.QuoteIdentifier(safeSequence)}, {issue.MaxValue.ToString(CultureInfo.InvariantCulture)});";
             await ExecuteNonQueryAsync(pg, sql, ct).ConfigureAwait(false);
 
-            _logger.LogInformation(
-                "Fixed sequence {Target}: setval({Max:N0}) for {Table}.{Column}",
-                target,
-                issue.MaxValue,
-                issue.Table,
-                issue.Column);
-            PostgresLog.Warn($"[HealthCheck] FIX SEQ OK: {target} → {issue.MaxValue}");
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Fixed sequence {Target}: setval({Max:N0}) for {Table}.{Column}",
+                    target,
+                    issue.MaxValue,
+                    issue.Table,
+                    issue.Column);
+            }
+
+            PostgresLog.Info($"[HealthCheck] FIX SEQ OK: {target} → {issue.MaxValue}");
             return new HealthRepairItem(
                 "FixSequence",
                 target,

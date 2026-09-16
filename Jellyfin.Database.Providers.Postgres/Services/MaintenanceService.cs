@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
@@ -70,7 +70,7 @@ public sealed class MaintenanceService
     public async Task VacuumAnalyzeAsync(string connectionString, CancellationToken ct = default)
     {
         _logger.LogInformation("Starting VACUUM ANALYZE...");
-        PostgresLog.Warn("[Vacuum] INICIO: VACUUM ANALYZE en toda la base de datos...");
+        PostgresLog.Info("[Vacuum] INICIO: VACUUM ANALYZE en toda la base de datos...");
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
         using var pg = new NpgsqlConnection(connectionString);
@@ -80,7 +80,7 @@ public sealed class MaintenanceService
 
         sw.Stop();
         _logger.LogInformation("VACUUM ANALYZE completed.");
-        PostgresLog.Warn($"[Vacuum] COMPLETADO en {sw.Elapsed.TotalSeconds:F1}s. Las tablas han sido analizadas y el espacio muerto recuperado.");
+        PostgresLog.Info($"[Vacuum] COMPLETADO en {sw.Elapsed.TotalSeconds:F1}s. Las tablas han sido analizadas y el espacio muerto recuperado.");
     }
 
     // ── REINDEX ───────────────────────────────────────────────────────────────
@@ -106,7 +106,7 @@ public sealed class MaintenanceService
 
         // dbName comes from SELECT current_database() — server-controlled, not user input.
         // QuoteIdentifier escapes any internal double-quotes for safety.
-        PostgresLog.Warn($"[Reindex] INICIO: REINDEX DATABASE CONCURRENTLY {dbName}...");
+        PostgresLog.Info($"[Reindex] INICIO: REINDEX DATABASE CONCURRENTLY {dbName}...");
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
         using var cmd = CreateReindexCommand(pg, dbName);
@@ -114,7 +114,7 @@ public sealed class MaintenanceService
 
         sw.Stop();
         _logger.LogInformation("REINDEX DATABASE completed.");
-        PostgresLog.Warn($"[Reindex] COMPLETADO en {sw.Elapsed.TotalSeconds:F1}s. Todos los índices de '{dbName}' han sido reconstruidos.");
+        PostgresLog.Info($"[Reindex] COMPLETADO en {sw.Elapsed.TotalSeconds:F1}s. Todos los índices de '{dbName}' han sido reconstruidos.");
     }
 
     // ── Table statistics ──────────────────────────────────────────────────────
@@ -333,7 +333,7 @@ public sealed class MaintenanceService
         string? pgBinPath,
         CancellationToken ct = default)
     {
-        return new MaintenanceBackupService(_logger).CreateBackupAsync(connectionString, outputDirectory, compress, pgBinPath, ct);
+        return new MaintenanceBackupService(_logger).CreateBackupAsync(connectionString, outputDirectory, compress, pgBinPath, ct: ct);
     }
 
     /// <summary>

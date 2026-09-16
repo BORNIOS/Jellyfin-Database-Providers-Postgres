@@ -1,11 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
-using Microsoft.Extensions.Logging;
 using Npgsql;
 using NpgsqlTypes;
 
@@ -48,23 +48,7 @@ internal static class MigrationTableCopier
         var effectiveBatchSize = Math.Max(1, Math.Min(batchSize, 65_535 / columns.Count));
 
         // Users table special handling: auto-fill NormalizedUsername if missing
-        var normalizedUsernameIdx = -1;
-        var usernameIdx = -1;
-        if (string.Equals(table, "Users", StringComparison.OrdinalIgnoreCase))
-        {
-            for (var i = 0; i < columns.Count; i++)
-            {
-                if (string.Equals(columns[i].Name, "NormalizedUsername", StringComparison.OrdinalIgnoreCase))
-                {
-                    normalizedUsernameIdx = i;
-                }
-
-                if (string.Equals(columns[i].Name, "Username", StringComparison.OrdinalIgnoreCase))
-                {
-                    usernameIdx = i;
-                }
-            }
-        }
+        var (normalizedUsernameIdx, usernameIdx) = FindUserColumnIndexes(table, columns);
 
         long total = 0;
         var rows = new List<object?[]>(effectiveBatchSize);
@@ -74,19 +58,7 @@ internal static class MigrationTableCopier
 
         while (await reader.ReadAsync().ConfigureAwait(false))
         {
-            var values = new object?[columns.Count];
-            for (var i = 0; i < columns.Count; i++)
-            {
-                values[i] = reader.GetValue(i);
-            }
-
-            if (normalizedUsernameIdx >= 0 && usernameIdx >= 0
-                && values[normalizedUsernameIdx] is null or DBNull)
-            {
-                values[normalizedUsernameIdx] =
-                    (values[usernameIdx]?.ToString() ?? string.Empty).ToUpperInvariant();
-            }
-
+            var values = BuildRowValues(reader, columns, normalizedUsernameIdx, usernameIdx);
             rows.Add(values);
             if (rows.Count >= effectiveBatchSize)
             {
@@ -103,6 +75,53 @@ internal static class MigrationTableCopier
         }
 
         return total;
+    }
+
+    private static (int NormalizedUsernameIdx, int UsernameIdx) FindUserColumnIndexes(
+        string table, IReadOnlyList<TargetColumn> columns)
+    {
+        if (!string.Equals(table, "Users", StringComparison.OrdinalIgnoreCase))
+        {
+            return (-1, -1);
+        }
+
+        var normalizedIdx = -1;
+        var usernameIdx = -1;
+        for (var i = 0; i < columns.Count; i++)
+        {
+            if (string.Equals(columns[i].Name, "NormalizedUsername", StringComparison.OrdinalIgnoreCase))
+            {
+                normalizedIdx = i;
+            }
+            else if (string.Equals(columns[i].Name, "Username", StringComparison.OrdinalIgnoreCase))
+            {
+                usernameIdx = i;
+            }
+        }
+
+        return (normalizedIdx, usernameIdx);
+    }
+
+    private static object?[] BuildRowValues(
+        System.Data.Common.DbDataReader reader,
+        IReadOnlyList<TargetColumn> columns,
+        int normalizedUsernameIdx,
+        int usernameIdx)
+    {
+        var values = new object?[columns.Count];
+        for (var i = 0; i < columns.Count; i++)
+        {
+            values[i] = reader.GetValue(i);
+        }
+
+        if (normalizedUsernameIdx >= 0 && usernameIdx >= 0
+            && values[normalizedUsernameIdx] is null or DBNull)
+        {
+            values[normalizedUsernameIdx] =
+                (values[usernameIdx]?.ToString() ?? string.Empty).ToUpperInvariant();
+        }
+
+        return values;
     }
 
     // ── Batch insert ──────────────────────────────────────────────────────────
@@ -218,35 +237,13 @@ internal static class MigrationTableCopier
             case "bigint":
             case "integer":
             case "smallint":
-                if (long.TryParse(strVal, NumberStyles.Integer, CultureInfo.InvariantCulture, out var longVal))
-                {
-                    param.NpgsqlDbType = NpgsqlDbType.Bigint;
-                    param.Value = longVal;
-                }
-                else
-                {
-                    param.NpgsqlDbType = NpgsqlDbType.Bigint;
-                    param.Value = DBNull.Value;
-                    log($"  [WARN] {pgTable}.{column.Name}: {pgType} inválido '{strVal}' → NULL");
-                }
-
+                BuildIntegerParameter(param, strVal, pgType, pgTable, column.Name, log);
                 break;
 
             case "double precision":
             case "real":
             case "numeric":
-                if (double.TryParse(strVal, NumberStyles.Float, CultureInfo.InvariantCulture, out var dblVal))
-                {
-                    param.NpgsqlDbType = NpgsqlDbType.Double;
-                    param.Value = dblVal;
-                }
-                else
-                {
-                    param.NpgsqlDbType = NpgsqlDbType.Double;
-                    param.Value = DBNull.Value;
-                    log($"  [WARN] {pgTable}.{column.Name}: {pgType} inválido '{strVal}' → NULL");
-                }
-
+                BuildFloatParameter(param, strVal, pgType, pgTable, column.Name, log);
                 break;
 
             case "timestamp without time zone":
@@ -255,19 +252,7 @@ internal static class MigrationTableCopier
                 break;
 
             case "ARRAY":
-                var trimmed = strVal.Trim();
-                if (trimmed.StartsWith('[') && trimmed.EndsWith(']'))
-                {
-                    param.NpgsqlDbType = NpgsqlDbType.Unknown;
-                    param.Value = '{' + trimmed[1..^1] + '}';
-                }
-                else
-                {
-                    param.NpgsqlDbType = NpgsqlDbType.Unknown;
-                    param.Value = DBNull.Value;
-                    log($"  [WARN] {pgTable}.{column.Name}: ARRAY inválido '{strVal}' → NULL");
-                }
-
+                BuildArrayParameter(param, strVal, pgTable, column.Name, log);
                 break;
 
             default:
@@ -283,6 +268,55 @@ internal static class MigrationTableCopier
         }
 
         return param;
+    }
+
+    private static void BuildIntegerParameter(
+        NpgsqlParameter param, string strVal, string pgType, string pgTable, string colName, Action<string> log)
+    {
+        if (long.TryParse(strVal, NumberStyles.Integer, CultureInfo.InvariantCulture, out var longVal))
+        {
+            param.NpgsqlDbType = NpgsqlDbType.Bigint;
+            param.Value = longVal;
+        }
+        else
+        {
+            param.NpgsqlDbType = NpgsqlDbType.Bigint;
+            param.Value = DBNull.Value;
+            log($"  [WARN] {pgTable}.{colName}: {pgType} inválido '{strVal}' → NULL");
+        }
+    }
+
+    private static void BuildFloatParameter(
+        NpgsqlParameter param, string strVal, string pgType, string pgTable, string colName, Action<string> log)
+    {
+        if (double.TryParse(strVal, NumberStyles.Float, CultureInfo.InvariantCulture, out var dblVal))
+        {
+            param.NpgsqlDbType = NpgsqlDbType.Double;
+            param.Value = dblVal;
+        }
+        else
+        {
+            param.NpgsqlDbType = NpgsqlDbType.Double;
+            param.Value = DBNull.Value;
+            log($"  [WARN] {pgTable}.{colName}: {pgType} inválido '{strVal}' → NULL");
+        }
+    }
+
+    private static void BuildArrayParameter(
+        NpgsqlParameter param, string strVal, string pgTable, string colName, Action<string> log)
+    {
+        var trimmed = strVal.Trim();
+        if (trimmed.StartsWith('[') && trimmed.EndsWith(']'))
+        {
+            param.NpgsqlDbType = NpgsqlDbType.Unknown;
+            param.Value = '{' + trimmed[1..^1] + '}';
+        }
+        else
+        {
+            param.NpgsqlDbType = NpgsqlDbType.Unknown;
+            param.Value = DBNull.Value;
+            log($"  [WARN] {pgTable}.{colName}: ARRAY inválido '{strVal}' → NULL");
+        }
     }
 
     private static void SetTimestampParameter(
@@ -333,6 +367,7 @@ internal static class MigrationTableCopier
 
     // pgTable + pgColumnList come from QuoteIdentifier on catalog data, not user input.
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "pgTable/pgColumnList built from QuoteIdentifier on catalog data, not user input.")]
+    [SuppressMessage("Security", "S2077:Formatting SQL queries is security-sensitive", Justification = "pgTable/pgColumnList are constructed from QuoteIdentifier on server catalog data (pg_tables/sqlite_master), never from user input.")]
     private static void SetInsertCommandText(
         NpgsqlCommand cmd,
         string pgTable,

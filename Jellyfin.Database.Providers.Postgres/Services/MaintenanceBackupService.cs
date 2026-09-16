@@ -40,6 +40,7 @@ public sealed class MaintenanceBackupService
     /// <param name="outputDirectory">Directory where the backup file will be written.</param>
     /// <param name="compress">When <see langword="true"/>, wraps the SQL dump in a ZIP file.</param>
     /// <param name="pgBinPath">Optional directory containing pg_dump, psql, etc. Leave null/empty to auto-detect or rely on PATH.</param>
+    /// <param name="includeCleanCommands">Include DROP statements for restoring a pre-migration backup.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>Absolute path to the created backup file.</returns>
     public async Task<string> CreateBackupAsync(
@@ -47,6 +48,7 @@ public sealed class MaintenanceBackupService
         string outputDirectory,
         bool compress,
         string? pgBinPath,
+        bool includeCleanCommands = false,
         CancellationToken ct = default)
     {
         var cs = new NpgsqlConnectionStringBuilder(connectionString);
@@ -66,9 +68,17 @@ public sealed class MaintenanceBackupService
         // Resolve + validate the executable path; name must be in AllowedPgExecutables (CA3006)
         var safeExecutable = ResolveExecutable(pgBinPath, "pg_dump");
         var args = BuildPgDumpArguments(cs, sqlFilePath);
+        if (includeCleanCommands)
+        {
+            args += " --clean --if-exists";
+        }
 
-        _logger.LogInformation("Starting PostgreSQL backup with pg_dump to {Path}", sqlFilePath);
-        PostgresLog.Warn($"[Backup] INICIO: pg_dump → {sqlFilePath}");
+        if (_logger?.IsEnabled(LogLevel.Information) == true)
+        {
+            _logger.LogInformation("Starting PostgreSQL backup with pg_dump to {Path}", sqlFilePath);
+        }
+
+        PostgresLog.Info($"[Backup] INICIO: pg_dump → {sqlFilePath}");
 
         var psi = CreateProcessStartInfo(safeExecutable, args);
 
@@ -104,8 +114,12 @@ public sealed class MaintenanceBackupService
         if (!compress)
         {
             var sqlSize = MaintenanceService.FormatBytes(GetFileSize(sqlFilePath));
-            _logger.LogInformation("PostgreSQL backup completed at {Path} ({Size})", sqlFilePath, sqlSize);
-            PostgresLog.Warn($"[Backup] COMPLETADO: {sqlFilePath} ({sqlSize})");
+            if (_logger?.IsEnabled(LogLevel.Information) == true)
+            {
+                _logger.LogInformation("PostgreSQL backup completed at {Path} ({Size})", sqlFilePath, sqlSize);
+            }
+
+            PostgresLog.Info($"[Backup] COMPLETADO: {sqlFilePath} ({sqlSize})");
             return sqlFilePath;
         }
 
@@ -115,15 +129,19 @@ public sealed class MaintenanceBackupService
             SafeFileDelete(zipPath);
         }
 
-        using (var archive = ZipFile.Open(zipPath, ZipArchiveMode.Create))
+        using (var archive = await ZipFile.OpenAsync(zipPath, ZipArchiveMode.Create, ct).ConfigureAwait(false))
         {
-            archive.CreateEntryFromFile(sqlFilePath, Path.GetFileName(sqlFilePath), CompressionLevel.Optimal);
+            await archive.CreateEntryFromFileAsync(sqlFilePath, Path.GetFileName(sqlFilePath), CompressionLevel.Optimal, ct).ConfigureAwait(false);
         }
 
         SafeFileDelete(sqlFilePath);
         var zipSize = MaintenanceService.FormatBytes(GetFileSize(zipPath));
-        _logger.LogInformation("PostgreSQL backup completed at {Path} ({Size})", zipPath, zipSize);
-        PostgresLog.Warn($"[Backup] COMPLETADO (ZIP): {zipPath} ({zipSize})");
+        if (_logger?.IsEnabled(LogLevel.Information) == true)
+        {
+            _logger.LogInformation("PostgreSQL backup completed at {Path} ({Size})", zipPath, zipSize);
+        }
+
+        PostgresLog.Info($"[Backup] COMPLETADO (ZIP): {zipPath} ({zipSize})");
         return zipPath;
     }
 
@@ -173,30 +191,7 @@ public sealed class MaintenanceBackupService
             var ext = Path.GetExtension(backupFilePath);
             if (string.Equals(ext, ".zip", StringComparison.OrdinalIgnoreCase))
             {
-                tempDir = Path.Combine(
-                    Path.GetTempPath(),
-                    "jellyfin-pg-restore-" + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture));
-                Directory.CreateDirectory(tempDir);
-
-                using var archive = ZipFile.OpenRead(backupFilePath);
-                ZipArchiveEntry? sqlEntry = null;
-                foreach (var entry in archive.Entries)
-                {
-                    if (entry.FullName.EndsWith(".sql", StringComparison.OrdinalIgnoreCase))
-                    {
-                        sqlEntry = entry;
-                        break;
-                    }
-                }
-
-                if (sqlEntry is null)
-                {
-                    throw new InvalidOperationException("ZIP backup does not contain a .sql file.");
-                }
-
-                // Canonicalize extracted path to prevent zip-slip (CA3003)
-                sqlFilePath = Path.GetFullPath(Path.Combine(tempDir, Path.GetFileName(sqlEntry.FullName)));
-                sqlEntry.ExtractToFile(sqlFilePath, overwrite: true);
+                (tempDir, sqlFilePath) = ExtractSqlFromZip(backupFilePath);
             }
 
             if (!SafeFileExists(sqlFilePath) || !sqlFilePath.EndsWith(".sql", StringComparison.OrdinalIgnoreCase))
@@ -213,7 +208,7 @@ public sealed class MaintenanceBackupService
                 backupFilePath,
                 replaceExistingObjects);
             var sourceSize = MaintenanceService.FormatBytes(GetFileSize(backupFilePath));
-            PostgresLog.Warn($"[Restore] INICIO: {backupFilePath} ({sourceSize}) replaceExisting={replaceExistingObjects}");
+            PostgresLog.Info($"[Restore] INICIO: {backupFilePath} ({sourceSize}) replaceExisting={replaceExistingObjects}");
 
             var psi = CreateProcessStartInfo(safeRestoreExe, args);
 
@@ -237,7 +232,7 @@ public sealed class MaintenanceBackupService
             if (process.ExitCode != 0)
             {
                 var detail = string.IsNullOrWhiteSpace(stdErr) ? stdOut : stdErr;
-                _logger.LogWarning("psql restore exited with code {Code}: {Detail}", process.ExitCode, detail);
+                throw new InvalidOperationException($"psql restore failed with exit code {process.ExitCode}: {detail}");
             }
 
             return sqlFilePath;
@@ -250,9 +245,10 @@ public sealed class MaintenanceBackupService
                 {
                     Directory.Delete(tempDir, recursive: true);
                 }
-                catch (IOException)
+                catch (IOException ex)
                 {
-                    // best-effort cleanup — ignore
+                    // Best-effort cleanup: keep a trace, it explains a leftover temp directory.
+                    PostgresLog.Debug($"[Backup] No se pudo borrar el directorio temporal {tempDir}: {ex.Message}");
                 }
             }
         }
@@ -303,6 +299,31 @@ public sealed class MaintenanceBackupService
         return executableName;
     }
 
+    // Extracts the first .sql entry from a ZIP backup into a temp directory.
+    // Returns (tempDir, sqlFilePath). Caller is responsible for deleting tempDir.
+    [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "backupFilePath is canonicalized by ValidateBackupFilePath before reaching here. Extracted path is canonicalized with Path.GetFullPath.")]
+    private static (string TempDir, string SqlFilePath) ExtractSqlFromZip(string backupFilePath)
+    {
+        var tempDir = Path.Combine(
+            Path.GetTempPath(),
+            "jellyfin-pg-restore-" + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture));
+        Directory.CreateDirectory(tempDir);
+
+        using var archive = ZipFile.OpenRead(backupFilePath);
+        var sqlEntry = archive.Entries.FirstOrDefault(e => e.FullName.EndsWith(".sql", StringComparison.OrdinalIgnoreCase));
+
+        if (sqlEntry is null)
+        {
+            throw new InvalidOperationException("ZIP backup does not contain a .sql file.");
+        }
+
+        // Canonicalize extracted path to prevent zip-slip (CA3003)
+        var sqlFilePath = Path.GetFullPath(Path.Combine(tempDir, Path.GetFileName(sqlEntry.FullName)));
+        sqlEntry.ExtractToFile(sqlFilePath, overwrite: true);
+
+        return (tempDir, sqlFilePath);
+    }
+
     // Returns the full path if the executable exists in <dir>, otherwise null.
     [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "dir is either Path.GetFullPath of a user config value or a hard-coded well-known path. executableName is validated against AllowedPgExecutables.")]
     private static string? FindInDirectory(string dir, string executableName)
@@ -330,51 +351,39 @@ public sealed class MaintenanceBackupService
     [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "Paths are constructed from hard-coded OS roots and the allow-listed executable name — no user input flows here.")]
     private static string? FindInKnownLocations(string executableName)
     {
-        // ── Windows: C:\Program Files\PostgreSQL\<ver>\bin\
         if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
                 System.Runtime.InteropServices.OSPlatform.Windows))
         {
-            var programFiles = new[]
-            {
-                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
-            };
-
-            foreach (var pf in programFiles)
-            {
-                if (string.IsNullOrEmpty(pf))
-                {
-                    continue;
-                }
-
-                var pgRoot = Path.Combine(pf, "PostgreSQL");
-                if (!Directory.Exists(pgRoot))
-                {
-                    continue;
-                }
-
-                var versionDirs = Directory.GetDirectories(pgRoot);
-                System.Array.Sort(versionDirs, StringComparer.OrdinalIgnoreCase);
-                System.Array.Reverse(versionDirs); // newest first
-
-                foreach (var versionDir in versionDirs)
-                {
-                    var found = FindInDirectory(Path.Combine(versionDir, "bin"), executableName);
-                    if (found is not null)
-                    {
-                        return found;
-                    }
-                }
-            }
-
-            return null;
+            return FindInWindowsLocations(executableName);
         }
 
-        // ── Linux: /usr/lib/postgresql/<ver>/bin/  (Debian/Ubuntu packages)
-        const string linuxPgRoot = "/usr/lib/postgresql";
-        if (Directory.Exists(linuxPgRoot))
+        return FindInLinuxLocations(executableName) ?? FindInMacOsLocations(executableName);
+    }
+
+    // ── Windows: C:\Program Files\PostgreSQL\<ver>\bin\
+    [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "Paths constructed from hard-coded Program Files roots and allow-listed executable name.")]
+    private static string? FindInWindowsLocations(string executableName)
+    {
+        var programFiles = new[]
         {
-            var versionDirs = Directory.GetDirectories(linuxPgRoot);
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+        };
+
+        foreach (var pf in programFiles)
+        {
+            if (string.IsNullOrEmpty(pf))
+            {
+                continue;
+            }
+
+            var pgRoot = Path.Combine(pf, "PostgreSQL");
+            if (!Directory.Exists(pgRoot))
+            {
+                continue;
+            }
+
+            var versionDirs = Directory.GetDirectories(pgRoot);
             System.Array.Sort(versionDirs, StringComparer.OrdinalIgnoreCase);
             System.Array.Reverse(versionDirs); // newest first
 
@@ -388,21 +397,55 @@ public sealed class MaintenanceBackupService
             }
         }
 
-        // ── macOS (Homebrew): /opt/homebrew/opt/postgresql@<ver>/bin/
-        const string brewRoot = "/opt/homebrew/opt";
-        if (Directory.Exists(brewRoot))
-        {
-            var pgDirs = Directory.GetDirectories(brewRoot, "postgresql*");
-            System.Array.Sort(pgDirs, StringComparer.OrdinalIgnoreCase);
-            System.Array.Reverse(pgDirs);
+        return null;
+    }
 
-            foreach (var pgDir in pgDirs)
+    // ── Linux: /usr/lib/postgresql/<ver>/bin/  (Debian/Ubuntu packages)
+    [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "Paths constructed from hard-coded Linux roots and allow-listed executable name.")]
+    private static string? FindInLinuxLocations(string executableName)
+    {
+        const string linuxPgRoot = "/usr/lib/postgresql";
+        if (!Directory.Exists(linuxPgRoot))
+        {
+            return null;
+        }
+
+        var versionDirs = Directory.GetDirectories(linuxPgRoot);
+        System.Array.Sort(versionDirs, StringComparer.OrdinalIgnoreCase);
+        System.Array.Reverse(versionDirs); // newest first
+
+        foreach (var versionDir in versionDirs)
+        {
+            var found = FindInDirectory(Path.Combine(versionDir, "bin"), executableName);
+            if (found is not null)
             {
-                var found = FindInDirectory(Path.Combine(pgDir, "bin"), executableName);
-                if (found is not null)
-                {
-                    return found;
-                }
+                return found;
+            }
+        }
+
+        return null;
+    }
+
+    // ── macOS (Homebrew): /opt/homebrew/opt/postgresql@<ver>/bin/
+    [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "Paths constructed from hard-coded Homebrew root and allow-listed executable name.")]
+    private static string? FindInMacOsLocations(string executableName)
+    {
+        const string brewRoot = "/opt/homebrew/opt";
+        if (!Directory.Exists(brewRoot))
+        {
+            return null;
+        }
+
+        var pgDirs = Directory.GetDirectories(brewRoot, "postgresql*");
+        System.Array.Sort(pgDirs, StringComparer.OrdinalIgnoreCase);
+        System.Array.Reverse(pgDirs);
+
+        foreach (var pgDir in pgDirs)
+        {
+            var found = FindInDirectory(Path.Combine(pgDir, "bin"), executableName);
+            if (found is not null)
+            {
+                return found;
             }
         }
 
@@ -444,6 +487,7 @@ public sealed class MaintenanceBackupService
 
         parts.Add(string.Concat("--file=", QuoteArg(sqlFilePath)));
         parts.Add("--no-password");
+        parts.Add("--set=ON_ERROR_STOP=1");
         return string.Join(" ", parts);
     }
 

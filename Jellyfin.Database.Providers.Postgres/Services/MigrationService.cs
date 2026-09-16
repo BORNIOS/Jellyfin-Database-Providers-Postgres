@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -18,8 +18,6 @@ public sealed class MigrationService : IDisposable
 {
     private const int DefaultBatch = 1000;
     private const int MaxLogLines = 500;
-
-    internal static readonly string[] SqlStatementSeparators = { "\r\n\r\n", "\n\n" };
 
     private readonly ILogger<MigrationService> _logger;
     private readonly SemaphoreSlim _semaphore = new(1, 1);
@@ -100,27 +98,26 @@ public sealed class MigrationService : IDisposable
             _logBuffer.Clear();
         }
 
-        PostgresLog.Warn("[ENGINE SWITCH] SQLite \u2192 PostgreSQL");
-        PostgresLog.Warn($"[ENGINE SWITCH] Origen SQLite: {sqlitePath}");
-        PostgresLog.Warn($"[ENGINE SWITCH] Schema PG: {schema} | Batch: {batchSize} | Truncate: {truncate}");
-        PostgresLog.Warn($"[Migration] INICIO: {sqlitePath} \u2192 PostgreSQL schema={schema} batch={batchSize} truncate={truncate}");
+        PostgresLog.Info("[ENGINE SWITCH] SQLite \u2192 PostgreSQL");
+        PostgresLog.Info($"[ENGINE SWITCH] Origen SQLite: {sqlitePath}");
+        PostgresLog.Info($"[ENGINE SWITCH] Schema PG: {schema} | Batch: {batchSize} | Truncate: {truncate}");
+        PostgresLog.Info($"[Migration] INICIO: {sqlitePath} \u2192 PostgreSQL schema={schema} batch={batchSize} truncate={truncate}");
 
         _ = Task.Run(async () =>
         {
             try
             {
-                await MigrationEngine.RunAsync(
-                    sqlitePath,
-                    postgresConnectionString,
-                    schema,
-                    batchSize,
-                    truncate,
-                    applicationPaths,
-                    this,
-                    CancellationToken.None).ConfigureAwait(false);
+                var options = new MigrationOptions(
+                    SqlitePath: sqlitePath,
+                    PostgresConnectionString: postgresConnectionString,
+                    Schema: schema,
+                    BatchSize: batchSize,
+                    Truncate: truncate,
+                    ApplicationPaths: applicationPaths);
+                await MigrationEngine.RunAsync(options, this, CancellationToken.None).ConfigureAwait(false);
                 _isCompleted = true;
-                PostgresLog.Warn($"[Migration] COMPLETADA: {_migratedRows:N0} filas migradas.");
-                PostgresLog.Warn("[ENGINE SWITCH] SQLite \u2192 PostgreSQL: COMPLETADO. Activa PostgreSQL desde la UI para finalizar el cambio.");
+                PostgresLog.Info($"[Migration] COMPLETADA: {_migratedRows:N0} filas migradas.");
+                PostgresLog.Info("[ENGINE SWITCH] SQLite \u2192 PostgreSQL: COMPLETADO. Activa PostgreSQL desde la UI para finalizar el cambio.");
             }
             catch (Exception ex)
             {
@@ -149,7 +146,11 @@ public sealed class MigrationService : IDisposable
 
     internal void Log(string message)
     {
-        _logger.LogInformation("{Message}", message);
+        if (_logger?.IsEnabled(LogLevel.Information) == true)
+        {
+            _logger.LogInformation("{Message}", message);
+        }
+
         lock (_logLock)
         {
             if (_logBuffer.Count >= MaxLogLines)

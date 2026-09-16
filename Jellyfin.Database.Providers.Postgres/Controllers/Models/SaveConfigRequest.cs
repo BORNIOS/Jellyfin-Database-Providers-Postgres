@@ -9,6 +9,15 @@ public sealed class SaveConfigRequest
     /// <summary>Gets or sets the EF command timeout in seconds.</summary>
     public int CommandTimeout { get; set; } = 60;
 
+    /// <summary>Gets or sets the minimum number of connections kept open in the Npgsql pool.</summary>
+    public int MinPoolSize { get; set; } = 4;
+
+    /// <summary>Gets or sets the maximum number of connections of the Npgsql pool.</summary>
+    public int MaxPoolSize { get; set; } = 100;
+
+    /// <summary>Gets or sets how many statements Npgsql keeps prepared per connection.</summary>
+    public int MaxAutoPrepare { get; set; } = 50;
+
     /// <summary>Gets or sets the backup output directory on the server.</summary>
     public string? BackupDirectory { get; set; }
 

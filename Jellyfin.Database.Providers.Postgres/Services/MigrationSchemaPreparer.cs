@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
-using System.IO;
 using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
+using Jellyfin.Database.Implementations;
+using Jellyfin.Database.Implementations.Locking;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 
 namespace Jellyfin.Database.Providers.Postgres.Services;
@@ -18,53 +20,47 @@ internal static class MigrationSchemaPreparer
     // ── Schema auto-creation ──────────────────────────────────────────────────
 
     /// <summary>
-    /// Applies the embedded schema SQL if the target schema does not exist yet.
+    /// Applies pending PostgreSQL migrations, including upgrades of existing schemas.
     /// </summary>
-    /// <param name="pg">Open PostgreSQL connection.</param>
+    /// <remarks>
+    /// Takes a connection string instead of an open connection on purpose: when the plugin runs in
+    /// a collectible load context (Jellyfin 12) this method is executed through
+    /// <see cref="MigrationAssemblyResolver.ApplySchemaAsync"/> inside the default context, so it
+    /// has to own its connection.
+    /// </remarks>
+    /// <param name="pgConnStr">PostgreSQL connection string.</param>
     /// <param name="schema">Target schema name.</param>
     /// <param name="log">Callback for progress messages.</param>
+    /// <param name="ct">Cancellation token.</param>
     /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
-    internal static async Task ApplySchemaIfNeededAsync(NpgsqlConnection pg, string schema, Action<string> log)
+    internal static async Task ApplySchemaIfNeededAsync(string pgConnStr, string schema, Action<string> log, CancellationToken ct)
     {
-        const string checkSql =
-            "SELECT 1 FROM information_schema.tables WHERE table_schema = @s AND table_name = 'BaseItems' LIMIT 1;";
-
-        object? exists;
-        using var checkCmd = new NpgsqlCommand(checkSql, pg);
-        checkCmd.Parameters.AddWithValue("s", schema);
-        exists = await checkCmd.ExecuteScalarAsync().ConfigureAwait(false);
-
-        if (exists is not null)
+        var builder = new NpgsqlConnectionStringBuilder(pgConnStr)
         {
-            log("[Schema] Schema ya existe — omitiendo creación.");
-            return;
+            SearchPath = MigrationDiscovery.QuoteIdentifier(schema),
+        };
+
+        using var pg = new NpgsqlConnection(builder.ConnectionString);
+        await pg.OpenAsync(ct).ConfigureAwait(false);
+
+        using (var createSchema = CreateSchemaStatementCommand(pg, "CREATE SCHEMA IF NOT EXISTS " + MigrationDiscovery.QuoteIdentifier(schema)))
+        {
+            await createSchema.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
 
-        log("[Schema] Creando schema desde SQL embebido...");
+        // Leave the target database ready for Jellyfin's own queries (see SqliteCompatibilityBootstrap).
+        SqliteCompatibilityBootstrap.Ensure(pg);
 
-        const string resourceName = "Jellyfin.Database.Providers.Postgres.Resources.schema.sql";
-        string schemaSql;
-        using (var stream = typeof(MigrationSchemaPreparer).Assembly.GetManifestResourceStream(resourceName)
-            ?? throw new InvalidOperationException($"Embedded resource not found: {resourceName}"))
-        using (var reader = new StreamReader(stream, Encoding.UTF8))
-        {
-            schemaSql = await reader.ReadToEndAsync().ConfigureAwait(false);
-        }
-
-        // Static separator array (CA1861: avoid constant array allocations per call)
-        var statements = schemaSql
-            .Split(MigrationService.SqlStatementSeparators, StringSplitOptions.RemoveEmptyEntries)
-            .Select(s => s.Trim().TrimEnd(';'))
-            .Where(s => !string.IsNullOrWhiteSpace(s))
-            .ToList();
-
-        foreach (var statement in statements)
-        {
-            using var cmd = CreateSchemaStatementCommand(pg, statement);
-            await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
-        }
-
-        log($"[Schema] {statements.Count} sentencias aplicadas.");
+        var options = new DbContextOptionsBuilder<JellyfinDbContext>();
+        options.UseNpgsql(pg, npgsql => npgsql.MigrationsAssembly(MigrationAssemblyResolver.EnsureRegistered()));
+        using var context = new JellyfinDbContext(
+            options.Options,
+            NullLogger<JellyfinDbContext>.Instance,
+            new PostgresDatabaseProvider(null, null),
+            new NoLockBehavior(
+                NullLogger<NoLockBehavior>.Instance));
+        log("[Schema] Aplicando migraciones PostgreSQL para Jellyfin 12.1...");
+        await context.Database.MigrateAsync(ct).ConfigureAwait(false);
     }
 
     // ── Timestamp column normalization ────────────────────────────────────────
@@ -130,8 +126,8 @@ internal static class MigrationSchemaPreparer
 
     // ── Command factory methods (CA2100) ──────────────────────────────────────
 
-    // Embedded-resource schema statements are never user input.
-    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "statement is sourced from embedded resource (schema.sql), not from user input.")]
+    // Schema names are quoted as identifiers before reaching this command.
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Schema DDL uses a fixed statement and an identifier escaped by QuoteIdentifier.")]
     private static NpgsqlCommand CreateSchemaStatementCommand(NpgsqlConnection pg, string statement)
         => new NpgsqlCommand(statement, pg);
 
