@@ -5,7 +5,7 @@
 
 | Dato | Valor |
 | --- | --- |
-| Fecha de ejecución | 2026-09-17 21:17:55 -07:00 |
+| Fecha de ejecución | 2026-09-17 22:04:31 -07:00 |
 | Versión del plugin | 3.0.0.0 |
 | Jellyfin validado | 12.1.0 |
 | Base de datos de pruebas | no configurada |
@@ -120,17 +120,17 @@
 Estas pruebas necesitan un PostgreSQL accesible y se omitieron porque la ejecución no recibió
 `POSTGRES_TEST_CONNECTION`. El resultado global **no** las cuenta como correctas.
 
-- PostgresIntegrationTests.ExportProducesAUsableSqliteDatabase
-- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "public.\"PurgeProbe\"")
-- PostgresIntegrationTests.SqlConsoleReturnsRowsAndRejectsWrites
-- PostgresIntegrationTests.CompatibilityAggregatesExistAfterSchemaPreparation
-- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "PurgeProbe")
-- PostgresIntegrationTests.OldSqliteSchemaIsRejectedBeforeWriting
 - PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "\"public\".\"PurgeProbe\"")
-- PostgresIntegrationTests.JsonCleanupWorksInSyncAndAsyncPaths
-- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "public.PurgeProbe")
-- PostgresIntegrationTests.InitialSchemaAndPopulatedUpgradeWork
+- PostgresIntegrationTests.ExportProducesAUsableSqliteDatabase
+- PostgresIntegrationTests.CompatibilityAggregatesExistAfterSchemaPreparation
 - PostgresIntegrationTests.SqliteDatabaseImportsIntoPublicAndCustomSchema
+- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "public.PurgeProbe")
+- PostgresIntegrationTests.OldSqliteSchemaIsRejectedBeforeWriting
+- PostgresIntegrationTests.InitialSchemaAndPopulatedUpgradeWork
+- PostgresIntegrationTests.JsonCleanupWorksInSyncAndAsyncPaths
+- PostgresIntegrationTests.SqlConsoleReturnsRowsAndRejectsWrites
+- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "public.\"PurgeProbe\"")
+- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "PurgeProbe")
 
 ## Cómo reproducirlo
 
