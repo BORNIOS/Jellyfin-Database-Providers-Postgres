@@ -35,7 +35,7 @@ namespace Jellyfin.Database.Providers.Postgres.Services;
 public sealed class JellyTrendPostgresStore : IJellyTrendStoreProvider
 {
     /// <summary>Version of the schema this class creates.</summary>
-    public const int CurrentSchemaVersion = 3;
+    public const int CurrentSchemaVersion = 4;
 
     private const string SchemaName = "jellytrend";
 
@@ -96,6 +96,14 @@ public sealed class JellyTrendPostgresStore : IJellyTrendStoreProvider
             data       jsonb NOT NULL,
             updated_at timestamptz NOT NULL DEFAULT now(),
             PRIMARY KEY (user_id, item_id));
+
+        CREATE TABLE IF NOT EXISTS jellytrend.user_affinity (
+            user_id    uuid NOT NULL,
+            facet      text NOT NULL,
+            value      text NOT NULL,
+            weight     real NOT NULL,
+            updated_at timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (user_id, facet, value));
 
         CREATE TABLE IF NOT EXISTS jellytrend.user_affinity_pair (
             user_id      uuid NOT NULL,
