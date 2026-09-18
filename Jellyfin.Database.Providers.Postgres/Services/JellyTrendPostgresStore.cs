@@ -35,7 +35,7 @@ namespace Jellyfin.Database.Providers.Postgres.Services;
 public sealed class JellyTrendPostgresStore : IJellyTrendStoreProvider
 {
     /// <summary>Version of the schema this class creates.</summary>
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
 
     private const string SchemaName = "jellytrend";
 
@@ -89,6 +89,13 @@ public sealed class JellyTrendPostgresStore : IJellyTrendStoreProvider
             users_failed integer NOT NULL DEFAULT 0,
             duration_ms  integer,
             message      text);
+
+        CREATE TABLE IF NOT EXISTS jellytrend.user_item_consumption (
+            user_id    uuid NOT NULL,
+            item_id    uuid NOT NULL,
+            data       jsonb NOT NULL,
+            updated_at timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (user_id, item_id));
         """;
 
     private readonly IApplicationPaths _applicationPaths;
@@ -499,6 +506,71 @@ public sealed class JellyTrendPostgresStore : IJellyTrendStoreProvider
             },
             [],
             "GetSuppressed");
+
+    /// <inheritdoc/>
+    public int ReplaceConsumption(Guid userId, Guid[] itemIds, string[] consumptionJson)
+    {
+        ArgumentNullException.ThrowIfNull(itemIds);
+
+        if (itemIds.Length == 0)
+        {
+            return 0;
+        }
+
+        return Run(
+            conn =>
+            {
+                using var transaction = conn.BeginTransaction();
+                var written = 0;
+
+                using var command = new NpgsqlCommand(
+                    """
+                    INSERT INTO jellytrend.user_item_consumption (user_id, item_id, data, updated_at)
+                    VALUES (@user, @item, @data, now())
+                    ON CONFLICT (user_id, item_id) DO UPDATE
+                        SET data = EXCLUDED.data,
+                            updated_at = now();
+                    """,
+                    conn,
+                    transaction);
+
+                command.Parameters.AddWithValue("user", userId);
+                var itemParameter = command.Parameters.Add("item", NpgsqlDbType.Uuid);
+                var dataParameter = command.Parameters.Add("data", NpgsqlDbType.Jsonb);
+
+                for (var i = 0; i < itemIds.Length; i++)
+                {
+                    if (itemIds[i] == Guid.Empty)
+                    {
+                        continue;
+                    }
+
+                    itemParameter.Value = itemIds[i];
+                    dataParameter.Value = i < consumptionJson.Length ? consumptionJson[i] : "{}";
+                    written += command.ExecuteNonQuery();
+                }
+
+                transaction.Commit();
+                return written;
+            },
+            0,
+            "ReplaceConsumption");
+    }
+
+    /// <inheritdoc/>
+    public string? GetUserConsumption(Guid userId)
+        => Run(
+            conn =>
+            {
+                using var command = new NpgsqlCommand(
+                    "SELECT jsonb_object_agg(item_id::text, data) FROM jellytrend.user_item_consumption WHERE user_id = @user;",
+                    conn);
+                command.Parameters.AddWithValue("user", userId);
+                var value = command.ExecuteScalar();
+                return value is null or DBNull ? null : value as string;
+            },
+            null,
+            "GetUserConsumption");
 
     /// <inheritdoc/>
     public Guid StartRun(string kind, DateTime startedAt)

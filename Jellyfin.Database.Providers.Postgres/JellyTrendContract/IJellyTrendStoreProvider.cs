@@ -137,6 +137,22 @@ public interface IJellyTrendStoreProvider
     Guid[] GetSuppressed(Guid userId);
 
     /// <summary>
+    /// Replaces the aggregated consumption of a user's titles.
+    /// </summary>
+    /// <param name="userId">User the consumption belongs to.</param>
+    /// <param name="itemIds">Titles the user has interacted with.</param>
+    /// <param name="consumptionJson">One consumption document per id, aligned with <paramref name="itemIds"/>.</param>
+    /// <returns>The number of rows written.</returns>
+    int ReplaceConsumption(Guid userId, Guid[] itemIds, string[] consumptionJson);
+
+    /// <summary>
+    /// Reads every aggregated consumption document of a user.
+    /// </summary>
+    /// <param name="userId">User to read.</param>
+    /// <returns>A JSON object keyed by item id, or null when there is nothing stored.</returns>
+    string? GetUserConsumption(Guid userId);
+
+    /// <summary>
     /// Records the start of a run.
     /// </summary>
     /// <param name="kind">Kind of run ("recommendations" or "trending").</param>
