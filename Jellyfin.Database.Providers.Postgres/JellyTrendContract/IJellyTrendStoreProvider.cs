@@ -153,6 +153,25 @@ public interface IJellyTrendStoreProvider
     string? GetUserConsumption(Guid userId);
 
     /// <summary>
+    /// Replaces the learned taste profile of a user.
+    /// </summary>
+    /// <param name="userId">User the profile belongs to.</param>
+    /// <param name="facets">Facet of each affinity.</param>
+    /// <param name="values">Value of each affinity.</param>
+    /// <param name="pairedFacets">Second facet of a combined affinity, empty when it is a single value.</param>
+    /// <param name="pairedValues">Second value of a combined affinity, empty when it is a single value.</param>
+    /// <param name="weights">Weight of each affinity, aligned with <paramref name="facets"/>.</param>
+    /// <returns>The number of rows written.</returns>
+    int ReplaceAffinities(Guid userId, string[] facets, string[] values, string[] pairedFacets, string[] pairedValues, double[] weights);
+
+    /// <summary>
+    /// Reads the learned taste profile of a user.
+    /// </summary>
+    /// <param name="userId">User to read.</param>
+    /// <returns>A JSON array of affinities, or null when there is nothing stored.</returns>
+    string? GetAffinities(Guid userId);
+
+    /// <summary>
     /// Records the start of a run.
     /// </summary>
     /// <param name="kind">Kind of run ("recommendations" or "trending").</param>

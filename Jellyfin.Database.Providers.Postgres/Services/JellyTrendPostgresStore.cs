@@ -35,7 +35,7 @@ namespace Jellyfin.Database.Providers.Postgres.Services;
 public sealed class JellyTrendPostgresStore : IJellyTrendStoreProvider
 {
     /// <summary>Version of the schema this class creates.</summary>
-    public const int CurrentSchemaVersion = 2;
+    public const int CurrentSchemaVersion = 3;
 
     private const string SchemaName = "jellytrend";
 
@@ -96,6 +96,16 @@ public sealed class JellyTrendPostgresStore : IJellyTrendStoreProvider
             data       jsonb NOT NULL,
             updated_at timestamptz NOT NULL DEFAULT now(),
             PRIMARY KEY (user_id, item_id));
+
+        CREATE TABLE IF NOT EXISTS jellytrend.user_affinity_pair (
+            user_id      uuid NOT NULL,
+            facet        text NOT NULL,
+            value        text NOT NULL,
+            paired_facet text NOT NULL,
+            paired_value text NOT NULL,
+            weight       real NOT NULL,
+            updated_at   timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (user_id, facet, value, paired_facet, paired_value));
         """;
 
     private readonly IApplicationPaths _applicationPaths;
@@ -571,6 +581,125 @@ public sealed class JellyTrendPostgresStore : IJellyTrendStoreProvider
             },
             null,
             "GetUserConsumption");
+
+    /// <inheritdoc/>
+    public int ReplaceAffinities(Guid userId, string[] facets, string[] values, string[] pairedFacets, string[] pairedValues, double[] weights)
+    {
+        ArgumentNullException.ThrowIfNull(facets);
+
+        if (facets.Length == 0)
+        {
+            return 0;
+        }
+
+        return Run(
+            conn =>
+            {
+                using var transaction = conn.BeginTransaction();
+
+                using (var clear = new NpgsqlCommand(
+                    "DELETE FROM jellytrend.user_affinity WHERE user_id = @user; DELETE FROM jellytrend.user_affinity_pair WHERE user_id = @user;",
+                    conn,
+                    transaction))
+                {
+                    clear.Parameters.AddWithValue("user", userId);
+                    clear.ExecuteNonQuery();
+                }
+
+                var written = 0;
+
+                using (var single = new NpgsqlCommand(
+                    """
+                    INSERT INTO jellytrend.user_affinity (user_id, facet, value, weight, updated_at)
+                    VALUES (@user, @facet, @value, @weight, now())
+                    ON CONFLICT (user_id, facet, value) DO UPDATE SET weight = EXCLUDED.weight, updated_at = now();
+                    """,
+                    conn,
+                    transaction))
+                using (var pair = new NpgsqlCommand(
+                    """
+                    INSERT INTO jellytrend.user_affinity_pair (user_id, facet, value, paired_facet, paired_value, weight, updated_at)
+                    VALUES (@user, @facet, @value, @pairedFacet, @pairedValue, @weight, now())
+                    ON CONFLICT (user_id, facet, value, paired_facet, paired_value) DO UPDATE SET weight = EXCLUDED.weight, updated_at = now();
+                    """,
+                    conn,
+                    transaction))
+                {
+                    var singleFacet = single.Parameters.Add("facet", NpgsqlDbType.Text);
+                    var singleValue = single.Parameters.Add("value", NpgsqlDbType.Text);
+                    var singleWeight = single.Parameters.Add("weight", NpgsqlDbType.Real);
+                    single.Parameters.AddWithValue("user", userId);
+
+                    var pairFacet = pair.Parameters.Add("facet", NpgsqlDbType.Text);
+                    var pairValue = pair.Parameters.Add("value", NpgsqlDbType.Text);
+                    var pairPairedFacet = pair.Parameters.Add("pairedFacet", NpgsqlDbType.Text);
+                    var pairPairedValue = pair.Parameters.Add("pairedValue", NpgsqlDbType.Text);
+                    var pairWeight = pair.Parameters.Add("weight", NpgsqlDbType.Real);
+                    pair.Parameters.AddWithValue("user", userId);
+
+                    var weight = 0d;
+
+                    for (var i = 0; i < facets.Length; i++)
+                    {
+                        if (string.IsNullOrWhiteSpace(facets[i]) || string.IsNullOrWhiteSpace(values[i]))
+                        {
+                            continue;
+                        }
+
+                        weight = i < weights.Length ? weights[i] : 0d;
+                        var paired = i < pairedFacets.Length && !string.IsNullOrWhiteSpace(pairedFacets[i]);
+
+                        if (paired)
+                        {
+                            pairFacet.Value = facets[i];
+                            pairValue.Value = values[i];
+                            pairPairedFacet.Value = pairedFacets[i];
+                            pairPairedValue.Value = i < pairedValues.Length ? pairedValues[i] : string.Empty;
+                            pairWeight.Value = (float)weight;
+                            written += pair.ExecuteNonQuery();
+                        }
+                        else
+                        {
+                            singleFacet.Value = facets[i];
+                            singleValue.Value = values[i];
+                            singleWeight.Value = (float)weight;
+                            written += single.ExecuteNonQuery();
+                        }
+                    }
+                }
+
+                transaction.Commit();
+                return written;
+            },
+            0,
+            "ReplaceAffinities");
+    }
+
+    /// <inheritdoc/>
+    public string? GetAffinities(Guid userId)
+        => Run(
+            conn =>
+            {
+                using var command = new NpgsqlCommand(
+                    """
+                    SELECT coalesce(jsonb_agg(entry), '[]'::jsonb)
+                      FROM (
+                          SELECT jsonb_build_object('Facet', facet, 'Value', value, 'Weight', weight) AS entry
+                            FROM jellytrend.user_affinity WHERE user_id = @user
+                          UNION ALL
+                          SELECT jsonb_build_object('Facet', facet, 'Value', value,
+                                                    'PairedFacet', paired_facet, 'PairedValue', paired_value,
+                                                    'Weight', weight)
+                            FROM jellytrend.user_affinity_pair WHERE user_id = @user
+                      ) parts;
+                    """,
+                    conn);
+                command.Parameters.AddWithValue("user", userId);
+                var value = command.ExecuteScalar();
+                return value is null or DBNull ? null : value as string;
+            },
+            null,
+            "GetAffinities");
 
     /// <inheritdoc/>
     public Guid StartRun(string kind, DateTime startedAt)
