@@ -5,17 +5,17 @@
 
 | Dato | Valor |
 | --- | --- |
-| Fecha de ejecución | 2026-09-16 02:55:18 -07:00 |
+| Fecha de ejecución | 2026-09-17 21:07:41 -07:00 |
 | Versión del plugin | 3.0.0.0 |
 | Jellyfin validado | 12.1.0 |
-| Base de datos de pruebas | Jellyfin |
+| Base de datos de pruebas | no configurada |
 | Entorno | Microsoft Windows 10.0.26200 · SDK 10.0.401 |
 
 ## Resultado global
 
 | Verificaciones | Correctas | Con error | Omitidas |
 | --- | --- | --- | --- |
-| 68 | 68 | 0 | 0 |
+| 74 | 63 | 0 | 11 |
 
 ## Resultado por área
 
@@ -24,10 +24,10 @@
 | AdvancedOptionTests | 5 | ✅ 5/5 |
 | DatabaseConfigurationTests | 2 | ✅ 2/2 |
 | LoggingTests | 3 | ✅ 3/3 |
-| PostgresIntegrationTests | 11 | ✅ 11/11 |
+| PostgresIntegrationTests | 11 | ⚠️ omitida |
 | ProviderContractTests | 4 | ✅ 4/4 |
 | QueryConsoleTests | 28 | ✅ 28/28 |
-| SchemaAuditTests | 2 | ✅ 2/2 |
+| SchemaAuditTests | 8 | ✅ 8/8 |
 | SqlRewriteTests | 9 | ✅ 9/9 |
 | WebPageTests | 4 | ✅ 4/4 |
 
@@ -45,17 +45,17 @@
 | LoggingTests.FailuresCarryLevelMessageAndStackTrace | ✅ |
 | LoggingTests.LogFileLivesNextToTheOtherPluginLogs | ✅ |
 | LoggingTests.PostgresFailuresCarryTheServerDetail | ✅ |
-| PostgresIntegrationTests.CompatibilityAggregatesExistAfterSchemaPreparation | ✅ |
-| PostgresIntegrationTests.ExportProducesAUsableSqliteDatabase | ✅ |
-| PostgresIntegrationTests.InitialSchemaAndPopulatedUpgradeWork | ✅ |
-| PostgresIntegrationTests.JsonCleanupWorksInSyncAndAsyncPaths | ✅ |
-| PostgresIntegrationTests.OldSqliteSchemaIsRejectedBeforeWriting | ✅ |
-| PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "\"public\".\"PurgeProbe\"") | ✅ |
-| PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "public.\"PurgeProbe\"") | ✅ |
-| PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "public.PurgeProbe") | ✅ |
-| PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "PurgeProbe") | ✅ |
-| PostgresIntegrationTests.SqlConsoleReturnsRowsAndRejectsWrites | ✅ |
-| PostgresIntegrationTests.SqliteDatabaseImportsIntoPublicAndCustomSchema | ✅ |
+| PostgresIntegrationTests.CompatibilityAggregatesExistAfterSchemaPreparation | ⚠️ omitida |
+| PostgresIntegrationTests.ExportProducesAUsableSqliteDatabase | ⚠️ omitida |
+| PostgresIntegrationTests.InitialSchemaAndPopulatedUpgradeWork | ⚠️ omitida |
+| PostgresIntegrationTests.JsonCleanupWorksInSyncAndAsyncPaths | ⚠️ omitida |
+| PostgresIntegrationTests.OldSqliteSchemaIsRejectedBeforeWriting | ⚠️ omitida |
+| PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "\"public\".\"PurgeProbe\"") | ⚠️ omitida |
+| PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "public.\"PurgeProbe\"") | ⚠️ omitida |
+| PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "public.PurgeProbe") | ⚠️ omitida |
+| PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "PurgeProbe") | ⚠️ omitida |
+| PostgresIntegrationTests.SqlConsoleReturnsRowsAndRejectsWrites | ⚠️ omitida |
+| PostgresIntegrationTests.SqliteDatabaseImportsIntoPublicAndCustomSchema | ⚠️ omitida |
 | ProviderContractTests.DeclaredJellyfinVersionMatchesTheReferencedSdk | ✅ |
 | ProviderContractTests.EntryPointsMatchWhatJellyfinInstantiates | ✅ |
 | ProviderContractTests.JellyfinDiscoversExactlyOneProvider | ✅ |
@@ -89,6 +89,12 @@
 | QueryConsoleTests.ReadOnlyStatementsAreAccepted(sql: "WITH valores AS (SELECT 1 AS n) SELECT n FROM valo"···) | ✅ |
 | QueryConsoleTests.TheStatementIsReturnedUnchangedExceptForComments | ✅ |
 | SchemaAuditTests.EveryTableAndQualifiedColumnUsedByRawSqlExistsInTheModel | ✅ |
+| SchemaAuditTests.IgnoredSourcePathsMatchOnEveryPlatform(filePath: "/home/runner/work/repo/Jellyfin.Database.Providers"···, expected: False) | ✅ |
+| SchemaAuditTests.IgnoredSourcePathsMatchOnEveryPlatform(filePath: "/home/runner/work/repo/Jellyfin.Database.Providers"···, expected: True) | ✅ |
+| SchemaAuditTests.IgnoredSourcePathsMatchOnEveryPlatform(filePath: "/home/runner/work/repo/Jellyfin.Database.Providers"···, expected: True) | ✅ |
+| SchemaAuditTests.IgnoredSourcePathsMatchOnEveryPlatform(filePath: "D:\\repo\\Jellyfin.Database.Providers.Postgres\\Mi"···, expected: True) | ✅ |
+| SchemaAuditTests.IgnoredSourcePathsMatchOnEveryPlatform(filePath: "D:\\repo\\Jellyfin.Database.Providers.Postgres\\ob"···, expected: True) | ✅ |
+| SchemaAuditTests.IgnoredSourcePathsMatchOnEveryPlatform(filePath: "D:\\repo\\Jellyfin.Database.Providers.Postgres\\Se"···, expected: False) | ✅ |
 | SchemaAuditTests.SnapshotMatchesTheJellyfinModel | ✅ |
 | SqlRewriteTests.RatingLevelsUpdateOnlyTouchesRowsThatChange(column: "InheritedParentalRatingSubValue") | ✅ |
 | SqlRewriteTests.RatingLevelsUpdateOnlyTouchesRowsThatChange(column: "InheritedParentalRatingValue") | ✅ |
@@ -103,6 +109,23 @@
 | WebPageTests.ConfigurationPageResourceIsEmbedded | ✅ |
 | WebPageTests.EveryElementIdUsedByTheScriptExists | ✅ |
 | WebPageTests.EveryTabHasItsPane | ✅ |
+
+## Verificaciones omitidas
+
+Estas pruebas necesitan un PostgreSQL accesible y se omitieron porque la ejecución no recibió
+`POSTGRES_TEST_CONNECTION`. El resultado global **no** las cuenta como correctas.
+
+- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "\"public\".\"PurgeProbe\"")
+- PostgresIntegrationTests.ExportProducesAUsableSqliteDatabase
+- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "PurgeProbe")
+- PostgresIntegrationTests.JsonCleanupWorksInSyncAndAsyncPaths
+- PostgresIntegrationTests.CompatibilityAggregatesExistAfterSchemaPreparation
+- PostgresIntegrationTests.SqlConsoleReturnsRowsAndRejectsWrites
+- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "public.\"PurgeProbe\"")
+- PostgresIntegrationTests.SqliteDatabaseImportsIntoPublicAndCustomSchema
+- PostgresIntegrationTests.InitialSchemaAndPopulatedUpgradeWork
+- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "public.PurgeProbe")
+- PostgresIntegrationTests.OldSqliteSchemaIsRejectedBeforeWriting
 
 ## Cómo reproducirlo
 
