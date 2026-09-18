@@ -26,6 +26,13 @@ namespace Jellyfin.Database.Providers.Postgres.Services;
 /// </remarks>
 public sealed partial class UpsertConflictInterceptor : DbCommandInterceptor
 {
+    // ItemValues is rewritten with an explicit conflict target: the pair that has to stay unique is
+    // (Type, Value), while ItemValueId is a fresh random guid on every attempt, so a plain
+    // ON CONFLICT DO NOTHING would never fire.
+    private const string ItemValuesTable = "\"ItemValues\"";
+
+    private const string ItemValueIdColumn = "ItemValueId";
+
     // All junction / mapping tables where Jellyfin may attempt a duplicate INSERT
     // during a library refresh or plugin-triggered collection update.
     //
@@ -34,8 +41,9 @@ public sealed partial class UpsertConflictInterceptor : DbCommandInterceptor
     // duplicado hacia fallar todo el lote con 23505. Ignorarlo deja la fila que ya estaba, y las claves
     // foraneas de las tablas hijas siguen apuntando a ella.
     //
-    // ItemValues NO se incluye a proposito: ItemValuesMap tiene clave foranea hacia ItemValues, asi que
-    // saltarse la fila dejaria el mapa apuntando a un valor inexistente. Ese caso necesita otra solucion.
+    // ItemValues is rewritten too. Ignoring a duplicate value row on its own would leave ItemValuesMap
+    // pointing at a value that was never inserted, so the mapping insert is made conditional in the same
+    // pass (see ItemValuesMapInsertRegex) and only runs when the value really exists.
     private static readonly string[] TargetTables =
     [
         "\"BaseItems\"",
@@ -101,7 +109,8 @@ public sealed partial class UpsertConflictInterceptor : DbCommandInterceptor
             return;
         }
 
-        if (!TargetTables.Any(t => sql.Contains(t, StringComparison.Ordinal)))
+        if (!TargetTables.Any(t => sql.Contains(t, StringComparison.Ordinal))
+            && !sql.Contains(ItemValuesTable, StringComparison.Ordinal))
         {
             return;
         }
@@ -118,11 +127,12 @@ public sealed partial class UpsertConflictInterceptor : DbCommandInterceptor
     [SuppressMessage("Security", "CA3001:Review code for SQL injection vulnerabilities", Justification = "Rewritten text appends a hardcoded literal to EF Core-generated SQL. No user input reaches this path.")]
     private static void ApplyRewrite(DbCommand command, string sql)
     {
-        command.CommandText = InsertStatementRegex().Replace(sql, static match =>
+        var rewritten = InsertStatementRegex().Replace(sql, static match =>
         {
             var tableName = match.Groups[1].Value;
+            var isItemValue = string.Equals(tableName, ItemValuesTable, StringComparison.Ordinal);
 
-            if (!TargetTables.Any(t => string.Equals(tableName, t, StringComparison.Ordinal)))
+            if (!isItemValue && !TargetTables.Any(t => string.Equals(tableName, t, StringComparison.Ordinal)))
             {
                 return match.Value;
             }
@@ -133,11 +143,46 @@ public sealed partial class UpsertConflictInterceptor : DbCommandInterceptor
                 return match.Value;
             }
 
+            // ItemValues needs the column pair named: the fresh random ItemValueId never collides, so a
+            // clause without a target would never fire and the duplicate (Type, Value) would still fail.
+            var clause = isItemValue
+                ? "\nON CONFLICT (\"Type\", \"Value\") DO NOTHING"
+                : "\nON CONFLICT DO NOTHING";
+
             var stmt = match.Value.TrimEnd();
             return stmt.EndsWith(';')
-                ? stmt[..^1] + "\nON CONFLICT DO NOTHING;"
-                : stmt + "\nON CONFLICT DO NOTHING";
+                ? stmt[..^1] + clause + ";"
+                : stmt + clause;
         });
+
+        // Second pass, only for batches that insert values and their mapping together: if the value insert
+        // was skipped because another connection stored the same pair first, the mapping must be skipped as
+        // well instead of violating FK_ItemValuesMap_ItemValues_ItemValueId and taking the whole batch —
+        // items included — down with it.
+        if (rewritten.Contains(ItemValuesTable, StringComparison.Ordinal))
+        {
+            rewritten = ItemValuesMapInsertRegex().Replace(rewritten, static match =>
+            {
+                var first = match.Groups["first"].Value;
+                var itemId = string.Equals(first, ItemValueIdColumn, StringComparison.Ordinal)
+                    ? match.Groups["p2"].Value
+                    : match.Groups["p1"].Value;
+                var itemValueId = string.Equals(first, ItemValueIdColumn, StringComparison.Ordinal)
+                    ? match.Groups["p1"].Value
+                    : match.Groups["p2"].Value;
+
+                return string.Concat(
+                    "INSERT INTO \"ItemValuesMap\" (\"ItemId\", \"ItemValueId\")\nSELECT ",
+                    itemId,
+                    ", ",
+                    itemValueId,
+                    " WHERE EXISTS (SELECT 1 FROM \"ItemValues\" WHERE \"ItemValueId\" = ",
+                    itemValueId,
+                    ")");
+            });
+        }
+
+        command.CommandText = rewritten;
     }
 
     /// <summary>
@@ -149,4 +194,13 @@ public sealed partial class UpsertConflictInterceptor : DbCommandInterceptor
         @"INSERT\s+INTO\s+(""[^""]+"")[\s\S]*?VALUES\s*\([^;]*\)\s*;",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex InsertStatementRegex();
+
+    /// <summary>
+    /// Matches the single row INSERT EF Core generates for <c>ItemValuesMap</c>, capturing the column order
+    /// and the two parameters so the statement can be turned into a conditional insert.
+    /// </summary>
+    [GeneratedRegex(
+        @"INSERT\s+INTO\s+""ItemValuesMap""\s*\(\s*""(?<first>ItemValueId|ItemId)""\s*,\s*""(?:ItemValueId|ItemId)""\s*\)\s*VALUES\s*\(\s*(?<p1>@[A-Za-z0-9_]+)\s*,\s*(?<p2>@[A-Za-z0-9_]+)\s*\)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex ItemValuesMapInsertRegex();
 }

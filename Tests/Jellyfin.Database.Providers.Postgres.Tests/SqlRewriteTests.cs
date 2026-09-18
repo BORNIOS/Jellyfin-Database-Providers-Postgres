@@ -91,15 +91,66 @@ public sealed class SqlRewriteTests
     }
 
     /// <summary>
-    /// <c>ItemValues</c> no se ignora a proposito: <c>ItemValuesMap</c> tiene clave foranea hacia esa
-    /// tabla, asi que saltarse la fila dejaria el mapa apuntando a un valor inexistente.
+    /// Un valor duplicado tiene que nombrar el par (Type, Value) como objetivo del conflicto: ItemValueId es
+    /// un guid nuevo en cada intento, asi que un ON CONFLICT sin objetivo nunca dispararia y el INSERT
+    /// seguiria fallando con 23505.
     /// </summary>
     [Fact]
-    public void DuplicateItemValueInsertIsNotIgnored()
+    public void DuplicateItemValueInsertNamesTheUniquePairAsConflictTarget()
     {
-        var command = RewriteUpsert("""INSERT INTO "ItemValues" ("Id", "Type", "Value") VALUES (@p0, @p1, @p2);""");
+        var command = RewriteUpsert("""INSERT INTO "ItemValues" ("ItemValueId", "CleanValue", "Type", "Value") VALUES (@p0, @p1, @p2, @p3);""");
 
-        Assert.DoesNotContain("ON CONFLICT", command.CommandText, StringComparison.Ordinal);
+        Assert.Contains("""ON CONFLICT ("Type", "Value") DO NOTHING""", command.CommandText, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Si el valor no se inserto porque ya estaba, el INSERT del mapa apuntaria a una fila inexistente y
+    /// romperia FK_ItemValuesMap_ItemValues_ItemValueId, que se lleva por delante todo el lote (los items
+    /// incluidos). Por eso el mapa solo se inserta cuando el valor existe de verdad.
+    /// </summary>
+    [Theory]
+    [InlineData("""("ItemId", "ItemValueId") VALUES (@p4, @p0)""")]
+    [InlineData("""("ItemValueId", "ItemId") VALUES (@p0, @p4)""")]
+    public void MappingInsertBecomesConditionalWhenValuesTravelInTheSameBatch(string mapping)
+    {
+        var command = RewriteUpsert(
+            $"""
+            INSERT INTO "ItemValues" ("ItemValueId", "CleanValue", "Type", "Value") VALUES (@p0, @p1, @p2, @p3);
+            INSERT INTO "ItemValuesMap" {mapping};
+            """);
+
+        Assert.Contains(
+            """SELECT @p4, @p0 WHERE EXISTS (SELECT 1 FROM "ItemValues" WHERE "ItemValueId" = @p0)""",
+            command.CommandText,
+            StringComparison.Ordinal);
+        Assert.Contains("ON CONFLICT DO NOTHING", command.CommandText, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Un mapa que llega solo no se toca: el valor al que apunta puede venir de una fila que ya esta
+    /// guardada, y en ese caso la clave foranea se cumple.
+    /// </summary>
+    [Fact]
+    public void MappingInsertAloneKeepsItsShape()
+    {
+        var command = RewriteUpsert("""INSERT INTO "ItemValuesMap" ("ItemId", "ItemValueId") VALUES (@p0, @p1);""");
+
+        Assert.DoesNotContain("EXISTS", command.CommandText, StringComparison.Ordinal);
+        Assert.Contains("ON CONFLICT DO NOTHING", command.CommandText, StringComparison.Ordinal);
+    }
+
+    /// <summary>Reescribir dos veces no puede cambiar la sentencia: un comando reintentado fallaria.</summary>
+    [Fact]
+    public void ItemValueRewriteIsIdempotent()
+    {
+        var once = RewriteUpsert(
+            """
+            INSERT INTO "ItemValues" ("ItemValueId", "CleanValue", "Type", "Value") VALUES (@p0, @p1, @p2, @p3);
+            INSERT INTO "ItemValuesMap" ("ItemId", "ItemValueId") VALUES (@p4, @p0);
+            """).CommandText;
+        var twice = RewriteUpsert(once).CommandText;
+
+        Assert.Equal(once, twice);
     }
 
     private static DbCommand RewriteUpsert(string sql)

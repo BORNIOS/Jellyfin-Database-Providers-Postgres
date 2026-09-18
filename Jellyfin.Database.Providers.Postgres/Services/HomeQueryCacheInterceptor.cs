@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.Common;
@@ -25,28 +26,53 @@ namespace Jellyfin.Database.Providers.Postgres.Services;
 /// ItemValues) are eligible. Mutations, DDL, and schema queries bypass the cache.</para>
 /// <para>TTL: 30 seconds — short enough that playback progress is never more than
 /// one refresh cycle stale, long enough to absorb the home-page fan-out (~15 queries).</para>
+/// <para>Two rules keep the cache from lying to Jellyfin's write path:</para>
+/// <list type="number">
+/// <item><description>A statement running inside a transaction is never cached and never answered from
+/// cache. Jellyfin reads a row back inside the same transaction to decide between INSERT and UPDATE, and
+/// that answer must come from the transaction, not from another connection's older snapshot.</description></item>
+/// <item><description>Every write bumps a per-table generation that is part of the cache key, so an entry
+/// stored before a write can never be served after it.</description></item>
+/// </list>
 /// </remarks>
-public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor, IDisposable
+public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
 {
     // Fields first (SA1201); constants before static readonly (SA1203)
     // Result sets larger than this are still buffered (see ReaderExecuting) but not retained
     // in the cache, so a big query cannot pin a large DataTable in memory.
     private const int MaxCacheableRows = 1000;
 
+    /// <summary>
+    /// Marker a query can add with <c>TagWith</c> to stay out of the cache entirely, for statements whose
+    /// result feeds a write decision.
+    /// </summary>
+    internal const string NoCacheMarker = "__jellyfin_no_cache";
+
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(30);
 
-    // Only intercept queries on the tables that Jellyfin fans out on home-page load.
-    private static readonly HashSet<string> CacheableTables = new(StringComparer.OrdinalIgnoreCase)
-    {
+    // Only intercept queries on the tables that Jellyfin fans out on home-page load. The order is fixed
+    // because it participates in the cache key.
+    private static readonly string[] CacheableTables =
+    [
         "\"BaseItems\"",
         "\"UserData\"",
         "\"ItemValues\"",
         "\"ItemValuesMap\"",
         "\"PeopleBaseItemMap\"",
-    };
+    ];
+
+    // Shared on purpose. EF Core calls Initialise more than once during start-up and every call builds its
+    // own interceptor instance; with per-instance state one copy answered from an empty cache while another
+    // kept serving rows inserted by a transaction that had already been rolled back.
+    private static readonly MemoryCache Cache = new(new MemoryCacheOptions
+    {
+        SizeLimit = 200,
+    });
+
+    // One counter per cached table, bumped by every write to it.
+    private static readonly ConcurrentDictionary<string, int> Generations = new(StringComparer.OrdinalIgnoreCase);
 
     private readonly ILogger? _logger;
-    private readonly MemoryCache _cache;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="HomeQueryCacheInterceptor"/> class.
@@ -55,21 +81,44 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor, IDisposabl
     public HomeQueryCacheInterceptor(ILogger? logger = null)
     {
         _logger = logger;
-        Instance = this;
-        _cache = new MemoryCache(new MemoryCacheOptions
-        {
-            SizeLimit = 200,
-        });
     }
 
-    /// <summary>Gets the singleton set after construction, for cache purge operations.</summary>
-    internal static HomeQueryCacheInterceptor? Instance { get; private set; }
-
-    /// <inheritdoc />
-    public void Dispose()
+    /// <summary>
+    /// Empties the shared cache. Needed after an operation that changes data behind EF's back, such as a
+    /// database restore, because no write command of this process is seen by the interceptor.
+    /// </summary>
+    internal static void Purge()
     {
-        _cache.Dispose();
+        Cache.Compact(1.0);
     }
+
+    /// <summary>
+    /// Rises the generation of every cached table the statement mentions, which makes all entries stored for
+    /// those tables unreachable. Over-invalidating only costs a cache miss; a missing invalidation would
+    /// serve rows that a write already changed.
+    /// </summary>
+    /// <param name="command">Command about to run.</param>
+    private static void InvalidateFor(DbCommand command)
+    {
+        var sql = command.CommandText;
+        foreach (var table in CacheableTables)
+        {
+            if (sql.Contains(table, StringComparison.OrdinalIgnoreCase))
+            {
+                Generations.AddOrUpdate(table, 1, static (_, value) => value + 1);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Reports whether the cache may answer the statement. Statements inside a transaction and statements
+    /// carrying <see cref="NoCacheMarker"/> are excluded; they are still buffered, just never cached.
+    /// </summary>
+    /// <param name="command">Command about to run.</param>
+    /// <returns><c>true</c> when the cache may be used.</returns>
+    private static bool CanUseCache(DbCommand command)
+        => command.Transaction is null
+            && !command.CommandText.Contains(NoCacheMarker, StringComparison.Ordinal);
 
     /// <inheritdoc />
     public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
@@ -90,13 +139,10 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor, IDisposabl
             return await RewriteRandomAndExecuteAsync(command, cancellationToken).ConfigureAwait(false);
         }
 
-        var cacheKey = BuildCacheKey(command);
-        if (cacheKey is null)
-        {
-            return result;
-        }
-
-        if (_cache.TryGetValue(cacheKey, out DataTable? cached) && cached is not null)
+        var cacheKey = CanUseCache(command) ? BuildCacheKey(command) : null;
+        if (cacheKey is not null
+            && Cache.TryGetValue(cacheKey, out DataTable? cached)
+            && cached is not null)
         {
             if (_logger?.IsEnabled(LogLevel.Debug) == true)
             {
@@ -111,6 +157,31 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor, IDisposabl
         // Miss — execute the command ourselves so we can capture the full result set
         // into a DataTable before EF Core consumes the reader.
         return await ExecuteAndCacheAsync(command, cacheKey, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Invalidates the cache tables a mutating statement touches. Jellyfin decides between INSERT and UPDATE
+    /// from a query it ran earlier, so a write has to make every entry stored for that table unreachable.
+    /// </summary>
+    /// <inheritdoc cref="DbCommandInterceptor.NonQueryExecuting(DbCommand, CommandEventData, InterceptionResult{int})" />
+    public override InterceptionResult<int> NonQueryExecuting(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<int> result)
+    {
+        InvalidateFor(command);
+        return result;
+    }
+
+    /// <inheritdoc cref="NonQueryExecuting" />
+    public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<int> result,
+        CancellationToken cancellationToken = default)
+    {
+        InvalidateFor(command);
+        return ValueTask.FromResult(result);
     }
 
     /// <inheritdoc />
@@ -131,13 +202,11 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor, IDisposabl
             return result;
         }
 
-        var cacheKey = BuildCacheKey(command);
-        if (cacheKey is null)
-        {
-            return result;
-        }
-
-        if (_cache.TryGetValue(cacheKey, out DataTable? cached) && cached is not null)
+        // Same as the async path: a random query may be buffered but must never be cached.
+        var cacheKey = CanUseCache(command) && !HasOrderByRandom(command) ? BuildCacheKey(command) : null;
+        if (cacheKey is not null
+            && Cache.TryGetValue(cacheKey, out DataTable? cached)
+            && cached is not null)
         {
             return InterceptionResult<DbDataReader>.SuppressWithResult(new DataTableReader(cached));
         }
@@ -194,13 +263,30 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor, IDisposabl
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Cache key: SHA-256 of (SQL + serialized parameter values)
+    // Cache key: SHA-256 of (SQL + generations + database + parameter values)
     // ─────────────────────────────────────────────────────────────────────────
 
     private static string? BuildCacheKey(DbCommand command)
     {
         // Use pooled StringBuilder for hot path
         var sb = new StringBuilder(command.CommandText, command.CommandText.Length + 256);
+
+        // The database name keeps scratch databases of the test suite apart.
+        sb.Append('|');
+        sb.Append(command.Connection?.Database ?? "-");
+
+        // The generation of every table the query reads makes every entry stored before a write
+        // unreachable, so a cache hit can never return rows a write already changed.
+        foreach (var table in CacheableTables)
+        {
+            if (command.CommandText.Contains(table, StringComparison.Ordinal))
+            {
+                sb.Append('|');
+                sb.Append(table);
+                sb.Append('#');
+                sb.Append(Generations.TryGetValue(table, out var generation) ? generation : 0);
+            }
+        }
 
         foreach (DbParameter p in command.Parameters)
         {
@@ -217,9 +303,24 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor, IDisposabl
                 // Truncate long strings — cache keys don't need full text
                 sb.Append(s.AsSpan(0, Math.Min(s.Length, 80)));
             }
+            else if (val is byte[] bytes)
+            {
+                sb.Append(Convert.ToHexString(bytes));
+            }
             else if (val is DateTime dt)
             {
                 sb.Append(dt.ToString("O", CultureInfo.InvariantCulture));
+            }
+            else if (val is System.Collections.IEnumerable items)
+            {
+                // Jellyfin binds id and value lists as arrays. ToString() on an array returns the type name,
+                // so every list collapsed into one key and the cache answered with another list's rows —
+                // the reason Jellyfin's existence checks came back wrong and its INSERTs hit 23505.
+                foreach (var item in items)
+                {
+                    sb.Append(item is null ? "NULL" : Convert.ToString(item, CultureInfo.InvariantCulture));
+                    sb.Append(',');
+                }
             }
             else
             {
@@ -240,7 +341,7 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor, IDisposabl
 
     private async ValueTask<InterceptionResult<DbDataReader>> ExecuteAndCacheAsync(
         DbCommand command,
-        string cacheKey,
+        string? cacheKey,
         CancellationToken ct)
     {
         try
@@ -259,15 +360,18 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor, IDisposabl
             }
 
             // SizeLimit: approximate entry weight = column count (rough proxy for memory)
-            CacheResult(cacheKey, dt);
+            if (cacheKey is not null)
+            {
+                CacheResult(cacheKey, dt);
+            }
 
             if (_logger?.IsEnabled(LogLevel.Debug) == true)
             {
                 _logger?.LogDebug(
-                    "HomeQueryCache MISS (cached {Cols} cols x {Rows} rows, key {KeyPreview}…): {Sql}",
+                    "HomeQueryCache {State} ({Cols} cols x {Rows} rows): {Sql}",
+                    cacheKey is null ? "BUFFER ONLY" : "MISS (cached)",
                     dt.Columns.Count,
                     dt.Rows.Count,
-                    cacheKey[..Math.Min(cacheKey.Length, 8)],
                     command.CommandText[..Math.Min(command.CommandText.Length, 120)]);
             }
 
@@ -286,7 +390,7 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor, IDisposabl
     // Self-execute + cache (synchronous)
     // ─────────────────────────────────────────────────────────────────────────
 
-    private InterceptionResult<DbDataReader> ExecuteAndCache(DbCommand command, string cacheKey)
+    private InterceptionResult<DbDataReader> ExecuteAndCache(DbCommand command, string? cacheKey)
     {
         try
         {
@@ -301,7 +405,10 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor, IDisposabl
                 dt.Load(reader);
             }
 
-            CacheResult(cacheKey, dt);
+            if (cacheKey is not null)
+            {
+                CacheResult(cacheKey, dt);
+            }
 
             return InterceptionResult<DbDataReader>.SuppressWithResult(new DataTableReader(dt));
         }
@@ -326,7 +433,7 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor, IDisposabl
             return;
         }
 
-        _cache.Set(cacheKey, dt, new MemoryCacheEntryOptions
+        Cache.Set(cacheKey, dt, new MemoryCacheEntryOptions
         {
             AbsoluteExpirationRelativeToNow = CacheTtl,
             Size = dt.Columns.Count, // proxy: more columns → heavier entry
@@ -432,16 +539,6 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor, IDisposabl
         }
 
         return string.Concat(rewritten.AsSpan(0, idx), replacement, rewritten.AsSpan(idx + table.Length));
-    }
-
-    /// <summary>Purges all cached entries. Call after a library scan or metadata refresh.</summary>
-    public void Purge()
-    {
-        _cache.Compact(1.0);
-        if (_logger?.IsEnabled(LogLevel.Debug) == true)
-        {
-            _logger?.LogDebug("HomeQueryCache purged after external data change.");
-        }
     }
 
     // CA2100: sql comes from RewriteRandomSql which only transforms EF Core-generated SQL, never from user input.

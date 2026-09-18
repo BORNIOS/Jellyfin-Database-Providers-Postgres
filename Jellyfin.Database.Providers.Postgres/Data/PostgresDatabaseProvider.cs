@@ -182,6 +182,7 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
                 new Jellyfin121MigrationInterceptor(),
                 new HomeQueryCacheInterceptor(_logger),
                 new UpsertConflictInterceptor(),
+                new ItemValueReuseInterceptor(),
                 new DbErrorLoggingInterceptor(),
                 new DateTimeKindNormalizingInterceptor());
 
@@ -498,6 +499,10 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         // insert the rows back in any order. Only Jellyfin's own tables are listed.
         var sql = string.Concat("TRUNCATE TABLE ", string.Join(", ", tables), " RESTART IDENTITY CASCADE;");
         await dbContext.Database.ExecuteSqlRawAsync(sql).ConfigureAwait(false);
+
+        // The rows changed outside EF's change tracker, so no write command of this process reaches the
+        // cache interceptor: without this purge a restore could serve rows that no longer exist.
+        HomeQueryCacheInterceptor.Purge();
         Logging.PostgresLog.Info($"[Purge] Base de datos vaciada: {tables.Count} tablas (TRUNCATE ... RESTART IDENTITY CASCADE).");
     }
 

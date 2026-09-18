@@ -72,6 +72,27 @@ internal static class TestEnvironment
     /// <param name="ConnectionString">Connection string pointing at it.</param>
     internal sealed record ScratchDatabase(string Name, string ConnectionString);
 
+    /// <summary>Scratch database that drops itself when the test finishes.</summary>
+    internal sealed class ScratchDatabaseScope : IAsyncDisposable
+    {
+        private ScratchDatabaseScope(ScratchDatabase database) => Database = database;
+
+        internal ScratchDatabase Database { get; }
+
+        internal static async Task<ScratchDatabaseScope> CreateAsync()
+            => new(await CreateScratchDatabaseAsync());
+
+        public async ValueTask DisposeAsync()
+        {
+            // Npgsql parks connections in a pool; without clearing it PostgreSQL would refuse the drop.
+            NpgsqlConnection.ClearAllPools();
+            await using var admin = new NpgsqlConnection(PostgresConnection);
+            await admin.OpenAsync();
+            await using var drop = new NpgsqlCommand($"DROP DATABASE IF EXISTS \"{Database.Name}\" WITH (FORCE)", admin);
+            await drop.ExecuteNonQueryAsync();
+        }
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

@@ -5,17 +5,17 @@
 
 | Dato | Valor |
 | --- | --- |
-| Fecha de ejecución | 2026-09-17 22:21:22 -07:00 |
+| Fecha de ejecución | 2026-09-17 22:51:21 -07:00 |
 | Versión del plugin | 3.0.0.0 |
 | Jellyfin validado | 12.1.0 |
-| Base de datos de pruebas | no configurada |
+| Base de datos de pruebas | Jellyfin |
 | Entorno | Microsoft Windows 10.0.26200 · SDK 10.0.401 |
 
 ## Resultado global
 
 | Verificaciones | Correctas | Con error | Omitidas |
 | --- | --- | --- | --- |
-| 80 | 69 | 0 | 11 |
+| 92 | 92 | 0 | 0 |
 
 ## Resultado por área
 
@@ -23,13 +23,15 @@
 | --- | --- | --- |
 | AdvancedOptionTests | 5 | ✅ 5/5 |
 | DatabaseConfigurationTests | 2 | ✅ 2/2 |
+| HomeQueryCacheTests | 3 | ✅ 3/3 |
+| ItemValueReuseTests | 5 | ✅ 5/5 |
 | JellyTrendContractTests | 4 | ✅ 4/4 |
 | LoggingTests | 3 | ✅ 3/3 |
-| PostgresIntegrationTests | 11 | ⚠️ omitida |
+| PostgresIntegrationTests | 11 | ✅ 11/11 |
 | ProviderContractTests | 4 | ✅ 4/4 |
 | QueryConsoleTests | 28 | ✅ 28/28 |
 | SchemaAuditTests | 8 | ✅ 8/8 |
-| SqlRewriteTests | 11 | ✅ 11/11 |
+| SqlRewriteTests | 15 | ✅ 15/15 |
 | WebPageTests | 4 | ✅ 4/4 |
 
 ## Detalle
@@ -43,6 +45,14 @@
 | AdvancedOptionTests.SavedConfigurationSurvivesTheRoundTrip | ✅ |
 | DatabaseConfigurationTests.EngineSwitchIsDetectedFromDatabaseXml | ✅ |
 | DatabaseConfigurationTests.WrittenDatabaseXmlRoundTripsThroughJellyfinOptions | ✅ |
+| HomeQueryCacheTests.TwoDifferentListParametersDoNotShareAnEntry | ✅ |
+| HomeQueryCacheTests.ValueReadBackInsideARolledBackTransactionIsNeverServedFromCache | ✅ |
+| HomeQueryCacheTests.WritingToATableInvalidatesTheEntriesStoredForIt | ✅ |
+| ItemValueReuseTests.PendingValueIsDroppedAndItsMappingRepointedBeforeSaving | ✅ |
+| ItemValueReuseTests.PendingValueThatAlreadyExistsIsReusedAndTheBatchSurvives | ✅ |
+| ItemValueReuseTests.PendingValueThatDoesNotExistIsLeftAlone | ✅ |
+| ItemValueReuseTests.TwoPendingCopiesOfTheSameValueCollapseIntoOneRow | ✅ |
+| ItemValueReuseTests.ValuesThatDoNotExistAreStillInserted | ✅ |
 | JellyTrendContractTests.ElEspejoConservaElNombreCompletoDelContrato | ✅ |
 | JellyTrendContractTests.ElEspejoTieneLaMismaFormaQueElContratoDeJellyTrend | ✅ |
 | JellyTrendContractTests.JellyTrendPuedeConstruirLaImplementacion | ✅ |
@@ -50,17 +60,17 @@
 | LoggingTests.FailuresCarryLevelMessageAndStackTrace | ✅ |
 | LoggingTests.LogFileLivesNextToTheOtherPluginLogs | ✅ |
 | LoggingTests.PostgresFailuresCarryTheServerDetail | ✅ |
-| PostgresIntegrationTests.CompatibilityAggregatesExistAfterSchemaPreparation | ⚠️ omitida |
-| PostgresIntegrationTests.ExportProducesAUsableSqliteDatabase | ⚠️ omitida |
-| PostgresIntegrationTests.InitialSchemaAndPopulatedUpgradeWork | ⚠️ omitida |
-| PostgresIntegrationTests.JsonCleanupWorksInSyncAndAsyncPaths | ⚠️ omitida |
-| PostgresIntegrationTests.OldSqliteSchemaIsRejectedBeforeWriting | ⚠️ omitida |
-| PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "\"public\".\"PurgeProbe\"") | ⚠️ omitida |
-| PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "public.\"PurgeProbe\"") | ⚠️ omitida |
-| PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "public.PurgeProbe") | ⚠️ omitida |
-| PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "PurgeProbe") | ⚠️ omitida |
-| PostgresIntegrationTests.SqlConsoleReturnsRowsAndRejectsWrites | ⚠️ omitida |
-| PostgresIntegrationTests.SqliteDatabaseImportsIntoPublicAndCustomSchema | ⚠️ omitida |
+| PostgresIntegrationTests.CompatibilityAggregatesExistAfterSchemaPreparation | ✅ |
+| PostgresIntegrationTests.ExportProducesAUsableSqliteDatabase | ✅ |
+| PostgresIntegrationTests.InitialSchemaAndPopulatedUpgradeWork | ✅ |
+| PostgresIntegrationTests.JsonCleanupWorksInSyncAndAsyncPaths | ✅ |
+| PostgresIntegrationTests.OldSqliteSchemaIsRejectedBeforeWriting | ✅ |
+| PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "\"public\".\"PurgeProbe\"") | ✅ |
+| PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "public.\"PurgeProbe\"") | ✅ |
+| PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "public.PurgeProbe") | ✅ |
+| PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "PurgeProbe") | ✅ |
+| PostgresIntegrationTests.SqlConsoleReturnsRowsAndRejectsWrites | ✅ |
+| PostgresIntegrationTests.SqliteDatabaseImportsIntoPublicAndCustomSchema | ✅ |
 | ProviderContractTests.DeclaredJellyfinVersionMatchesTheReferencedSdk | ✅ |
 | ProviderContractTests.EntryPointsMatchWhatJellyfinInstantiates | ✅ |
 | ProviderContractTests.JellyfinDiscoversExactlyOneProvider | ✅ |
@@ -102,7 +112,11 @@
 | SchemaAuditTests.IgnoredSourcePathsMatchOnEveryPlatform(filePath: "D:\\repo\\Jellyfin.Database.Providers.Postgres\\Se"···, expected: False) | ✅ |
 | SchemaAuditTests.SnapshotMatchesTheJellyfinModel | ✅ |
 | SqlRewriteTests.DuplicateBaseItemInsertIsIgnored | ✅ |
-| SqlRewriteTests.DuplicateItemValueInsertIsNotIgnored | ✅ |
+| SqlRewriteTests.DuplicateItemValueInsertNamesTheUniquePairAsConflictTarget | ✅ |
+| SqlRewriteTests.ItemValueRewriteIsIdempotent | ✅ |
+| SqlRewriteTests.MappingInsertAloneKeepsItsShape | ✅ |
+| SqlRewriteTests.MappingInsertBecomesConditionalWhenValuesTravelInTheSameBatch(mapping: "(\"ItemId\", \"ItemValueId\") VALUES (@p4, @p0)") | ✅ |
+| SqlRewriteTests.MappingInsertBecomesConditionalWhenValuesTravelInTheSameBatch(mapping: "(\"ItemValueId\", \"ItemId\") VALUES (@p0, @p4)") | ✅ |
 | SqlRewriteTests.RatingLevelsUpdateOnlyTouchesRowsThatChange(column: "InheritedParentalRatingSubValue") | ✅ |
 | SqlRewriteTests.RatingLevelsUpdateOnlyTouchesRowsThatChange(column: "InheritedParentalRatingValue") | ✅ |
 | SqlRewriteTests.RewritingIsIdempotent(sql: "UPDATE \"BaseItems\" SET \"Data\" = json_remove(\""···) | ✅ |
@@ -116,23 +130,6 @@
 | WebPageTests.ConfigurationPageResourceIsEmbedded | ✅ |
 | WebPageTests.EveryElementIdUsedByTheScriptExists | ✅ |
 | WebPageTests.EveryTabHasItsPane | ✅ |
-
-## Verificaciones omitidas
-
-Estas pruebas necesitan un PostgreSQL accesible y se omitieron porque la ejecución no recibió
-`POSTGRES_TEST_CONNECTION`. El resultado global **no** las cuenta como correctas.
-
-- PostgresIntegrationTests.CompatibilityAggregatesExistAfterSchemaPreparation
-- PostgresIntegrationTests.JsonCleanupWorksInSyncAndAsyncPaths
-- PostgresIntegrationTests.ExportProducesAUsableSqliteDatabase
-- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "PurgeProbe")
-- PostgresIntegrationTests.InitialSchemaAndPopulatedUpgradeWork
-- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "public.\"PurgeProbe\"")
-- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "public.PurgeProbe")
-- PostgresIntegrationTests.SqliteDatabaseImportsIntoPublicAndCustomSchema
-- PostgresIntegrationTests.OldSqliteSchemaIsRejectedBeforeWriting
-- PostgresIntegrationTests.SqlConsoleReturnsRowsAndRejectsWrites
-- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "\"public\".\"PurgeProbe\"")
 
 ## Cómo reproducirlo
 
