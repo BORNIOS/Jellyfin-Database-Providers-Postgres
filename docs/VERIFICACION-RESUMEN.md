@@ -5,7 +5,7 @@
 
 | Dato | Valor |
 | --- | --- |
-| Fecha de ejecución | 2026-09-17 22:04:31 -07:00 |
+| Fecha de ejecución | 2026-09-17 22:21:22 -07:00 |
 | Versión del plugin | 3.0.0.0 |
 | Jellyfin validado | 12.1.0 |
 | Base de datos de pruebas | no configurada |
@@ -15,7 +15,7 @@
 
 | Verificaciones | Correctas | Con error | Omitidas |
 | --- | --- | --- | --- |
-| 78 | 67 | 0 | 11 |
+| 80 | 69 | 0 | 11 |
 
 ## Resultado por área
 
@@ -29,7 +29,7 @@
 | ProviderContractTests | 4 | ✅ 4/4 |
 | QueryConsoleTests | 28 | ✅ 28/28 |
 | SchemaAuditTests | 8 | ✅ 8/8 |
-| SqlRewriteTests | 9 | ✅ 9/9 |
+| SqlRewriteTests | 11 | ✅ 11/11 |
 | WebPageTests | 4 | ✅ 4/4 |
 
 ## Detalle
@@ -101,6 +101,8 @@
 | SchemaAuditTests.IgnoredSourcePathsMatchOnEveryPlatform(filePath: "D:\\repo\\Jellyfin.Database.Providers.Postgres\\ob"···, expected: True) | ✅ |
 | SchemaAuditTests.IgnoredSourcePathsMatchOnEveryPlatform(filePath: "D:\\repo\\Jellyfin.Database.Providers.Postgres\\Se"···, expected: False) | ✅ |
 | SchemaAuditTests.SnapshotMatchesTheJellyfinModel | ✅ |
+| SqlRewriteTests.DuplicateBaseItemInsertIsIgnored | ✅ |
+| SqlRewriteTests.DuplicateItemValueInsertIsNotIgnored | ✅ |
 | SqlRewriteTests.RatingLevelsUpdateOnlyTouchesRowsThatChange(column: "InheritedParentalRatingSubValue") | ✅ |
 | SqlRewriteTests.RatingLevelsUpdateOnlyTouchesRowsThatChange(column: "InheritedParentalRatingValue") | ✅ |
 | SqlRewriteTests.RewritingIsIdempotent(sql: "UPDATE \"BaseItems\" SET \"Data\" = json_remove(\""···) | ✅ |
@@ -120,17 +122,17 @@
 Estas pruebas necesitan un PostgreSQL accesible y se omitieron porque la ejecución no recibió
 `POSTGRES_TEST_CONNECTION`. El resultado global **no** las cuenta como correctas.
 
-- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "\"public\".\"PurgeProbe\"")
-- PostgresIntegrationTests.ExportProducesAUsableSqliteDatabase
 - PostgresIntegrationTests.CompatibilityAggregatesExistAfterSchemaPreparation
-- PostgresIntegrationTests.SqliteDatabaseImportsIntoPublicAndCustomSchema
-- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "public.PurgeProbe")
-- PostgresIntegrationTests.OldSqliteSchemaIsRejectedBeforeWriting
-- PostgresIntegrationTests.InitialSchemaAndPopulatedUpgradeWork
 - PostgresIntegrationTests.JsonCleanupWorksInSyncAndAsyncPaths
-- PostgresIntegrationTests.SqlConsoleReturnsRowsAndRejectsWrites
-- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "public.\"PurgeProbe\"")
+- PostgresIntegrationTests.ExportProducesAUsableSqliteDatabase
 - PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "PurgeProbe")
+- PostgresIntegrationTests.InitialSchemaAndPopulatedUpgradeWork
+- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "public.\"PurgeProbe\"")
+- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "public.PurgeProbe")
+- PostgresIntegrationTests.SqliteDatabaseImportsIntoPublicAndCustomSchema
+- PostgresIntegrationTests.OldSqliteSchemaIsRejectedBeforeWriting
+- PostgresIntegrationTests.SqlConsoleReturnsRowsAndRejectsWrites
+- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "\"public\".\"PurgeProbe\"")
 
 ## Cómo reproducirlo
 

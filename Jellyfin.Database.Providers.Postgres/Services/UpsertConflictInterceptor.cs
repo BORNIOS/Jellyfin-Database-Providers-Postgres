@@ -28,8 +28,17 @@ public sealed partial class UpsertConflictInterceptor : DbCommandInterceptor
 {
     // All junction / mapping tables where Jellyfin may attempt a duplicate INSERT
     // during a library refresh or plugin-triggered collection update.
+    //
+    // BaseItems is here for the same reason and it is what breaks channel items and image conversions:
+    // Jellyfin cree que el item es nuevo (no esta en su cache) cuando la fila ya existe, y el INSERT
+    // duplicado hacia fallar todo el lote con 23505. Ignorarlo deja la fila que ya estaba, y las claves
+    // foraneas de las tablas hijas siguen apuntando a ella.
+    //
+    // ItemValues NO se incluye a proposito: ItemValuesMap tiene clave foranea hacia ItemValues, asi que
+    // saltarse la fila dejaria el mapa apuntando a un valor inexistente. Ese caso necesita otra solucion.
     private static readonly string[] TargetTables =
     [
+        "\"BaseItems\"",
         "\"BaseItemProviders\"",
         "\"BaseItemImageInfos\"",
         "\"AncestorIds\"",

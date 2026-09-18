@@ -77,4 +77,36 @@ public sealed class SqlRewriteTests
         new Jellyfin121MigrationInterceptor().NonQueryExecuting(command, null!, default);
         return command;
     }
+
+    /// <summary>
+    /// Un INSERT duplicado en <c>BaseItems</c> hacia fallar todo el lote con 23505 (items de canal e
+    /// imagenes a medio crear). Ignorarlo es lo que hace SQLite y deja la fila que ya existia.
+    /// </summary>
+    [Fact]
+    public void DuplicateBaseItemInsertIsIgnored()
+    {
+        var command = RewriteUpsert("""INSERT INTO "BaseItems" ("Id", "Name") VALUES (@p0, @p1);""");
+
+        Assert.Contains("ON CONFLICT DO NOTHING", command.CommandText, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <c>ItemValues</c> no se ignora a proposito: <c>ItemValuesMap</c> tiene clave foranea hacia esa
+    /// tabla, asi que saltarse la fila dejaria el mapa apuntando a un valor inexistente.
+    /// </summary>
+    [Fact]
+    public void DuplicateItemValueInsertIsNotIgnored()
+    {
+        var command = RewriteUpsert("""INSERT INTO "ItemValues" ("Id", "Type", "Value") VALUES (@p0, @p1, @p2);""");
+
+        Assert.DoesNotContain("ON CONFLICT", command.CommandText, StringComparison.Ordinal);
+    }
+
+    private static DbCommand RewriteUpsert(string sql)
+    {
+        var command = new NpgsqlCommand(sql);
+
+        new UpsertConflictInterceptor().NonQueryExecuting(command, null!, default);
+        return command;
+    }
 }

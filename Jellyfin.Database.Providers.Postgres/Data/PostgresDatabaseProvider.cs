@@ -139,12 +139,6 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 
         RegisterUnobservedTaskHandler();
 
-        // EF Core llama a Initialise mas de una vez durante el arranque: el detalle del pipeline se cuenta
-        // una sola vez en INFO y las repeticiones quedan en DEBUG, para no llenar el log al iniciar.
-        var firstPipeline = Interlocked.CompareExchange(ref _pipelineLogged, 1, 0) == 0;
-
-        LogPipeline(firstPipeline, $"[Provider] Initialise llamado: inicio del pipeline de EF Core (connection string {(string.IsNullOrWhiteSpace(connStr) ? "vacía" : "resuelta")}).");
-
         if (string.IsNullOrWhiteSpace(connStr))
         {
             throw new InvalidOperationException(
@@ -159,17 +153,16 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 
         var tunedConnStr = csb.ToString();
 
-        // Log the *actual* pool configuration that will be used (post-tuning).
-        // Mask password before logging to avoid leaking credentials.
-        var maskedTuned = System.Text.RegularExpressions.Regex.Replace(
-            tunedConnStr,
-            @"(?i)(Password\s*=)[^;]+",
-            "$1*****");
-        LogPipeline(firstPipeline, $"[ENGINE] Conexión activa (tuneada): {maskedTuned}");
-        LogPipeline(
-            firstPipeline,
-            $"[Provider] Pool: min={csb.MinPoolSize} max={csb.MaxPoolSize} " +
-            $"maxAutoPrepare={csb.MaxAutoPrepare} cmdTimeout={csb.CommandTimeout}s");
+        // EF Core llama a Initialise mas de una vez durante el arranque. Se informa UNA vez y nada mas: la
+        // conexion activa la anuncia el plugin ("Modo activo") y el pool va aqui, sin repetir ni volcar la
+        // cadena de conexion por tercera vez.
+        if (Interlocked.CompareExchange(ref _pipelineLogged, 1, 0) == 0)
+        {
+            Logging.PostgresLog.Info("[Provider] Inicializado: pipeline de EF Core en marcha.");
+            Logging.PostgresLog.Info(
+                $"[Provider] Pool: min={csb.MinPoolSize} max={csb.MaxPoolSize} " +
+                $"maxAutoPrepare={csb.MaxAutoPrepare} cmdTimeout={csb.CommandTimeout}s");
+        }
 
         options
             .UseNpgsql(
@@ -368,22 +361,6 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         {
             Logging.PostgresLog.Error("[ESTADO] No se pudo leer el estado de la base de datos", ex);
         }
-    }
-
-    /// <summary>
-    /// Cuenta el detalle del pipeline de EF la primera vez y lo deja en DEBUG en las siguientes.
-    /// </summary>
-    /// <param name="first">Verdadero en la primera llamada del proceso.</param>
-    /// <param name="message">Mensaje a registrar.</param>
-    private static void LogPipeline(bool first, string message)
-    {
-        if (first)
-        {
-            Logging.PostgresLog.Info(message);
-            return;
-        }
-
-        Logging.PostgresLog.Debug(message);
     }
 
     /// <summary>
