@@ -5,7 +5,7 @@
 
 | Dato | Valor |
 | --- | --- |
-| Fecha de ejecución | 2026-09-17 21:07:41 -07:00 |
+| Fecha de ejecución | 2026-09-17 21:17:55 -07:00 |
 | Versión del plugin | 3.0.0.0 |
 | Jellyfin validado | 12.1.0 |
 | Base de datos de pruebas | no configurada |
@@ -15,7 +15,7 @@
 
 | Verificaciones | Correctas | Con error | Omitidas |
 | --- | --- | --- | --- |
-| 74 | 63 | 0 | 11 |
+| 78 | 67 | 0 | 11 |
 
 ## Resultado por área
 
@@ -23,6 +23,7 @@
 | --- | --- | --- |
 | AdvancedOptionTests | 5 | ✅ 5/5 |
 | DatabaseConfigurationTests | 2 | ✅ 2/2 |
+| JellyTrendContractTests | 4 | ✅ 4/4 |
 | LoggingTests | 3 | ✅ 3/3 |
 | PostgresIntegrationTests | 11 | ⚠️ omitida |
 | ProviderContractTests | 4 | ✅ 4/4 |
@@ -42,6 +43,10 @@
 | AdvancedOptionTests.SavedConfigurationSurvivesTheRoundTrip | ✅ |
 | DatabaseConfigurationTests.EngineSwitchIsDetectedFromDatabaseXml | ✅ |
 | DatabaseConfigurationTests.WrittenDatabaseXmlRoundTripsThroughJellyfinOptions | ✅ |
+| JellyTrendContractTests.ElEspejoConservaElNombreCompletoDelContrato | ✅ |
+| JellyTrendContractTests.ElEspejoTieneLaMismaFormaQueElContratoDeJellyTrend | ✅ |
+| JellyTrendContractTests.JellyTrendPuedeConstruirLaImplementacion | ✅ |
+| JellyTrendContractTests.LaProyeccionTieneLasMismasPropiedades | ✅ |
 | LoggingTests.FailuresCarryLevelMessageAndStackTrace | ✅ |
 | LoggingTests.LogFileLivesNextToTheOtherPluginLogs | ✅ |
 | LoggingTests.PostgresFailuresCarryTheServerDetail | ✅ |
@@ -115,17 +120,17 @@
 Estas pruebas necesitan un PostgreSQL accesible y se omitieron porque la ejecución no recibió
 `POSTGRES_TEST_CONNECTION`. El resultado global **no** las cuenta como correctas.
 
-- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "\"public\".\"PurgeProbe\"")
 - PostgresIntegrationTests.ExportProducesAUsableSqliteDatabase
-- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "PurgeProbe")
-- PostgresIntegrationTests.JsonCleanupWorksInSyncAndAsyncPaths
-- PostgresIntegrationTests.CompatibilityAggregatesExistAfterSchemaPreparation
-- PostgresIntegrationTests.SqlConsoleReturnsRowsAndRejectsWrites
 - PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "public.\"PurgeProbe\"")
-- PostgresIntegrationTests.SqliteDatabaseImportsIntoPublicAndCustomSchema
-- PostgresIntegrationTests.InitialSchemaAndPopulatedUpgradeWork
-- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "public.PurgeProbe")
+- PostgresIntegrationTests.SqlConsoleReturnsRowsAndRejectsWrites
+- PostgresIntegrationTests.CompatibilityAggregatesExistAfterSchemaPreparation
+- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "PurgeProbe")
 - PostgresIntegrationTests.OldSqliteSchemaIsRejectedBeforeWriting
+- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "\"public\".\"PurgeProbe\"")
+- PostgresIntegrationTests.JsonCleanupWorksInSyncAndAsyncPaths
+- PostgresIntegrationTests.PurgeDatabaseAcceptsEveryTableNameFormatTheServerPasses(tableName: "public.PurgeProbe")
+- PostgresIntegrationTests.InitialSchemaAndPopulatedUpgradeWork
+- PostgresIntegrationTests.SqliteDatabaseImportsIntoPublicAndCustomSchema
 
 ## Cómo reproducirlo
 
