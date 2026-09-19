@@ -39,6 +39,14 @@
         "sourceUrl": "https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/releases/download/v3.0.0/Jellyfin.Database.Providers.Postgres-3.0.0.0.zip",
         "checksum": "f76557050bc28da09797f6a1202e4f7d",
         "timestamp": "2026-09-16T18:31:54Z"
+      },
+      {
+        "version": "3.0.1.0",
+        "changelog": "3.0.1 - Correccion de la integracion con JellyTrend\r\n\r\n- Fix: el esquema jellytrend no creaba la tabla donde el motor de JellyTrend guarda el perfil de gustos aprendido (user_affinity), asi que ese perfil no quedaba almacenado. El esquema se crea ahora completo (version 4).\r\n- El esquema se comprueba al arrancar: en una instalacion 3.0.0 la tabla que faltaba se crea sola. No hay que recrear el esquema ni reinstalar nada.\r\n- Docs: la seccion de integracion con JellyTrend documenta las dos piezas del contrato: almacen de datos en el esquema jellytrend (fuera de public, para no colarse en las exportaciones a SQLite) y acelerador de consultas con SQL nativo en las recomendaciones (4-10x en bibliotecas grandes).\r\n\r\nRequiere Jellyfin 12.1.x. Para Jellyfin 10.11.x usa la version 2.0.1.",
+        "targetAbi": "12.1.0.0",
+        "sourceUrl": "https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/releases/download/v3.0.1/Jellyfin.Database.Providers.Postgres-3.0.1.0.zip",
+        "checksum": "f21d7b52f2fce09ed92b24e5b84b16a3",
+        "timestamp": "2026-09-19T01:24:20Z"
       }
     ]
   }
