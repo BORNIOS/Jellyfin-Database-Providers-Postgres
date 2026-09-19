@@ -154,8 +154,10 @@ and the current status never showed them. In 3.0.0:
   configuration.
 - Scheduled tasks (backup, VACUUM ANALYZE, REINDEX, index optimization) keep their names and
   schedules.
-- Optional JellyTrend integration is still available through
-  `JellyTrendContract/IRecommendationQueryProvider.cs`.
+- The optional JellyTrend integration is still available, now in two pieces: the query accelerator
+  through `JellyTrendContract/IRecommendationQueryProvider.cs` and the JellyTrend 3.x data store in
+  the `jellytrend` schema of the database. That schema lives outside `public`, so it is excluded from
+  the SQLite export and from the panel analyses.
 
 ---
 

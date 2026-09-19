@@ -160,8 +160,10 @@ la configuración con un valor fijo, y el estado actual no los mostraba. En 3.0.
   la versión 2.x conserva la configuración guardada.
 - Las tareas programadas (backup, VACUUM ANALYZE, REINDEX, optimización de índices) mantienen
   sus nombres y su programación.
-- La integración opcional con JellyTrend sigue disponible a través de
-  `JellyTrendContract/IRecommendationQueryProvider.cs`.
+- La integración opcional con JellyTrend sigue disponible, y ahora con dos piezas: el acelerador de
+  consultas por `JellyTrendContract/IRecommendationQueryProvider.cs` y el almacén de datos de
+  JellyTrend 3.x en el esquema `jellytrend` de la base. El esquema vive fuera de `public`, así que
+  queda excluido de la exportación a SQLite y de los análisis del panel.
 
 ---
 

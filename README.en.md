@@ -50,7 +50,7 @@ automatic health check, scheduled maintenance and optional JellyTrend integratio
 - 🛡️ **Error prevention** — EF Core interceptors for upserts, DB error logging and `DateTime.Kind` normalization.
 - 🔧 **Automatic optimization** — GIN indexes CONCURRENTLY, autovacuum tuning on critical tables.
 - 💾 **Scheduled backups** with `pg_dump`, optional ZIP compression and restore from the UI.
-- ⚡ **Optional JellyTrend integration** — recommendations 4-10× faster with optimized native SQL.
+- ⚡ **Optional JellyTrend integration** — with JellyTrend 3.x its data lives in the `jellytrend` schema of your database (created only when that plugin is present) and recommendations are **4-10× faster** with optimized native SQL.
 - 📊 **Database statistics** — total size, active connections and per-table metrics from the UI.
 - 🧪 **Read-only SQL console** — run diagnostic queries from the panel with 10 templates and history; any data-modifying statement is rejected.
 - 🔁 **One-click rollback to SQLite** from the configuration tab.
@@ -300,14 +300,26 @@ In **Maintenance**: **Create backup now** / **Restore backup** (accepts `.sql` o
 
 ## ⚡ JellyTrend integration
 
-If you have [**JellyTrend**](https://github.com/BORNIOS/JellyTrend) installed, the recommendation engine automatically detects this plugin and replaces `ILibraryManager` queries with optimized native SQL:
+If you have [**JellyTrend**](https://github.com/BORNIOS/JellyTrend) installed, this plugin offers it **two things** and JellyTrend detects both on its own, with nothing to configure:
+
+| Role | What it does |
+|---|---|
+| 🗄️ **Data store** (JellyTrend 3.x) | JellyTrend creates the **`jellytrend`** schema in your database and keeps its feature cache, trending list, per-user taste profiles and recommendations, hidden titles and run history there. The schema is created the first time JellyTrend asks for it: **a server without JellyTrend never sees those tables** |
+| 🔍 **Query accelerator** | The recommendation engine replaces `ILibraryManager` queries with native SQL using the `&&` array operator and the GIN indexes — **4-10× faster** |
 
 | Engine | Behavior |
 |---|---|
 | **SQLite** (without this plugin) | `ILibraryManager` — compatible with any installation |
-| **PostgreSQL** (with this plugin) | Direct SQL with native `&&` array operator + GIN indexes — **4-10× faster** |
+| **PostgreSQL** (with this plugin) | Its own store + direct SQL with GIN indexes — **4-10× faster** |
 
-> ✅ No manual setup needed. If both plugins are installed, the integration activates automatically.
+**About the `jellytrend` schema:**
+
+- It lives **outside `public`** on purpose: the PostgreSQL to SQLite export enumerates the tables of `public`, so these **never end up inside a SQLite file**, and the Health Check and the panel statistics keep analysing Jellyfin's tables only.
+- JellyTrend still writes its JSON files to `{DataDir}/data/JellyTrend` as a **courtesy copy**: removing either plugin loses nothing.
+- Current schema version: **v4**, and JellyTrend shows it on its *Activity* tab.
+
+> ✅ No manual setup needed: if both plugins are installed, both integrations activate on their own.
+> ℹ️ And it is optional in both directions: JellyTrend runs just as well on SQLite, and this provider runs without JellyTrend.
 
 ---
 
