@@ -35,7 +35,7 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Normalizar versión (4 partes)
+      - name: Normalizar versión (4 partes) y leer ABI
         id: version
         run: |
           V="${{ github.event.inputs.release_version }}"
@@ -44,7 +44,12 @@ jobs:
           elif [ "$PARTS" -eq 2 ]; then V="${V}.0.0"
           elif [ "$PARTS" -eq 3 ]; then V="${V}.0"
           fi
+          # El ABI lo declara build.yaml, que es la fuente de la rama: la misma receta publica
+          # la linea 10.11 o la 12.1 sin editar el workflow.
+          ABI=$(sed -nE 's/^targetAbi:[[:space:]]*"?([0-9.]+)"?.*/\1/p' build.yaml | head -n1)
+          if [ -z "$ABI" ]; then echo "build.yaml no declara targetAbi"; exit 1; fi
           echo "full=$V" >> "$GITHUB_OUTPUT"
+          echo "abi=$ABI" >> "$GITHUB_OUTPUT"
 
       - name: Fijar versión en Directory.Build.props
         run: |
@@ -87,8 +92,8 @@ jobs:
           CHECKSUM: ${{ steps.package.outputs.checksum }}
           CHANGELOG: ${{ github.event.inputs.changelog }}
         run: |
-          # ABI que declara esta rama: 12.1.0.0 corresponde a Jellyfin 12.x.
-          TARGETABI="12.1.0.0"
+          # ABI de esta rama, tomado de build.yaml (no fijo en el workflow).
+          TARGETABI="${{ steps.version.outputs.abi }}"
           ZIP="Jellyfin.Database.Providers.Postgres-${VERSION}.zip"
           URL="https://github.com/${{ github.repository }}/releases/download/v${RELEASE_VERSION}/${ZIP}"
           TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -111,7 +116,7 @@ jobs:
       - name: Publicar la entrada en el catálogo servido (main)
         if: github.ref_name != 'main'
         env:
-          TARGETABI: '12.1.0.0'
+          TARGETABI: ${{ steps.version.outputs.abi }}
           VERSION: ${{ steps.version.outputs.full }}
           RELEASE_VERSION: ${{ github.event.inputs.release_version }}
           CHECKSUM: ${{ steps.package.outputs.checksum }}

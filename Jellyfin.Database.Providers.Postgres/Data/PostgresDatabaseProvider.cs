@@ -90,6 +90,9 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
     // Ensures the startup health check runs exactly once across all Initialise calls.
     private static int _startupHealthCheckFired;
 
+    /// <summary>Marca si el detalle del pipeline de EF ya se conto en INFO en este proceso.</summary>
+    private static int _pipelineLogged;
+
     // Ensures the unobserved task handler is attached only once.
     private static int _unobservedHandlerRegistered;
 
@@ -136,8 +139,6 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 
         RegisterUnobservedTaskHandler();
 
-        Logging.PostgresLog.Info($"[Provider] Initialise llamado: inicio del pipeline de EF Core (connection string {(string.IsNullOrWhiteSpace(connStr) ? "vacía" : "resuelta")}).");
-
         if (string.IsNullOrWhiteSpace(connStr))
         {
             throw new InvalidOperationException(
@@ -152,17 +153,16 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 
         var tunedConnStr = csb.ToString();
 
-        // Log the *actual* pool configuration that will be used (post-tuning).
-        // Mask password before logging to avoid leaking credentials.
-        var maskedTuned = System.Text.RegularExpressions.Regex.Replace(
-            tunedConnStr,
-            @"(?i)(Password\s*=)[^;]+",
-            "$1*****");
-        Logging.PostgresLog.Info(
-            $"[ENGINE] Conexión activa (tuneada): {maskedTuned}");
-        Logging.PostgresLog.Info(
-            $"[Provider] Pool: min={csb.MinPoolSize} max={csb.MaxPoolSize} " +
-            $"maxAutoPrepare={csb.MaxAutoPrepare} cmdTimeout={csb.CommandTimeout}s");
+        // EF Core llama a Initialise mas de una vez durante el arranque. Se informa UNA vez y nada mas: la
+        // conexion activa la anuncia el plugin ("Modo activo") y el pool va aqui, sin repetir ni volcar la
+        // cadena de conexion por tercera vez.
+        if (Interlocked.CompareExchange(ref _pipelineLogged, 1, 0) == 0)
+        {
+            Logging.PostgresLog.Info("[Provider] Inicializado: pipeline de EF Core en marcha.");
+            Logging.PostgresLog.Info(
+                $"[Provider] Pool: min={csb.MinPoolSize} max={csb.MaxPoolSize} " +
+                $"maxAutoPrepare={csb.MaxAutoPrepare} cmdTimeout={csb.CommandTimeout}s");
+        }
 
         options
             .UseNpgsql(
@@ -182,6 +182,7 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
                 new Jellyfin121MigrationInterceptor(),
                 new HomeQueryCacheInterceptor(_logger),
                 new UpsertConflictInterceptor(),
+                new ItemValueReuseInterceptor(),
                 new DbErrorLoggingInterceptor(),
                 new DateTimeKindNormalizingInterceptor());
 
@@ -498,6 +499,10 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         // insert the rows back in any order. Only Jellyfin's own tables are listed.
         var sql = string.Concat("TRUNCATE TABLE ", string.Join(", ", tables), " RESTART IDENTITY CASCADE;");
         await dbContext.Database.ExecuteSqlRawAsync(sql).ConfigureAwait(false);
+
+        // The rows changed outside EF's change tracker, so no write command of this process reaches the
+        // cache interceptor: without this purge a restore could serve rows that no longer exist.
+        HomeQueryCacheInterceptor.Purge();
         Logging.PostgresLog.Info($"[Purge] Base de datos vaciada: {tables.Count} tablas (TRUNCATE ... RESTART IDENTITY CASCADE).");
     }
 

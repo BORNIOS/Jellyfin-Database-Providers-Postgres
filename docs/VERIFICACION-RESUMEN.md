@@ -5,7 +5,7 @@
 
 | Dato | Valor |
 | --- | --- |
-| Fecha de ejecución | 2026-09-16 02:55:18 -07:00 |
+| Fecha de ejecución | 2026-09-17 22:51:21 -07:00 |
 | Versión del plugin | 3.0.0.0 |
 | Jellyfin validado | 12.1.0 |
 | Base de datos de pruebas | Jellyfin |
@@ -15,7 +15,7 @@
 
 | Verificaciones | Correctas | Con error | Omitidas |
 | --- | --- | --- | --- |
-| 68 | 68 | 0 | 0 |
+| 92 | 92 | 0 | 0 |
 
 ## Resultado por área
 
@@ -23,12 +23,15 @@
 | --- | --- | --- |
 | AdvancedOptionTests | 5 | ✅ 5/5 |
 | DatabaseConfigurationTests | 2 | ✅ 2/2 |
+| HomeQueryCacheTests | 3 | ✅ 3/3 |
+| ItemValueReuseTests | 5 | ✅ 5/5 |
+| JellyTrendContractTests | 4 | ✅ 4/4 |
 | LoggingTests | 3 | ✅ 3/3 |
 | PostgresIntegrationTests | 11 | ✅ 11/11 |
 | ProviderContractTests | 4 | ✅ 4/4 |
 | QueryConsoleTests | 28 | ✅ 28/28 |
-| SchemaAuditTests | 2 | ✅ 2/2 |
-| SqlRewriteTests | 9 | ✅ 9/9 |
+| SchemaAuditTests | 8 | ✅ 8/8 |
+| SqlRewriteTests | 15 | ✅ 15/15 |
 | WebPageTests | 4 | ✅ 4/4 |
 
 ## Detalle
@@ -42,6 +45,18 @@
 | AdvancedOptionTests.SavedConfigurationSurvivesTheRoundTrip | ✅ |
 | DatabaseConfigurationTests.EngineSwitchIsDetectedFromDatabaseXml | ✅ |
 | DatabaseConfigurationTests.WrittenDatabaseXmlRoundTripsThroughJellyfinOptions | ✅ |
+| HomeQueryCacheTests.TwoDifferentListParametersDoNotShareAnEntry | ✅ |
+| HomeQueryCacheTests.ValueReadBackInsideARolledBackTransactionIsNeverServedFromCache | ✅ |
+| HomeQueryCacheTests.WritingToATableInvalidatesTheEntriesStoredForIt | ✅ |
+| ItemValueReuseTests.PendingValueIsDroppedAndItsMappingRepointedBeforeSaving | ✅ |
+| ItemValueReuseTests.PendingValueThatAlreadyExistsIsReusedAndTheBatchSurvives | ✅ |
+| ItemValueReuseTests.PendingValueThatDoesNotExistIsLeftAlone | ✅ |
+| ItemValueReuseTests.TwoPendingCopiesOfTheSameValueCollapseIntoOneRow | ✅ |
+| ItemValueReuseTests.ValuesThatDoNotExistAreStillInserted | ✅ |
+| JellyTrendContractTests.ElEspejoConservaElNombreCompletoDelContrato | ✅ |
+| JellyTrendContractTests.ElEspejoTieneLaMismaFormaQueElContratoDeJellyTrend | ✅ |
+| JellyTrendContractTests.JellyTrendPuedeConstruirLaImplementacion | ✅ |
+| JellyTrendContractTests.LaProyeccionTieneLasMismasPropiedades | ✅ |
 | LoggingTests.FailuresCarryLevelMessageAndStackTrace | ✅ |
 | LoggingTests.LogFileLivesNextToTheOtherPluginLogs | ✅ |
 | LoggingTests.PostgresFailuresCarryTheServerDetail | ✅ |
@@ -89,7 +104,19 @@
 | QueryConsoleTests.ReadOnlyStatementsAreAccepted(sql: "WITH valores AS (SELECT 1 AS n) SELECT n FROM valo"···) | ✅ |
 | QueryConsoleTests.TheStatementIsReturnedUnchangedExceptForComments | ✅ |
 | SchemaAuditTests.EveryTableAndQualifiedColumnUsedByRawSqlExistsInTheModel | ✅ |
+| SchemaAuditTests.IgnoredSourcePathsMatchOnEveryPlatform(filePath: "/home/runner/work/repo/Jellyfin.Database.Providers"···, expected: False) | ✅ |
+| SchemaAuditTests.IgnoredSourcePathsMatchOnEveryPlatform(filePath: "/home/runner/work/repo/Jellyfin.Database.Providers"···, expected: True) | ✅ |
+| SchemaAuditTests.IgnoredSourcePathsMatchOnEveryPlatform(filePath: "/home/runner/work/repo/Jellyfin.Database.Providers"···, expected: True) | ✅ |
+| SchemaAuditTests.IgnoredSourcePathsMatchOnEveryPlatform(filePath: "D:\\repo\\Jellyfin.Database.Providers.Postgres\\Mi"···, expected: True) | ✅ |
+| SchemaAuditTests.IgnoredSourcePathsMatchOnEveryPlatform(filePath: "D:\\repo\\Jellyfin.Database.Providers.Postgres\\ob"···, expected: True) | ✅ |
+| SchemaAuditTests.IgnoredSourcePathsMatchOnEveryPlatform(filePath: "D:\\repo\\Jellyfin.Database.Providers.Postgres\\Se"···, expected: False) | ✅ |
 | SchemaAuditTests.SnapshotMatchesTheJellyfinModel | ✅ |
+| SqlRewriteTests.DuplicateBaseItemInsertIsIgnored | ✅ |
+| SqlRewriteTests.DuplicateItemValueInsertNamesTheUniquePairAsConflictTarget | ✅ |
+| SqlRewriteTests.ItemValueRewriteIsIdempotent | ✅ |
+| SqlRewriteTests.MappingInsertAloneKeepsItsShape | ✅ |
+| SqlRewriteTests.MappingInsertBecomesConditionalWhenValuesTravelInTheSameBatch(mapping: "(\"ItemId\", \"ItemValueId\") VALUES (@p4, @p0)") | ✅ |
+| SqlRewriteTests.MappingInsertBecomesConditionalWhenValuesTravelInTheSameBatch(mapping: "(\"ItemValueId\", \"ItemId\") VALUES (@p0, @p4)") | ✅ |
 | SqlRewriteTests.RatingLevelsUpdateOnlyTouchesRowsThatChange(column: "InheritedParentalRatingSubValue") | ✅ |
 | SqlRewriteTests.RatingLevelsUpdateOnlyTouchesRowsThatChange(column: "InheritedParentalRatingValue") | ✅ |
 | SqlRewriteTests.RewritingIsIdempotent(sql: "UPDATE \"BaseItems\" SET \"Data\" = json_remove(\""···) | ✅ |

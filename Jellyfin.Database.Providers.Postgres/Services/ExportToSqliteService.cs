@@ -30,6 +30,12 @@ public sealed class ExportToSqliteService : IDisposable
     private static readonly HashSet<string> SkipTables = new(StringComparer.OrdinalIgnoreCase)
         { "__EFMigrationsHistory", "__EFMigrationsLock" };
 
+    // Tablas propias del plugin JellyTrend (esquema jellytrend). La garantia real es el esquema: la
+    // exportacion solo enumera 'public', asi que no las ve. Esta lista es la segunda red, para que ni
+    // apareciendo en 'public' viajen a un SQLite donde Jellyfin las abriria sin sus datos.
+    private static readonly HashSet<string> JellyTrendTables = new(StringComparer.OrdinalIgnoreCase)
+        { "item_features", "trending_item", "user_recommendation", "user_suppression", "sync_run", "schema_version" };
+
     // Jellyfin's native SQLite stores GUIDs in UPPERCASE. PostgreSQL uses lowercase.
     // This pattern detects UUID strings so we can normalise them on export.
     private static readonly System.Text.RegularExpressions.Regex GuidPattern =
@@ -175,7 +181,7 @@ public sealed class ExportToSqliteService : IDisposable
         await pgConn.OpenAsync(ct).ConfigureAwait(false);
 
         var tables = await ExportHelpers.GetUserTablesAsync(pgConn, ct).ConfigureAwait(false);
-        tables = tables.Where(t => !SkipTables.Contains(t)).ToList();
+        tables = tables.Where(t => !SkipTables.Contains(t) && !JellyTrendTables.Contains(t)).ToList();
         Log($"Tablas a exportar: {tables.Count}");
         PostgresLog.Info($"[Export] Tablas a exportar: {tables.Count}");
 

@@ -29,6 +29,16 @@ namespace Jellyfin.Database.Providers.Postgres.Services;
 /// </remarks>
 public sealed class PostgresRecommendationQueryProvider : IRecommendationQueryProvider
 {
+    /// <summary>
+    /// Filtro de pelicula sobre <c>BaseItems."Type"</c>.
+    /// </summary>
+    /// <remarks>
+    /// Jellyfin guarda ahi el nombre del tipo CLR (el discriminador de EF),
+    /// <c>MediaBrowser.Controller.Entities.Movies.Movie</c>, no "Movie": filtrar por el nombre corto no
+    /// devuelve ninguna fila. Se aceptan las dos formas para no depender de esa convencion.
+    /// </remarks>
+    private const string MovieTypeFilter = "(b.\"Type\" = 'Movie' OR b.\"Type\" LIKE '%.Movie')";
+
     private readonly ILogger<PostgresRecommendationQueryProvider> _logger;
 
     /// <summary>
@@ -52,12 +62,12 @@ public sealed class PostgresRecommendationQueryProvider : IRecommendationQueryPr
     /// <inheritdoc/>
     public IReadOnlyList<RecommendationItem> GetPlayedMovies(Guid userId, int limit)
     {
-        const string Sql = """
+        const string Sql = $"""
             SELECT b."Id", b."Genres", b."Tags", b."Studios", b."CommunityRating", b."PremiereDate",
                    p."ProviderValue" AS "TmdbId"
             FROM "BaseItems" b
             LEFT JOIN "BaseItemProviders" p ON p."ItemId" = b."Id" AND p."ProviderId" = 'Tmdb'
-            WHERE b."Type" = 'Movie'
+            WHERE {MovieTypeFilter}
               AND b."IsVirtualItem" = false
               AND EXISTS (
                   SELECT 1 FROM "UserData" ud
@@ -75,12 +85,12 @@ public sealed class PostgresRecommendationQueryProvider : IRecommendationQueryPr
     /// <inheritdoc/>
     public IReadOnlyList<RecommendationItem> GetResumableMovies(Guid userId, int limit)
     {
-        const string Sql = """
+        const string Sql = $"""
             SELECT b."Id", b."Genres", b."Tags", b."Studios", b."CommunityRating", b."PremiereDate",
                    p."ProviderValue" AS "TmdbId"
             FROM "BaseItems" b
             LEFT JOIN "BaseItemProviders" p ON p."ItemId" = b."Id" AND p."ProviderId" = 'Tmdb'
-            WHERE b."Type" = 'Movie'
+            WHERE {MovieTypeFilter}
               AND b."IsVirtualItem" = false
               AND EXISTS (
                   SELECT 1 FROM "UserData" ud
@@ -179,7 +189,7 @@ public sealed class PostgresRecommendationQueryProvider : IRecommendationQueryPr
                    p."ProviderValue" AS "TmdbId"
             FROM "BaseItems" b
             LEFT JOIN "BaseItemProviders" p ON p."ItemId" = b."Id" AND p."ProviderId" = 'Tmdb'
-            WHERE b."Type" = 'Movie'
+            WHERE {MovieTypeFilter}
               AND b."IsVirtualItem" = false
               {topParentFilter}
               AND NOT EXISTS (
@@ -235,7 +245,7 @@ public sealed class PostgresRecommendationQueryProvider : IRecommendationQueryPr
                    p."ProviderValue" AS "TmdbId"
             FROM "BaseItems" b
             LEFT JOIN "BaseItemProviders" p ON p."ItemId" = b."Id" AND p."ProviderId" = 'Tmdb'
-            WHERE b."Type" = 'Movie'
+            WHERE {MovieTypeFilter}
               AND b."IsVirtualItem" = false
               {topParentFilter}
               {extraWhere}
