@@ -218,7 +218,10 @@ public sealed class ExportToSqliteService : IDisposable
         // FOREIGN KEY constraint failures when Jellyfin operates in SQLite mode.
         await CleanOrphanedForeignKeysAsync(sqliteConn, ct).ConfigureAwait(false);
 
-        await CopyCodeMigrationsAsync(pgConn, sqliteConn, ct).ConfigureAwait(false);
+        // Code migrations are executable Jellyfin routines, not schema metadata. Recording an id without
+        // executing its routine makes the destination look upgraded while required objects are absent.
+        // Let the destination server own and run its pending code migrations.
+        Log("[PostExport] Las migraciones de código no se pre-marcan; Jellyfin las validará al iniciar.");
 
         _percentComplete = 100;
         var fileSize = new FileInfo(sqliteDbPath).Length;
@@ -540,60 +543,57 @@ public sealed class ExportToSqliteService : IDisposable
 
     // ── library.db stub ──────────────────────────────────────────────────────
     // Jellyfin's migration service tries to back up library.db before running
-    // legacy code migrations. If it doesn't exist (or is 0 bytes / malformed),
-    // the backup fails and the whole startup aborts. We create a minimal valid
-    // SQLite file so the backup succeeds and the legacy migrations can proceed
-    // (they will find no TypedBaseItems and exit gracefully, or be pre-marked).
+    // legacy code migrations. If it doesn't exist (or is malformed), the backup
+    // fails and the whole startup aborts. SQLite itself must create the database:
+    // a hand-crafted header is not a valid SQLite b-tree page.
 
     private static void EnsureEmptyLibraryDb(string sqliteDbPath)
     {
         var dataDir = Path.GetDirectoryName(sqliteDbPath) ?? string.Empty;
         var libraryDbPath = Path.Combine(dataDir, "library.db");
 
-        if (File.Exists(libraryDbPath) && new FileInfo(libraryDbPath).Length >= 4096)
+        if (File.Exists(libraryDbPath))
         {
-            return; // already a valid SQLite file
-        }
-
-        // Minimal valid SQLite database: one 4096-byte page with correct header.
-        // Page size stored at offset 16 (big-endian uint16): 0x10 0x00 = 4096.
-        var page = new byte[4096];
-        var magic = System.Text.Encoding.ASCII.GetBytes("SQLite format 3\0");
-        Array.Copy(magic, page, magic.Length);
-        page[16] = 0x10; // page size high byte (4096 = 0x1000)
-        page[17] = 0x00; // page size low byte
-        page[18] = 1;    // file format write version
-        page[19] = 1;    // file format read version
-        page[20] = 0;    // reserved bytes per page
-        page[21] = 64;   // max embedded payload fraction
-        page[22] = 32;   // min embedded payload fraction
-        page[23] = 32;   // leaf payload fraction
-
-        File.WriteAllBytes(libraryDbPath, page);
-        PostgresLog.Info($"[Export] library.db stub creado: {libraryDbPath}");
-    }
-
-    // Preserve pending code migrations instead of claiming every discovered routine ran.
-    private async Task CopyCodeMigrationsAsync(NpgsqlConnection pg, SqliteConnection conn, CancellationToken ct)
-    {
-        using var select = new NpgsqlCommand("SELECT \"MigrationId\", \"ProductVersion\" FROM \"__EFMigrationsHistory\";", pg);
-        using var reader = await select.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        var count = 0;
-        while (await reader.ReadAsync(ct).ConfigureAwait(false))
-        {
-            var id = reader.GetString(0);
-            if (!MigrationCodeMigrations.IsCodeMigrationId(id))
+            if (IsSqliteDatabaseValid(libraryDbPath))
             {
-                continue;
+                return;
             }
 
-            using var insert = conn.CreateCommand();
-            insert.CommandText = "INSERT OR IGNORE INTO \"__EFMigrationsHistory\" (\"MigrationId\", \"ProductVersion\") VALUES (@id, @version);";
-            insert.Parameters.AddWithValue("@id", id);
-            insert.Parameters.AddWithValue("@version", reader.GetString(1));
-            count += await insert.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            // Preserve an existing bad file for forensic recovery instead of silently overwriting it.
+            throw new InvalidOperationException(
+                $"library.db existente no supera PRAGMA integrity_check: {libraryDbPath}. "
+                + "Conservado sin cambios; restaúralo o elimínalo explícitamente antes de repetir la exportación.");
         }
 
-        Log($"[PostExport] {count} migraciones aplicadas copiadas desde PostgreSQL.");
+        using (var connection = new SqliteConnection($"Data Source={libraryDbPath}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA user_version;";
+            command.ExecuteScalar();
+        }
+
+        if (!IsSqliteDatabaseValid(libraryDbPath))
+        {
+            throw new InvalidOperationException($"No se pudo crear un library.db SQLite válido en {libraryDbPath}.");
+        }
+
+        PostgresLog.Info($"[Export] library.db SQLite válido creado: {libraryDbPath}");
+    }
+
+    private static bool IsSqliteDatabaseValid(string path)
+    {
+        try
+        {
+            using var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly");
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA integrity_check;";
+            return string.Equals(command.ExecuteScalar() as string, "ok", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (SqliteException)
+        {
+            return false;
+        }
     }
 }

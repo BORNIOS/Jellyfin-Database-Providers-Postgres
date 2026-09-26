@@ -85,7 +85,10 @@ internal static class MigrationEngine
             throw new InvalidOperationException($"{errors.Count} tabla(s) fallaron: " + string.Join(", ", errors.Select(e => e.Table)));
         }
 
-        await MigrationCodeMigrations.CopyAppliedAsync(sqlite, pg, svc.Log).ConfigureAwait(false);
+        // Do not mark Jellyfin code migrations as applied merely because the source history contains
+        // their ids. They may create data or objects which do not exist in PostgreSQL yet; the host
+        // migration service must execute and record them against its active database.
+        svc.Log("[CodeMigrations] No se pre-marcan migraciones de código; Jellyfin las ejecutará al iniciar.");
 
         svc.Log($"Migracion completada. Total de filas copiadas: {totalRows}.");
         PostgresLog.Info($"[Migration] Total filas migradas: {totalRows:N0}");

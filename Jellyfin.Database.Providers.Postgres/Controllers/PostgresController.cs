@@ -339,7 +339,8 @@ public class PostgresController : ControllerBase
     /// <returns>202 Accepted if the provider was activated and server restart was requested.</returns>
     [HttpPost("Activate")]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
-    public ActionResult<object> Activate([FromBody] ActivateRequest request)
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<object>> Activate([FromBody] ActivateRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.ConnectionString))
         {
@@ -354,6 +355,17 @@ public class PostgresController : ControllerBase
             request.ConnectionString,
             plugin?.Configuration,
             request.CommandTimeout).ToString();
+
+        // Do not persist PLUGIN_PROVIDER until the exact, tuned connection string can open a session.
+        // Otherwise the restart below would turn a configuration typo or authentication failure into an
+        // unstartable Jellyfin instance.
+        var connectionError = await MaintenanceService.TestConnectionAsync(activationConnStr).ConfigureAwait(false);
+        if (connectionError is not null)
+        {
+            _logger.LogWarning("PostgreSQL activation rejected because the connection test failed: {Error}", connectionError);
+            Logging.PostgresLog.Warn($"[ENGINE SWITCH] Activación rechazada: prueba de conexión falló: {connectionError}");
+            return BadRequest(new { Error = $"PostgreSQL connection test failed: {connectionError}" });
+        }
 
         _logger.LogInformation(
             "Activating PostgreSQL provider. Writing database.xml and scheduling restart...");
@@ -746,7 +758,8 @@ public class PostgresController : ControllerBase
         var pgBinPath = string.IsNullOrWhiteSpace(request.PgBinPath)
             ? config?.PgBinPath
             : request.PgBinPath;
-        var replaceExistingObjects = request.ReplaceExistingObjects ?? true;
+        // Replacing existing objects is destructive; an operator must opt in explicitly.
+        var replaceExistingObjects = request.ReplaceExistingObjects ?? false;
 
         try
         {

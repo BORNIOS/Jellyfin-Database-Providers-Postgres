@@ -180,11 +180,13 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
                 })
             .AddInterceptors(
                 new Jellyfin121MigrationInterceptor(),
+                // This must precede HomeQueryCacheInterceptor: the cache buffers a miss by executing
+                // the command itself, before subsequent command interceptors get a chance to run.
+                new DateTimeKindNormalizingInterceptor(),
                 new HomeQueryCacheInterceptor(_logger),
                 new UpsertConflictInterceptor(),
                 new ItemValueReuseInterceptor(),
-                new DbErrorLoggingInterceptor(),
-                new DateTimeKindNormalizingInterceptor());
+                new DbErrorLoggingInterceptor());
 
         // SQLite-compatibility objects (min/max over uuid) have to exist before Jellyfin runs its
         // first query, otherwise home-page queries fail with 'no existe la función min(uuid)'.
@@ -461,12 +463,13 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
     public async Task RestoreBackupFast(string key, CancellationToken cancellationToken)
     {
         ValidateMigrationBackupPath(key);
-        await new MaintenanceBackupService(_logger).RestoreBackupAsync(
-            GetActiveConnectionString(),
-            key,
-            PostgresPlugin.Instance?.Configuration.PgBinPath,
-            true,
-            cancellationToken).ConfigureAwait(false);
+        // Jellyfin invokes this contract as part of automatic migration recovery. Restoring with
+        // ReplaceExistingObjects here can silently overwrite a production database after an unrelated
+        // migration error. Keep the backup intact and require the operator to use RestoreBackup explicitly.
+        Logging.PostgresLog.Warn(
+            $"[Restore] Restauración automática bloqueada para {key}. "
+            + "Use la acción explícita RestoreBackup y confirme ReplaceExistingObjects si corresponde.");
+        await Task.CompletedTask.ConfigureAwait(false);
     }
 
     /// <inheritdoc/>

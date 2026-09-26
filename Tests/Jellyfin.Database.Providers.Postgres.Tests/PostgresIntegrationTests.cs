@@ -103,6 +103,39 @@ public sealed class PostgresIntegrationTests
     }
 
     /// <summary>
+    /// Jellyfin can observe a Person, then have a concurrent library operation remove that row before its
+    /// forced metadata refresh is saved. The provider must turn the host's full BaseItems update into an
+    /// atomic upsert so the request does not fail with DbUpdateConcurrencyException.
+    /// </summary>
+    [SkippableFact]
+    public async Task VanishedBaseItemIsRecreatedByTheFullEntityUpdate()
+    {
+        RequirePostgres();
+        await using var scratch = await Scratch.CreateAsync();
+        var id = Guid.NewGuid();
+
+        using (var seed = CreateContext(scratch.Database.ConnectionString))
+        {
+            await seed.Database.MigrateAsync();
+            seed.BaseItems.Add(new BaseItemEntity { Id = id, Type = "Person", Name = "Before refresh" });
+            await seed.SaveChangesAsync();
+        }
+
+        using var writer = CreateContext(scratch.Database.ConnectionString, new UpsertConflictInterceptor());
+        var actor = await writer.BaseItems.SingleAsync(item => item.Id == id);
+        actor.Name = "After refresh";
+        writer.Entry(actor).State = EntityState.Modified;
+
+        await ExecuteAsync(scratch.Database.ConnectionString, $"DELETE FROM \"BaseItems\" WHERE \"Id\" = '{id}';");
+
+        await writer.SaveChangesAsync();
+
+        Assert.Equal(
+            "After refresh",
+            await writer.BaseItems.AsNoTracking().Where(item => item.Id == id).Select(item => item.Name).SingleAsync());
+    }
+
+    /// <summary>
     /// Importing a SQLite database has to work both in <c>public</c> and in a custom schema, and repeating
     /// the import must not lose rows that were copied earlier through cascading foreign keys.
     /// </summary>
@@ -147,7 +180,9 @@ public sealed class PostgresIntegrationTests
                 await using var pg = new NpgsqlConnection(connectionString);
                 await pg.OpenAsync();
                 Assert.Equal(2, await ScalarAsync(pg, "SELECT COUNT(*) FROM \"LinkedChildren\""));
-                Assert.Equal(1, await ScalarAsync(pg, "SELECT COUNT(*) FROM \"__EFMigrationsHistory\" WHERE \"MigrationId\" = '202609111200000_StripEmbeddedLinkedChildren'"));
+                // Code migration ids cannot be copied as metadata: their routines have not run against
+                // the active PostgreSQL database. Jellyfin must execute and record them at startup.
+                Assert.Equal(0, await ScalarAsync(pg, "SELECT COUNT(*) FROM \"__EFMigrationsHistory\" WHERE \"MigrationId\" = '202609111200000_StripEmbeddedLinkedChildren'"));
                 Assert.Equal(0, await ScalarAsync(pg, "SELECT COUNT(*) FROM \"__EFMigrationsHistory\" WHERE \"MigrationId\" = '20260815063607_RemoveOrphanedUserPermissionsAndPreferences'"));
             }
         }

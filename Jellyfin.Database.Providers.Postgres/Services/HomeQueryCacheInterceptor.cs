@@ -33,6 +33,9 @@ namespace Jellyfin.Database.Providers.Postgres.Services;
 /// that answer must come from the transaction, not from another connection's older snapshot.</description></item>
 /// <item><description>Every write bumps a per-table generation that is part of the cache key, so an entry
 /// stored before a write can never be served after it.</description></item>
+/// <item><description>Concurrent misses for the same key share one database execution. Waiters re-check the
+/// cache after the owner finishes; if that execution failed, each safely falls back to Jellyfin's normal
+/// command pipeline and a later miss may retry.</description></item>
 /// </list>
 /// </remarks>
 public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
@@ -72,6 +75,11 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
     // One counter per cached table, bumped by every write to it.
     private static readonly ConcurrentDictionary<string, int> Generations = new(StringComparer.OrdinalIgnoreCase);
 
+    // A per-key gate prevents a cold or expired entry from fanning one identical query out to every
+    // simultaneous home-page request. Gates are removed before release so this dictionary cannot retain
+    // cache keys for the lifetime of the server.
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> InFlight = new(StringComparer.Ordinal);
+
     private readonly ILogger? _logger;
 
     /// <summary>
@@ -82,6 +90,10 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
     {
         _logger = logger;
     }
+
+    /// <summary>Gets the number of cache fills currently coordinated by the interceptor.</summary>
+    /// <remarks>Exposed internally only for regression tests; it must return to zero after every fill.</remarks>
+    internal static int InFlightCount => InFlight.Count;
 
     /// <summary>
     /// Empties the shared cache. Needed after an operation that changes data behind EF's back, such as a
@@ -344,6 +356,39 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
         string? cacheKey,
         CancellationToken ct)
     {
+        if (cacheKey is null)
+        {
+            return await ExecuteAndCacheCoreAsync(command, null, ct).ConfigureAwait(false);
+        }
+
+        var gate = InFlight.GetOrAdd(cacheKey, static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            // A concurrent request may have completed the same fill while this request was waiting.
+            if (Cache.TryGetValue(cacheKey, out DataTable? cached) && cached is not null)
+            {
+                return InterceptionResult<DbDataReader>.SuppressWithResult(new DataTableReader(cached));
+            }
+
+            return await ExecuteAndCacheCoreAsync(command, cacheKey, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            // Remove before releasing: a subsequent miss can only create a new gate after this execution
+            // has finished. Existing waiters still hold the same semaphore and re-check the cache above.
+            InFlight.TryRemove(new KeyValuePair<string, SemaphoreSlim>(cacheKey, gate));
+            gate.Release();
+        }
+    }
+
+    /// <summary>Executes and buffers one cache miss without coordinating other requests.</summary>
+    /// <remarks>Any error returns no interception result so Jellyfin executes its original command.</remarks>
+    private async ValueTask<InterceptionResult<DbDataReader>> ExecuteAndCacheCoreAsync(
+        DbCommand command,
+        string? cacheKey,
+        CancellationToken ct)
+    {
         try
         {
             // Ensure connection is open (EF Core normally handles this, but we're executing ourselves)
@@ -359,7 +404,6 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
                 dt.Load(readerObj);
             }
 
-            // SizeLimit: approximate entry weight = column count (rough proxy for memory)
             if (cacheKey is not null)
             {
                 CacheResult(cacheKey, dt);
@@ -391,6 +435,32 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
     // ─────────────────────────────────────────────────────────────────────────
 
     private InterceptionResult<DbDataReader> ExecuteAndCache(DbCommand command, string? cacheKey)
+    {
+        if (cacheKey is null)
+        {
+            return ExecuteAndCacheCore(command, null);
+        }
+
+        var gate = InFlight.GetOrAdd(cacheKey, static _ => new SemaphoreSlim(1, 1));
+        gate.Wait();
+        try
+        {
+            if (Cache.TryGetValue(cacheKey, out DataTable? cached) && cached is not null)
+            {
+                return InterceptionResult<DbDataReader>.SuppressWithResult(new DataTableReader(cached));
+            }
+
+            return ExecuteAndCacheCore(command, cacheKey);
+        }
+        finally
+        {
+            InFlight.TryRemove(new KeyValuePair<string, SemaphoreSlim>(cacheKey, gate));
+            gate.Release();
+        }
+    }
+
+    /// <summary>Executes and buffers one synchronous cache miss without coordinating other requests.</summary>
+    private InterceptionResult<DbDataReader> ExecuteAndCacheCore(DbCommand command, string? cacheKey)
     {
         try
         {

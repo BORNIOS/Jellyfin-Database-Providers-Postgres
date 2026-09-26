@@ -91,6 +91,56 @@ public sealed class SqlRewriteTests
     }
 
     /// <summary>
+    /// An on-demand Person refresh can lose the row between Jellyfin's existence read and its full entity
+    /// update. The specific parameter-only update produced by ItemPersistenceService becomes an atomic
+    /// upsert, so PostgreSQL can recreate the vanished item rather than reporting zero affected rows.
+    /// </summary>
+    [Fact]
+    public void FullBaseItemUpdateBecomesAnAtomicUpsert()
+    {
+        var command = RewriteUpsert(
+            """
+            UPDATE "BaseItems" SET "Name" = @p0, "Overview" = @p1, "Type" = @p2
+            WHERE "Id" = @p3;
+            """);
+
+        Assert.Contains(
+            """INSERT INTO "BaseItems" ("Id", "Name", "Overview", "Type") VALUES (@p3, @p0, @p1, @p2) ON CONFLICT ("Id") DO UPDATE SET "Name" = @p0, "Overview" = @p1, "Type" = @p2;""",
+            command.CommandText,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>Code-migration updates must retain their original SQL semantics.</summary>
+    [Fact]
+    public void NonEntityBaseItemUpdatesAreLeftUntouched()
+    {
+        const string sql = """UPDATE "BaseItems" SET "Data" = json_remove("Data", '$.ExtraIds') WHERE "Id" = @p0;""";
+
+        Assert.Equal(sql, RewriteUpsert(sql).CommandText);
+    }
+
+    /// <summary>Partial updates do not contain all required BaseItems columns and must stay updates.</summary>
+    [Fact]
+    public void PartialBaseItemUpdatesAreLeftUntouched()
+    {
+        const string sql = """UPDATE "BaseItems" SET "Name" = @p0 WHERE "Id" = @p1;""";
+
+        Assert.Equal(sql, RewriteUpsert(sql).CommandText);
+    }
+
+    /// <summary>User playback updates must be atomic: concurrent saves update the existing row.</summary>
+    [Fact]
+    public void DuplicateUserDataInsertUpdatesTheExistingRow()
+    {
+        var command = RewriteUpsert(
+            """INSERT INTO "UserData" ("ItemId", "UserId", "CustomDataKey", "Played", "PlaybackPositionTicks") VALUES (@p0, @p1, @p2, @p3, @p4);""");
+
+        Assert.Contains("""ON CONFLICT ("ItemId", "UserId", "CustomDataKey") DO UPDATE SET""", command.CommandText, StringComparison.Ordinal);
+        Assert.Contains(""""Played" = EXCLUDED."Played"""", command.CommandText, StringComparison.Ordinal);
+        Assert.Contains(""""PlaybackPositionTicks" = EXCLUDED."PlaybackPositionTicks"""", command.CommandText, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// Un valor duplicado tiene que nombrar el par (Type, Value) como objetivo del conflicto: ItemValueId es
     /// un guid nuevo en cada intento, asi que un ON CONFLICT sin objetivo nunca dispararia y el INSERT
     /// seguiria fallando con 23505.
@@ -136,6 +186,27 @@ public sealed class SqlRewriteTests
         var command = RewriteUpsert("""INSERT INTO "ItemValuesMap" ("ItemId", "ItemValueId") VALUES (@p0, @p1);""");
 
         Assert.DoesNotContain("EXISTS", command.CommandText, StringComparison.Ordinal);
+        Assert.Contains("ON CONFLICT DO NOTHING", command.CommandText, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// If a concurrent scan removes an item between Jellyfin's existence check and SaveChanges, dependent
+    /// image and provider rows must be skipped rather than causing FK_BaseItemImageInfos_BaseItems_ItemId.
+    /// The parent is present for ordinary inserts, so this leaves the normal path unchanged.
+    /// </summary>
+    [Theory]
+    [InlineData("BaseItemImageInfos")]
+    [InlineData("BaseItemProviders")]
+    public void DependentBaseItemInsertIsConditionalOnTheParentStillExisting(string table)
+    {
+        var command = RewriteUpsert(
+            $"INSERT INTO \"{table}\" (\"Id\", \"ItemId\", \"Value\") VALUES (@p0, @p1, @p2);");
+
+        Assert.Contains($"INSERT INTO \"{table}\"", command.CommandText, StringComparison.Ordinal);
+        Assert.Contains(
+            "WHERE EXISTS (SELECT 1 FROM \"BaseItems\" WHERE \"Id\" = @p1)",
+            command.CommandText,
+            StringComparison.Ordinal);
         Assert.Contains("ON CONFLICT DO NOTHING", command.CommandText, StringComparison.Ordinal);
     }
 
