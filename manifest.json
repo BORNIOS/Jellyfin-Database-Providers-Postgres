@@ -47,6 +47,14 @@
         "sourceUrl": "https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/releases/download/v3.0.1/Jellyfin.Database.Providers.Postgres-3.0.1.0.zip",
         "checksum": "284c1a553f70b956137f1d3a99b0b8f1",
         "timestamp": "2026-09-19T01:32:14Z"
+      },
+      {
+        "version": "3.0.2.0",
+        "changelog": "## Español\n\n### 3.0.2 — Estabilidad, integridad y exportación segura\n\n- Corrige la normalización de `DateTime`, `DateTimeOffset` y arreglos antes de escribir en PostgreSQL, evitando errores de Npgsql por `Kind` incompatible.\n- Las escrituras concurrentes de `UserData` y las actualizaciones completas de elementos usan upserts atómicos para reducir conflictos durante actualizaciones bajo demanda.\n- La activación de PostgreSQL valida la conexión antes de modificar `database.xml`.\n- Se elimina la restauración automática de backups y la restauración manual no reemplaza objetos existentes por defecto.\n- Las consultas concurrentes idénticas de inicio se consolidan mientras se llena la caché.\n- La exportación PostgreSQL → SQLite crea y valida un `library.db` SQLite real; evita el archivo inválido que impedía iniciar Jellyfin.\n- La exportación ya no copia ni marca a ciegas el historial de migraciones.\n\nVerificado con Build Release, pruebas unitarias e integración real contra PostgreSQL. Requiere Jellyfin 12.1.x, PostgreSQL 16+ y .NET 10.\n\n---\n\n## English\n\n### 3.0.2 — Stability, integrity and safe export\n\n- Fixes normalization of `DateTime`, `DateTimeOffset`, and arrays before PostgreSQL writes, avoiding Npgsql errors caused by incompatible `Kind` values.\n- Concurrent `UserData` writes and full item updates use atomic upserts to reduce conflicts during on-demand updates.\n- PostgreSQL activation validates the connection before changing `database.xml`.\n- Automatic backup restore was removed, and manual restore no longer replaces existing objects by default.\n- Identical concurrent home-screen queries are coalesced while the cache is populated.\n- PostgreSQL → SQLite export creates and validates a real SQLite `library.db`, preventing the invalid file that stopped Jellyfin from starting.\n- Export no longer blindly marks or copies migration history.\n\nVerified with a Release build, unit tests, and real PostgreSQL integration tests. Requires Jellyfin 12.1.x, PostgreSQL 16+, and .NET 10.",
+        "targetAbi": "12.1.0.0",
+        "sourceUrl": "https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/releases/download/v3.0.2/Jellyfin.Database.Providers.Postgres-3.0.2.0.zip",
+        "checksum": "978401ceebfeed183170a3947226a43c",
+        "timestamp": "2026-09-26T11:30:42Z"
       }
     ]
   }
