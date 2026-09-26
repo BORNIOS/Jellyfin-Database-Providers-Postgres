@@ -130,6 +130,45 @@ public sealed class HomeQueryCacheTests
         }
     }
 
+    /// <summary>
+    /// A cold home-query cache must execute one database command even when many callers arrive together.
+    /// The sequence exposes physical executions: each execution would otherwise return a different value.
+    /// </summary>
+    [SkippableFact]
+    public async Task ConcurrentMissesForTheSameKeyShareOneDatabaseExecution()
+    {
+        Skip.IfNot(TestEnvironment.PostgresAvailable, SkipReason);
+        await using var scratch = await TestEnvironment.ScratchDatabaseScope.CreateAsync();
+        HomeQueryCacheInterceptor.Purge();
+        await MigrateAsync(scratch.Database.ConnectionString);
+
+        var itemId = Guid.NewGuid();
+        await ExecuteAsync(
+            scratch.Database.ConnectionString,
+            string.Concat(
+                "CREATE SEQUENCE home_query_cache_probe; ",
+                "INSERT INTO \"ItemValues\" (\"ItemValueId\", \"Type\", \"Value\", \"CleanValue\") VALUES ('",
+                itemId.ToString(),
+                "', 2, 'SingleFlightProbe', 'singleflightprobe');"));
+
+        var interceptor = new HomeQueryCacheInterceptor();
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callers = Enumerable.Range(0, 20).Select(async _ =>
+        {
+            await start.Task;
+            using var context = CreateContext(scratch.Database.ConnectionString, interceptor);
+            return await context.Database
+                .SqlQueryRaw<long>("SELECT nextval('home_query_cache_probe') AS \"Value\" FROM \"ItemValues\" LIMIT 1")
+                .SingleAsync();
+        });
+
+        start.SetResult();
+        var results = await Task.WhenAll(callers);
+
+        Assert.All(results, value => Assert.Equal(1, value));
+        Assert.Equal(0, HomeQueryCacheInterceptor.InFlightCount);
+    }
+
     /// <summary>Reads the identifiers of the values of a kind, using the shape Jellyfin's checks use.</summary>
     /// <param name="context">Context to query with.</param>
     /// <param name="value">Value to look for.</param>

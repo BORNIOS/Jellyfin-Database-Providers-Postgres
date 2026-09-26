@@ -33,6 +33,8 @@ public sealed partial class UpsertConflictInterceptor : DbCommandInterceptor
 
     private const string ItemValueIdColumn = "ItemValueId";
 
+    private static readonly string[] UserDataKeyColumns = ["ItemId", "UserId", "CustomDataKey"];
+
     // All junction / mapping tables where Jellyfin may attempt a duplicate INSERT
     // during a library refresh or plugin-triggered collection update.
     //
@@ -54,6 +56,19 @@ public sealed partial class UpsertConflictInterceptor : DbCommandInterceptor
         "\"PeopleBaseItemMap\"",
         "\"BaseItemTrailerTypes\"",
         "\"BaseItemMetadataFields\"",
+    ];
+
+    // A library scan can remove an item after Jellyfin checked it exists and before it persists the
+    // item's dependent rows.  PostgreSQL correctly rejects the child INSERT in that narrow window;
+    // SQLite's old write path effectively treated it as a no-op.  Keep that no-op limited to the
+    // dependent tables whose parent key is ItemId.  A newly inserted BaseItem is already present by
+    // the time EF sends these statements, so normal saves are unaffected.
+    private static readonly string[] BaseItemDependentTables =
+    [
+        "BaseItemImageInfos",
+        "BaseItemProviders",
+        "BaseItemTrailerTypes",
+        "BaseItemMetadataFields",
     ];
 
     /// <inheritdoc />
@@ -104,12 +119,14 @@ public sealed partial class UpsertConflictInterceptor : DbCommandInterceptor
     {
         var sql = command.CommandText;
 
-        if (!sql.Contains("INSERT INTO", StringComparison.OrdinalIgnoreCase))
+        if (!sql.Contains("INSERT INTO", StringComparison.OrdinalIgnoreCase)
+            && !sql.Contains("UPDATE \"BaseItems\"", StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
 
         if (!TargetTables.Any(t => sql.Contains(t, StringComparison.Ordinal))
+            && !sql.Contains("\"UserData\"", StringComparison.Ordinal)
             && !sql.Contains(ItemValuesTable, StringComparison.Ordinal))
         {
             return;
@@ -127,7 +144,68 @@ public sealed partial class UpsertConflictInterceptor : DbCommandInterceptor
     [SuppressMessage("Security", "CA3001:Review code for SQL injection vulnerabilities", Justification = "Rewritten text appends a hardcoded literal to EF Core-generated SQL. No user input reaches this path.")]
     private static void ApplyRewrite(DbCommand command, string sql)
     {
-        var rewritten = InsertStatementRegex().Replace(sql, static match =>
+        // A Person detail request can trigger an on-demand metadata refresh. Jellyfin first observes an
+        // existing BaseItem, then later attaches it as Modified. A parallel library refresh may delete the
+        // row in between; EF treats the resulting zero-row UPDATE as a concurrency error and returns 500.
+        // The mapped entity contains the complete BaseItems row, so PostgreSQL's atomic upsert preserves
+        // normal updates and recreates only that vanished item. This is intentionally limited to the exact
+        // parameter-only UPDATE shape emitted by ItemPersistenceService.
+        var rewritten = BaseItemUpdateRegex().Replace(sql, static match =>
+        {
+            var assignments = BaseItemAssignmentRegex().Matches(match.Groups["set"].Value);
+            if (assignments.Count == 0)
+            {
+                return match.Value;
+            }
+
+            var columns = assignments.Select(static assignment => assignment.Groups["column"].Value).ToArray();
+            var values = assignments.Select(static assignment => assignment.Groups["value"].Value).ToArray();
+            // Only ItemPersistenceService's full entity update carries Type. EF also emits smaller updates
+            // elsewhere; those cannot safely become INSERTs because required BaseItems columns are absent.
+            if (!columns.Contains("Type", StringComparer.Ordinal))
+            {
+                return match.Value;
+            }
+
+            var id = match.Groups["id"].Value;
+
+            return string.Concat(
+                "INSERT INTO \"BaseItems\" (\"Id\", ",
+                string.Join(", ", columns.Select(static column => $"\"{column}\"")),
+                ") VALUES (",
+                id,
+                ", ",
+                string.Join(", ", values),
+                ") ON CONFLICT (\"Id\") DO UPDATE SET ",
+                match.Groups["set"].Value.Trim(),
+                ";");
+        });
+
+        rewritten = UserDataInsertRegex().Replace(rewritten, static match =>
+        {
+            var columns = ColumnNameRegex().Matches(match.Groups["columns"].Value)
+                .Select(static column => column.Groups[1].Value)
+                .ToArray();
+            var updates = columns
+                .Where(column => !UserDataKeyColumns.Contains(column, StringComparer.Ordinal))
+                .Select(static column => $"\"{column}\" = EXCLUDED.\"{column}\"")
+                .ToArray();
+
+            // UserData always has non-key state columns. Keep the original statement untouched if an
+            // unexpected SQL shape contains only the composite key.
+            if (updates.Length == 0)
+            {
+                return match.Value;
+            }
+
+            var statement = match.Value.TrimEnd();
+            var suffix = string.Concat(
+                "\nON CONFLICT (\"ItemId\", \"UserId\", \"CustomDataKey\") DO UPDATE SET ",
+                string.Join(", ", updates));
+            return statement.EndsWith(';') ? statement[..^1] + suffix + ";" : statement + suffix;
+        });
+
+        rewritten = InsertStatementRegex().Replace(rewritten, static match =>
         {
             var tableName = match.Groups[1].Value;
             var isItemValue = string.Equals(tableName, ItemValuesTable, StringComparison.Ordinal);
@@ -153,6 +231,43 @@ public sealed partial class UpsertConflictInterceptor : DbCommandInterceptor
             return stmt.EndsWith(';')
                 ? stmt[..^1] + clause + ";"
                 : stmt + clause;
+        });
+
+        // Do this after conflict rewriting so the generated INSERT ... SELECT retains the duplicate
+        // protection above. Each matched value is an EF parameter; the table and column names are
+        // fixed literals selected from BaseItemDependentTables.
+        rewritten = BaseItemDependentInsertRegex().Replace(rewritten, static match =>
+        {
+            var table = match.Groups["table"].Value;
+            if (!BaseItemDependentTables.Contains(table, StringComparer.Ordinal))
+            {
+                return match.Value;
+            }
+
+            var columns = ColumnNameRegex().Matches(match.Groups["columns"].Value)
+                .Select(static column => column.Groups[1].Value)
+                .ToArray();
+            var itemIdIndex = Array.FindIndex(columns, static column => string.Equals(column, "ItemId", StringComparison.Ordinal));
+            var values = match.Groups["values"].Value.Split(',', StringSplitOptions.TrimEntries);
+
+            if (itemIdIndex < 0 || itemIdIndex >= values.Length || !values[itemIdIndex].StartsWith('@'))
+            {
+                return match.Value;
+            }
+
+            var suffix = match.Groups["conflict"].Success ? "\nON CONFLICT DO NOTHING" : string.Empty;
+            return string.Concat(
+                "INSERT INTO \"",
+                table,
+                "\" (",
+                match.Groups["columns"].Value,
+                ")\nSELECT ",
+                match.Groups["values"].Value,
+                " WHERE EXISTS (SELECT 1 FROM \"BaseItems\" WHERE \"Id\" = ",
+                values[itemIdIndex],
+                ")",
+                suffix,
+                ";");
         });
 
         // Second pass, only for batches that insert values and their mapping together: if the value insert
@@ -195,6 +310,16 @@ public sealed partial class UpsertConflictInterceptor : DbCommandInterceptor
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex InsertStatementRegex();
 
+    /// <summary>Matches the normal single-row INSERT shape EF Core emits for UserData.</summary>
+    [GeneratedRegex(
+        @"INSERT\s+INTO\s+""UserData""\s*\((?<columns>[^)]*)\)\s*VALUES\s*\([^;]*\)\s*;",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex UserDataInsertRegex();
+
+    /// <summary>Extracts a quoted identifier from an EF Core-generated column list.</summary>
+    [GeneratedRegex(@"""([^""]+)""", RegexOptions.CultureInvariant)]
+    private static partial Regex ColumnNameRegex();
+
     /// <summary>
     /// Matches the single row INSERT EF Core generates for <c>ItemValuesMap</c>, capturing the column order
     /// and the two parameters so the statement can be turned into a conditional insert.
@@ -203,4 +328,29 @@ public sealed partial class UpsertConflictInterceptor : DbCommandInterceptor
         @"INSERT\s+INTO\s+""ItemValuesMap""\s*\(\s*""(?<first>ItemValueId|ItemId)""\s*,\s*""(?:ItemValueId|ItemId)""\s*\)\s*VALUES\s*\(\s*(?<p1>@[A-Za-z0-9_]+)\s*,\s*(?<p2>@[A-Za-z0-9_]+)\s*\)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex ItemValuesMapInsertRegex();
+
+    /// <summary>
+    /// Matches a conflict-normalised single-row child INSERT. The values are intentionally captured as
+    /// EF parameters rather than parsed as SQL expressions.
+    /// </summary>
+    [GeneratedRegex(
+        @"INSERT\s+INTO\s+""(?<table>[^""]+)""\s*\((?<columns>[^)]*)\)\s*VALUES\s*\((?<values>[^;]*)\)\s*(?<conflict>ON\s+CONFLICT\s+DO\s+NOTHING)?\s*;",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex BaseItemDependentInsertRegex();
+
+    /// <summary>
+    /// Matches the full-column, parameter-only update that <c>ItemPersistenceService</c> emits for a
+    /// tracked <c>BaseItems</c> entity. More complex UPDATE statements, including code migrations, are
+    /// deliberately left untouched.
+    /// </summary>
+    [GeneratedRegex(
+        @"UPDATE\s+""BaseItems""\s+SET\s+(?<set>(?:""[A-Za-z0-9_]+""\s*=\s*@[A-Za-z0-9_]+\s*,?\s*)+)WHERE\s+""Id""\s*=\s*(?<id>@[A-Za-z0-9_]+)\s*;",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex BaseItemUpdateRegex();
+
+    /// <summary>Extracts a parameter-only assignment from Jellyfin's generated BaseItems update.</summary>
+    [GeneratedRegex(
+        @"""(?<column>[A-Za-z0-9_]+)""\s*=\s*(?<value>@[A-Za-z0-9_]+)",
+        RegexOptions.CultureInvariant)]
+    private static partial Regex BaseItemAssignmentRegex();
 }
