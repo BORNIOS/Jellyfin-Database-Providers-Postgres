@@ -641,19 +641,7 @@
                         <div id="schemasStatus" style="font-size:13px; min-height:18px; margin:10px 0 0; color:#90caf9;"></div>
                     </div>
                     <div id="pluginSchemaDetails" class="verticalSection pg-card" style="display:none; background:rgba(18,26,48,.88); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2);">
-                        <div style="display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; border-bottom:1px solid rgba(124,146,196,.2); padding-bottom:10px; margin-bottom:10px;">
-                            <h3 id="selectedSchemaHeading" style="margin:0; font-size:16px;"></h3>
-                            <span id="selectedSchemaMeta" style="font-size:12px; color:#9fb2d9;"></span>
-                        </div>
                         <div id="pluginTableDetails" style="display:none;">
-                            <div style="display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:8px;">
-                                <h4 id="selectedTableHeading" style="margin:0; font-size:15px;"></h4>
-                                <span id="selectedTableMeta" style="font-size:12px; color:#9fb2d9;"></span>
-                            </div>
-                            <details style="margin:0 0 12px; padding:8px 10px; background:rgba(9,14,28,.38); border-left:3px solid rgba(80,180,175,.6);">
-                                <summary id="pluginColumnsSummary" style="cursor:pointer; color:#c9d8f5; font-weight:600;">Columnas</summary>
-                                <div id="pluginColumns" style="font-size:12px; color:#b9c8e8; padding-top:9px; line-height:1.8;"></div>
-                            </details>
                             <div id="pluginRowsHint" style="font-size:12px; color:#9fb2d9; margin:0 0 8px;"></div>
                             <div style="max-height:500px; overflow:auto; border:1px solid rgba(124,146,196,.28); border-radius:8px; background:rgba(9,14,28,.55);">
                                 <table id="pluginRowsTable" style="width:100%; border-collapse:collapse; font-size:12px; color:#dbe7ff;">
@@ -841,6 +829,9 @@
                     msg_schemas_sort_hint: 'Click a column to sort the visible rows.',
                     field_plugin_schema: 'Registered schema',
                     field_plugin_table: 'Table',
+                    placeholder_plugin_schema: '— Select a schema —',
+                    placeholder_plugin_table: '— Select a table —',
+                    placeholder_plugin_table_disabled: '— Select a schema first —',
                     heading_query: 'Read-only SQL console',
                     desc_query: 'Run read-only statements against PostgreSQL: SELECT, WITH, TABLE, VALUES, EXPLAIN or SHOW. One statement per query, a bounded row count and a 30 second timeout. Everything executed here is written to the plugin log.',
                     field_query_template: 'Template',
@@ -1052,6 +1043,9 @@
                     msg_schemas_sort_hint: 'Haz clic en una columna para ordenar las filas visibles.',
                     field_plugin_schema: 'Esquema registrado',
                     field_plugin_table: 'Tabla',
+                    placeholder_plugin_schema: '— Selecciona un esquema —',
+                    placeholder_plugin_table: '— Selecciona una tabla —',
+                    placeholder_plugin_table_disabled: '— Selecciona primero un esquema —',
                     heading_query: 'Consola SQL de solo lectura',
                     desc_query: 'Ejecuta sentencias de solo lectura sobre PostgreSQL: SELECT, WITH, TABLE, VALUES, EXPLAIN o SHOW. Una sentencia por consulta, con limite de filas y 30 s de timeout. Todo lo que se ejecuta queda registrado en el log del plugin.',
                     field_query_template: 'Plantilla',
@@ -1626,6 +1620,24 @@
             var pluginPreview = null;
             var pluginSort = { column: -1, direction: 1 };
 
+            function addSelectPlaceholder(select, label) {
+                var option = document.createElement('option');
+                option.value = '';
+                option.textContent = label;
+                option.selected = true;
+                select.appendChild(option);
+            }
+
+            function clearPluginPreview() {
+                pluginPreview = null;
+                pluginSort = { column: -1, direction: 1 };
+                document.getElementById('pluginSchemaDetails').style.display = 'none';
+                document.getElementById('pluginTableDetails').style.display = 'none';
+                document.getElementById('pluginRowsHead').innerHTML = '';
+                document.getElementById('pluginRowsBody').innerHTML = '';
+                document.getElementById('pluginRowsHint').textContent = '';
+            }
+
             function loadPluginSchemas() {
                 var state = document.getElementById('schemasStatus');
                 var select = document.getElementById('pluginSchemaSelect');
@@ -1636,7 +1648,8 @@
                 tableSelect.disabled = true;
                 select.innerHTML = '';
                 tableSelect.innerHTML = '';
-                document.getElementById('pluginSchemaDetails').style.display = 'none';
+                addSelectPlaceholder(tableSelect, t('placeholder_plugin_table_disabled', '— Select a schema first —'));
+                clearPluginPreview();
                 apiGet('/PluginSchemas')
                     .then(function(response) { return response.json(); })
                     .then(function(data) {
@@ -1649,6 +1662,7 @@
 
                         state.style.color = '#a5d6a7';
                         state.textContent = pluginSchemas.length + ' ' + t('tab_schemas', 'Plugin schemas');
+                        addSelectPlaceholder(select, t('placeholder_plugin_schema', '— Select a schema —'));
                         pluginSchemas.forEach(function(schema, index) {
                             var option = document.createElement('option');
                             var name = schemaValue(schema, 'PluginName', 'pluginName') || '?';
@@ -1660,8 +1674,6 @@
                             select.appendChild(option);
                         });
                         select.disabled = false;
-                        select.value = '0';
-                        loadSelectedPluginSchema();
                     })
                     .catch(function(error) {
                         state.style.color = '#ef9a9a';
@@ -1670,23 +1682,27 @@
             }
 
             function loadSelectedPluginSchema() {
-                var index = parseInt(document.getElementById('pluginSchemaSelect').value, 10);
+                var selectedValue = document.getElementById('pluginSchemaSelect').value;
+                var index = parseInt(selectedValue, 10);
                 var schema = pluginSchemas[index];
-                if (!schema) return;
-                var schemaName = schemaValue(schema, 'SchemaName', 'schemaName');
-                var pluginName = schemaValue(schema, 'PluginName', 'pluginName');
-                var details = document.getElementById('pluginSchemaDetails');
                 var tableSelect = document.getElementById('pluginTableSelect');
-                details.style.display = '';
-                document.getElementById('selectedSchemaHeading').textContent = pluginName + ' · ' + schemaName;
-                document.getElementById('selectedSchemaMeta').textContent = (schemaValue(schema, 'TableCount', 'tableCount') || 0) + ' ' + t('msg_schemas_tables', 'Tables: ') + ' · ' + (schemaValue(schema, 'TotalSize', 'totalSize') || '0 bytes');
-                document.getElementById('pluginTableDetails').style.display = 'none';
-                tableSelect.disabled = true;
+                pluginTables = [];
                 tableSelect.innerHTML = '';
+                clearPluginPreview();
+                if (!schema || selectedValue === '') {
+                    addSelectPlaceholder(tableSelect, t('placeholder_plugin_table_disabled', '— Select a schema first —'));
+                    tableSelect.disabled = true;
+                    return;
+                }
+                var schemaName = schemaValue(schema, 'SchemaName', 'schemaName');
+                tableSelect.disabled = true;
+                addSelectPlaceholder(tableSelect, t('msg_schemas_loading', 'Loading registered schemas...'));
                 apiGet('/PluginSchemas/' + encodeURIComponent(schemaName) + '/Tables')
                     .then(function(response) { return response.json(); })
                     .then(function(tables) {
                         pluginTables = tables || [];
+                        tableSelect.innerHTML = '';
+                        addSelectPlaceholder(tableSelect, t('placeholder_plugin_table', '— Select a table —'));
                         pluginTables.forEach(function(table, tableIndex) {
                             var option = document.createElement('option');
                             var tableName = schemaValue(table, 'TableName', 'tableName') || '';
@@ -1697,39 +1713,31 @@
                             tableSelect.appendChild(option);
                         });
                         tableSelect.disabled = !pluginTables.length;
-                        if (pluginTables.length) {
-                            tableSelect.value = '0';
-                            loadSelectedPluginTable();
+                        if (!pluginTables.length) {
+                            tableSelect.innerHTML = '';
+                            addSelectPlaceholder(tableSelect, t('msg_schemas_empty', 'No plugin has registered a private schema yet.'));
                         }
                     })
                     .catch(function(error) { document.getElementById('schemasStatus').textContent = t('msg_schemas_error', 'Could not load plugin schemas: ') + error; });
             }
 
             function loadSelectedPluginTable() {
-                var schema = pluginSchemas[parseInt(document.getElementById('pluginSchemaSelect').value, 10)];
-                var table = pluginTables[parseInt(document.getElementById('pluginTableSelect').value, 10)];
-                if (!schema || !table) return;
+                var schemaIndex = document.getElementById('pluginSchemaSelect').value;
+                var tableIndex = document.getElementById('pluginTableSelect').value;
+                var schema = pluginSchemas[parseInt(schemaIndex, 10)];
+                var table = pluginTables[parseInt(tableIndex, 10)];
+                clearPluginPreview();
+                if (!schema || !table || schemaIndex === '' || tableIndex === '') return;
                 var schemaName = schemaValue(schema, 'SchemaName', 'schemaName');
                 var tableName = schemaValue(table, 'TableName', 'tableName');
                 var encoded = '/PluginSchemas/' + encodeURIComponent(schemaName) + '/Tables/' + encodeURIComponent(tableName);
+                document.getElementById('pluginSchemaDetails').style.display = '';
                 document.getElementById('pluginTableDetails').style.display = '';
-                document.getElementById('selectedTableHeading').textContent = tableName;
-                document.getElementById('selectedTableMeta').textContent = (schemaValue(table, 'EstimatedRows', 'estimatedRows') || 0) + ' ' + t('msg_schemas_rows', 'rows') + ' · ' + (schemaValue(table, 'TotalSize', 'totalSize') || '');
-                document.getElementById('pluginColumns').textContent = t('msg_schemas_loading', 'Loading registered schemas...');
-                Promise.all([apiGet(encoded + '/Columns').then(function(response) { return response.json(); }), apiGet(encoded + '/Rows?limit=100').then(function(response) { return response.json(); })])
-                    .then(function(results) {
-                        var columns = results[0] || [];
-                        var preview = results[1] || {};
-                        document.getElementById('pluginColumns').textContent = columns.map(function(column) {
-                            var name = schemaValue(column, 'ColumnName', 'columnName');
-                            var type = schemaValue(column, 'DataType', 'dataType');
-                            var nullable = schemaValue(column, 'Nullable', 'nullable');
-                            return name + ' · ' + type + (nullable ? '' : ' NOT NULL');
-                        }).join('   |   ');
-                        document.getElementById('pluginColumnsSummary').textContent = columns.length + ' columnas';
-                        renderPluginRows(preview);
-                    })
-                    .catch(function(error) { document.getElementById('pluginColumns').textContent = t('msg_schemas_error', 'Could not load plugin schemas: ') + error; });
+                document.getElementById('pluginRowsHint').textContent = t('msg_schemas_loading', 'Loading registered schemas...');
+                apiGet(encoded + '/Rows?limit=100')
+                    .then(function(response) { return response.json(); })
+                    .then(renderPluginRows)
+                    .catch(function(error) { document.getElementById('pluginRowsHint').textContent = t('msg_schemas_error', 'Could not load plugin schemas: ') + error; });
             }
 
             function renderPluginRows(preview) {
