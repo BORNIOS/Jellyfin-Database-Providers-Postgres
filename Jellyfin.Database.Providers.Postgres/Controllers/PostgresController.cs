@@ -39,6 +39,7 @@ public class PostgresController : ControllerBase
     private readonly MaintenanceService _maintenanceService;
     private readonly InstantSearchService _instantSearch;
     private readonly ExportToSqliteService _exportService;
+    private readonly PluginSchemaExplorerService _pluginSchemaExplorer;
     private readonly ILogger<PostgresController> _logger;
 
     /// <summary>
@@ -50,6 +51,7 @@ public class PostgresController : ControllerBase
     /// <param name="maintenanceService">Maintenance service instance.</param>
     /// <param name="instantSearch">Instant search service instance.</param>
     /// <param name="exportService">Export service instance.</param>
+    /// <param name="pluginSchemaExplorer">Read-only explorer for registered private plugin schemas.</param>
     /// <param name="logger">Logger instance.</param>
     public PostgresController(
         IApplicationPaths appPaths,
@@ -58,6 +60,7 @@ public class PostgresController : ControllerBase
         MaintenanceService maintenanceService,
         InstantSearchService instantSearch,
         ExportToSqliteService exportService,
+        PluginSchemaExplorerService pluginSchemaExplorer,
         ILogger<PostgresController> logger)
     {
         _appPaths = appPaths;
@@ -66,6 +69,7 @@ public class PostgresController : ControllerBase
         _maintenanceService = maintenanceService;
         _instantSearch = instantSearch;
         _exportService = exportService;
+        _pluginSchemaExplorer = pluginSchemaExplorer;
         _logger = logger;
     }
 
@@ -1049,6 +1053,63 @@ public class PostgresController : ControllerBase
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Managed private plugin schemas
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>Lists schemas registered by plugins through the private-schema host.</summary>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Registered schemas and compact storage statistics.</returns>
+    [HttpGet("PluginSchemas")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<ActionResult<object>> GetPluginSchemas(CancellationToken cancellationToken)
+    {
+        var connectionString = GetActiveConnectionString();
+        if (connectionString is null)
+        {
+            return NoActiveConnection();
+        }
+
+        var schemas = await _pluginSchemaExplorer.ListSchemasAsync(connectionString, cancellationToken).ConfigureAwait(false);
+        return Ok(new { Schemas = schemas });
+    }
+
+    /// <summary>Lists tables belonging to a registered private plugin schema.</summary>
+    /// <param name="schemaName">Registered schema to inspect.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The schema tables.</returns>
+    [HttpGet("PluginSchemas/{schemaName}/Tables")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<object>> GetPluginSchemaTables(string schemaName, CancellationToken cancellationToken)
+        => await ExecuteSchemaInspectionAsync(
+            connectionString => _pluginSchemaExplorer.ListTablesAsync(connectionString, schemaName, cancellationToken)).ConfigureAwait(false);
+
+    /// <summary>Lists columns belonging to a table in a registered private plugin schema.</summary>
+    /// <param name="schemaName">Registered schema to inspect.</param>
+    /// <param name="tableName">Table to inspect.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The table columns.</returns>
+    [HttpGet("PluginSchemas/{schemaName}/Tables/{tableName}/Columns")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<object>> GetPluginSchemaColumns(string schemaName, string tableName, CancellationToken cancellationToken)
+        => await ExecuteSchemaInspectionAsync(
+            connectionString => _pluginSchemaExplorer.ListColumnsAsync(connectionString, schemaName, tableName, cancellationToken)).ConfigureAwait(false);
+
+    /// <summary>Returns a bounded read-only preview from a registered private plugin table.</summary>
+    /// <param name="schemaName">Registered schema to inspect.</param>
+    /// <param name="tableName">Table to preview.</param>
+    /// <param name="limit">Maximum rows to return.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Preview columns, rows and truncation indicator.</returns>
+    [HttpGet("PluginSchemas/{schemaName}/Tables/{tableName}/Rows")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<object>> GetPluginSchemaRows(string schemaName, string tableName, int limit, CancellationToken cancellationToken)
+        => await ExecuteSchemaInspectionAsync(
+            connectionString => _pluginSchemaExplorer.PreviewRowsAsync(connectionString, schemaName, tableName, limit, cancellationToken)).ConfigureAwait(false);
+
+    // ─────────────────────────────────────────────────────────────────────────
     // Read-only SQL console
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -1124,6 +1185,36 @@ public class PostgresController : ControllerBase
 
         var configured = PostgresPlugin.Instance?.Configuration.ConnectionString;
         return string.IsNullOrWhiteSpace(configured) ? null : configured;
+    }
+
+    private async Task<ActionResult<object>> ExecuteSchemaInspectionAsync<T>(Func<string, Task<T>> operation)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        var connectionString = GetActiveConnectionString();
+        if (connectionString is null)
+        {
+            return NoActiveConnection();
+        }
+
+        try
+        {
+            return Ok(await operation(connectionString).ConfigureAwait(false));
+        }
+        catch (ArgumentException ex)
+        {
+            Logging.PostgresLog.Warn($"[PluginSchemas] Inspección rechazada: {ex.Message}");
+            return BadRequest(new { Error = ex.Message });
+        }
+        catch (Npgsql.PostgresException ex)
+        {
+            Logging.PostgresLog.Error($"[PluginSchemas] PostgreSQL rechazó la inspección ({ex.SqlState})", ex);
+            return BadRequest(new { Error = $"({ex.SqlState}) {ex.MessageText}" });
+        }
+        catch (Exception ex)
+        {
+            Logging.PostgresLog.Error("[PluginSchemas] Error inspeccionando esquema privado", ex);
+            return BadRequest(new { Error = ex.Message });
+        }
     }
 
     private ObjectResult NoActiveConnection()

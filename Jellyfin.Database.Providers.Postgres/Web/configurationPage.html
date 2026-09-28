@@ -243,6 +243,7 @@
                     <button type="button" class="pg-tab-btn raised emby-button" data-tab="maintenance" style="border-radius:4px 4px 0 0; padding:8px 18px;">&#128295; Mantenimiento</button>
                     <button type="button" class="pg-tab-btn raised emby-button" data-tab="health"      style="border-radius:4px 4px 0 0; padding:8px 18px;">&#128138; Health</button>
                     <button type="button" class="pg-tab-btn raised emby-button" data-tab="query"       style="border-radius:4px 4px 0 0; padding:8px 18px;">&#128203; SQL</button>
+                    <button type="button" class="pg-tab-btn raised emby-button" data-tab="schemas"     style="border-radius:4px 4px 0 0; padding:8px 18px;">&#128451; Esquemas</button>
                 </div>
 
                 <!-- TAB 1: CONFIGURACION -->
@@ -619,6 +620,51 @@
                     </div>
                 </div>
 
+                <!-- TAB 6: ESQUEMAS PRIVADOS DE PLUGINS -->
+                <div id="pg-tab-schemas" class="pg-tab-content" style="display:none;">
+                    <div class="verticalSection pg-card" style="background:rgba(18,26,48,.88); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2); margin-bottom:16px;">
+                        <div style="display:flex; align-items:flex-start; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+                            <div style="flex:1 1 320px;">
+                                <h2 id="schemasHeading" style="margin:0;">Esquemas privados de plugins</h2>
+                                <p id="schemasDescription" class="fieldDescription" style="margin:4px 0 0 0;">Inventario de solo lectura de los esquemas registrados mediante PG Provider.</p>
+                            </div>
+                            <button is="emby-button" type="button" id="btnRefreshSchemas" class="raised button-default">&#10227; <span id="btnRefreshSchemasLabel">Actualizar</span></button>
+                        </div>
+                        <div style="display:grid; grid-template-columns:minmax(260px,1fr) minmax(260px,1fr); gap:12px;">
+                            <div class="inputContainer">
+                                <select is="emby-select" id="pluginSchemaSelect" label="Esquema registrado" disabled></select>
+                            </div>
+                            <div class="inputContainer">
+                                <select is="emby-select" id="pluginTableSelect" label="Tabla" disabled></select>
+                            </div>
+                        </div>
+                        <div id="schemasStatus" style="font-size:13px; min-height:18px; margin:10px 0 0; color:#90caf9;"></div>
+                    </div>
+                    <div id="pluginSchemaDetails" class="verticalSection pg-card" style="display:none; background:rgba(18,26,48,.88); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2);">
+                        <div style="display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; border-bottom:1px solid rgba(124,146,196,.2); padding-bottom:10px; margin-bottom:10px;">
+                            <h3 id="selectedSchemaHeading" style="margin:0; font-size:16px;"></h3>
+                            <span id="selectedSchemaMeta" style="font-size:12px; color:#9fb2d9;"></span>
+                        </div>
+                        <div id="pluginTableDetails" style="display:none;">
+                            <div style="display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:8px;">
+                                <h4 id="selectedTableHeading" style="margin:0; font-size:15px;"></h4>
+                                <span id="selectedTableMeta" style="font-size:12px; color:#9fb2d9;"></span>
+                            </div>
+                            <details style="margin:0 0 12px; padding:8px 10px; background:rgba(9,14,28,.38); border-left:3px solid rgba(80,180,175,.6);">
+                                <summary id="pluginColumnsSummary" style="cursor:pointer; color:#c9d8f5; font-weight:600;">Columnas</summary>
+                                <div id="pluginColumns" style="font-size:12px; color:#b9c8e8; padding-top:9px; line-height:1.8;"></div>
+                            </details>
+                            <div id="pluginRowsHint" style="font-size:12px; color:#9fb2d9; margin:0 0 8px;"></div>
+                            <div style="max-height:500px; overflow:auto; border:1px solid rgba(124,146,196,.28); border-radius:8px; background:rgba(9,14,28,.55);">
+                                <table id="pluginRowsTable" style="width:100%; border-collapse:collapse; font-size:12px; color:#dbe7ff;">
+                                    <thead><tr id="pluginRowsHead"></tr></thead>
+                                    <tbody id="pluginRowsBody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
             </div><!-- end content-primary -->
         </div><!-- end data-role=content -->
 
@@ -781,6 +827,20 @@
                     health_sev_warn: 'Warnings detected',
                     health_sev_error: 'Critical issues detected',
                     tab_query: 'SQL console',
+                    tab_schemas: 'Plugin schemas',
+                    heading_schemas: 'Private plugin schemas',
+                    desc_schemas: 'Read-only inventory of schemas registered through PG Provider. Select a table to inspect its columns and a bounded data preview.',
+                    button_refresh_schemas: 'Refresh',
+                    msg_schemas_loading: 'Loading registered schemas...',
+                    msg_schemas_empty: 'No plugin has registered a private schema yet.',
+                    msg_schemas_error: 'Could not load plugin schemas: ',
+                    msg_schemas_tables: 'Tables: ',
+                    msg_schemas_rows: 'rows',
+                    msg_schemas_preview: 'Preview',
+                    msg_schemas_truncated: 'Preview limited to 200 rows.',
+                    msg_schemas_sort_hint: 'Click a column to sort the visible rows.',
+                    field_plugin_schema: 'Registered schema',
+                    field_plugin_table: 'Table',
                     heading_query: 'Read-only SQL console',
                     desc_query: 'Run read-only statements against PostgreSQL: SELECT, WITH, TABLE, VALUES, EXPLAIN or SHOW. One statement per query, a bounded row count and a 30 second timeout. Everything executed here is written to the plugin log.',
                     field_query_template: 'Template',
@@ -978,6 +1038,20 @@
                     health_sev_warn: 'Advertencias detectadas',
                     health_sev_error: 'Problemas criticos detectados',
                     tab_query: 'Consola SQL',
+                    tab_schemas: 'Esquemas',
+                    heading_schemas: 'Esquemas privados de plugins',
+                    desc_schemas: 'Inventario de solo lectura de los esquemas registrados mediante PG Provider. Selecciona una tabla para ver columnas y una muestra acotada de datos.',
+                    button_refresh_schemas: 'Actualizar',
+                    msg_schemas_loading: 'Cargando esquemas registrados...',
+                    msg_schemas_empty: 'Ningún plugin ha registrado todavía un esquema privado.',
+                    msg_schemas_error: 'No se pudieron cargar los esquemas de plugins: ',
+                    msg_schemas_tables: 'Tablas: ',
+                    msg_schemas_rows: 'filas',
+                    msg_schemas_preview: 'Muestra',
+                    msg_schemas_truncated: 'La muestra está limitada a 200 filas.',
+                    msg_schemas_sort_hint: 'Haz clic en una columna para ordenar las filas visibles.',
+                    field_plugin_schema: 'Esquema registrado',
+                    field_plugin_table: 'Tabla',
                     heading_query: 'Consola SQL de solo lectura',
                     desc_query: 'Ejecuta sentencias de solo lectura sobre PostgreSQL: SELECT, WITH, TABLE, VALUES, EXPLAIN o SHOW. Una sentencia por consulta, con limite de filas y 30 s de timeout. Todo lo que se ejecuta queda registrado en el log del plugin.',
                     field_query_template: 'Plantilla',
@@ -1179,6 +1253,15 @@
                 if (tabs.length >= 5) {
                     tabs[4].innerHTML = '&#128203; ' + t('tab_query', 'SQL console');
                 }
+                if (tabs.length >= 6) {
+                    tabs[5].innerHTML = '&#128451; ' + t('tab_schemas', 'Plugin schemas');
+                }
+
+                setText('schemasHeading', t('heading_schemas', 'Private plugin schemas'));
+                setText('schemasDescription', t('desc_schemas', 'Read-only inventory of schemas registered through PG Provider.'));
+                setText('btnRefreshSchemasLabel', t('button_refresh_schemas', 'Refresh'));
+                setInputLabel('pluginSchemaSelect', t('field_plugin_schema', 'Registered schema'));
+                setInputLabel('pluginTableSelect', t('field_plugin_table', 'Table'));
 
                 setText('queryHeading', t('heading_query', 'Read-only SQL console'));
                 setHtml('queryDescription', t('desc_query', 'Run read-only statements against PostgreSQL.'));
@@ -1258,6 +1341,7 @@
                     btn.classList.add('button-submit');
                     if (target === 'maintenance') { loadStats(); loadBackupList(); }
                     if (target === 'health') { loadHealthCheck(); }
+                    if (target === 'schemas') { loadPluginSchemas(); }
                     if (target === 'migration') {
                         // Pre-fill export target path with the auto-detected native SQLite path
                         var exportField = document.getElementById('exportTargetPath');
@@ -1529,6 +1613,190 @@
             document.getElementById('querySql').addEventListener('keydown', function(event) {
                 if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); runQuery(); }
             });
+
+            // ── Registered private plugin schemas ───────────────────────────
+            // These endpoints are intentionally separate from the general SQL console: the server only
+            // permits schemas registered by IPluginSchemaHost and only bounded read-only previews.
+            function schemaValue(item, pascal, camel) {
+                return item[pascal] !== undefined ? item[pascal] : item[camel];
+            }
+
+            var pluginSchemas = [];
+            var pluginTables = [];
+            var pluginPreview = null;
+            var pluginSort = { column: -1, direction: 1 };
+
+            function loadPluginSchemas() {
+                var state = document.getElementById('schemasStatus');
+                var select = document.getElementById('pluginSchemaSelect');
+                var tableSelect = document.getElementById('pluginTableSelect');
+                state.style.color = '#90caf9';
+                state.textContent = t('msg_schemas_loading', 'Loading registered schemas...');
+                select.disabled = true;
+                tableSelect.disabled = true;
+                select.innerHTML = '';
+                tableSelect.innerHTML = '';
+                document.getElementById('pluginSchemaDetails').style.display = 'none';
+                apiGet('/PluginSchemas')
+                    .then(function(response) { return response.json(); })
+                    .then(function(data) {
+                        pluginSchemas = data.Schemas !== undefined ? data.Schemas : (data.schemas || []);
+                        if (!pluginSchemas.length) {
+                            state.style.color = '#fff9c4';
+                            state.textContent = t('msg_schemas_empty', 'No plugin has registered a private schema yet.');
+                            return;
+                        }
+
+                        state.style.color = '#a5d6a7';
+                        state.textContent = pluginSchemas.length + ' ' + t('tab_schemas', 'Plugin schemas');
+                        pluginSchemas.forEach(function(schema, index) {
+                            var option = document.createElement('option');
+                            var name = schemaValue(schema, 'PluginName', 'pluginName') || '?';
+                            var schemaName = schemaValue(schema, 'SchemaName', 'schemaName') || '';
+                            var tables = schemaValue(schema, 'TableCount', 'tableCount') || 0;
+                            var size = schemaValue(schema, 'TotalSize', 'totalSize') || '0 bytes';
+                            option.value = String(index);
+                            option.textContent = name + ' · ' + schemaName + ' · ' + tables + ' tablas · ' + size;
+                            select.appendChild(option);
+                        });
+                        select.disabled = false;
+                        select.value = '0';
+                        loadSelectedPluginSchema();
+                    })
+                    .catch(function(error) {
+                        state.style.color = '#ef9a9a';
+                        state.textContent = t('msg_schemas_error', 'Could not load plugin schemas: ') + error;
+                    });
+            }
+
+            function loadSelectedPluginSchema() {
+                var index = parseInt(document.getElementById('pluginSchemaSelect').value, 10);
+                var schema = pluginSchemas[index];
+                if (!schema) return;
+                var schemaName = schemaValue(schema, 'SchemaName', 'schemaName');
+                var pluginName = schemaValue(schema, 'PluginName', 'pluginName');
+                var details = document.getElementById('pluginSchemaDetails');
+                var tableSelect = document.getElementById('pluginTableSelect');
+                details.style.display = '';
+                document.getElementById('selectedSchemaHeading').textContent = pluginName + ' · ' + schemaName;
+                document.getElementById('selectedSchemaMeta').textContent = (schemaValue(schema, 'TableCount', 'tableCount') || 0) + ' ' + t('msg_schemas_tables', 'Tables: ') + ' · ' + (schemaValue(schema, 'TotalSize', 'totalSize') || '0 bytes');
+                document.getElementById('pluginTableDetails').style.display = 'none';
+                tableSelect.disabled = true;
+                tableSelect.innerHTML = '';
+                apiGet('/PluginSchemas/' + encodeURIComponent(schemaName) + '/Tables')
+                    .then(function(response) { return response.json(); })
+                    .then(function(tables) {
+                        pluginTables = tables || [];
+                        pluginTables.forEach(function(table, tableIndex) {
+                            var option = document.createElement('option');
+                            var tableName = schemaValue(table, 'TableName', 'tableName') || '';
+                            var rows = schemaValue(table, 'EstimatedRows', 'estimatedRows') || 0;
+                            var size = schemaValue(table, 'TotalSize', 'totalSize') || '';
+                            option.value = String(tableIndex);
+                            option.textContent = tableName + ' · ' + rows + ' ' + t('msg_schemas_rows', 'rows') + ' · ' + size;
+                            tableSelect.appendChild(option);
+                        });
+                        tableSelect.disabled = !pluginTables.length;
+                        if (pluginTables.length) {
+                            tableSelect.value = '0';
+                            loadSelectedPluginTable();
+                        }
+                    })
+                    .catch(function(error) { document.getElementById('schemasStatus').textContent = t('msg_schemas_error', 'Could not load plugin schemas: ') + error; });
+            }
+
+            function loadSelectedPluginTable() {
+                var schema = pluginSchemas[parseInt(document.getElementById('pluginSchemaSelect').value, 10)];
+                var table = pluginTables[parseInt(document.getElementById('pluginTableSelect').value, 10)];
+                if (!schema || !table) return;
+                var schemaName = schemaValue(schema, 'SchemaName', 'schemaName');
+                var tableName = schemaValue(table, 'TableName', 'tableName');
+                var encoded = '/PluginSchemas/' + encodeURIComponent(schemaName) + '/Tables/' + encodeURIComponent(tableName);
+                document.getElementById('pluginTableDetails').style.display = '';
+                document.getElementById('selectedTableHeading').textContent = tableName;
+                document.getElementById('selectedTableMeta').textContent = (schemaValue(table, 'EstimatedRows', 'estimatedRows') || 0) + ' ' + t('msg_schemas_rows', 'rows') + ' · ' + (schemaValue(table, 'TotalSize', 'totalSize') || '');
+                document.getElementById('pluginColumns').textContent = t('msg_schemas_loading', 'Loading registered schemas...');
+                Promise.all([apiGet(encoded + '/Columns').then(function(response) { return response.json(); }), apiGet(encoded + '/Rows?limit=100').then(function(response) { return response.json(); })])
+                    .then(function(results) {
+                        var columns = results[0] || [];
+                        var preview = results[1] || {};
+                        document.getElementById('pluginColumns').textContent = columns.map(function(column) {
+                            var name = schemaValue(column, 'ColumnName', 'columnName');
+                            var type = schemaValue(column, 'DataType', 'dataType');
+                            var nullable = schemaValue(column, 'Nullable', 'nullable');
+                            return name + ' · ' + type + (nullable ? '' : ' NOT NULL');
+                        }).join('   |   ');
+                        document.getElementById('pluginColumnsSummary').textContent = columns.length + ' columnas';
+                        renderPluginRows(preview);
+                    })
+                    .catch(function(error) { document.getElementById('pluginColumns').textContent = t('msg_schemas_error', 'Could not load plugin schemas: ') + error; });
+            }
+
+            function renderPluginRows(preview) {
+                var head = document.getElementById('pluginRowsHead');
+                var body = document.getElementById('pluginRowsBody');
+                var columns = preview.Columns !== undefined ? preview.Columns : (preview.columns || []);
+                var rows = preview.Rows !== undefined ? preview.Rows : (preview.rows || []);
+                pluginPreview = { columns: columns, rows: rows, truncated: preview.Truncated || preview.truncated };
+                pluginSort = { column: -1, direction: 1 };
+                renderSortedPluginRows();
+            }
+
+            function renderSortedPluginRows() {
+                if (!pluginPreview) return;
+                var head = document.getElementById('pluginRowsHead');
+                var body = document.getElementById('pluginRowsBody');
+                var columns = pluginPreview.columns;
+                var rows = pluginPreview.rows.slice();
+                if (pluginSort.column >= 0) {
+                    rows.sort(function(left, right) { return comparePluginValues(left[pluginSort.column], right[pluginSort.column]) * pluginSort.direction; });
+                }
+                head.innerHTML = '';
+                body.innerHTML = '';
+                columns.forEach(function(column, columnIndex) {
+                    var cell = document.createElement('th');
+                    cell.style.cssText = 'text-align:left; padding:0; position:sticky; top:0; background:#131c33; border-bottom:1px solid rgba(124,146,196,.35); white-space:nowrap;';
+                    var sort = document.createElement('button');
+                    sort.type = 'button';
+                    sort.className = 'button-link';
+                    sort.style.cssText = 'width:100%; text-align:left; padding:7px 10px; color:#dbe7ff; cursor:pointer; font-weight:600;';
+                    sort.textContent = column + (pluginSort.column === columnIndex ? (pluginSort.direction === 1 ? ' ▲' : ' ▼') : ' ↕');
+                    sort.addEventListener('click', function() { sortPluginRows(columnIndex); });
+                    cell.appendChild(sort);
+                    head.appendChild(cell);
+                });
+                rows.forEach(function(row, index) {
+                    var tr = document.createElement('tr');
+                    tr.style.background = index % 2 === 0 ? 'rgba(255,255,255,.02)' : 'transparent';
+                    row.forEach(function(value) {
+                        var cell = document.createElement('td');
+                        cell.style.cssText = 'padding:5px 10px; border-bottom:1px solid rgba(124,146,196,.12); white-space:nowrap; max-width:520px; overflow:hidden; text-overflow:ellipsis;';
+                        cell.textContent = value === null || value === undefined ? 'NULL' : value;
+                        tr.appendChild(cell);
+                    });
+                    body.appendChild(tr);
+                });
+                document.getElementById('pluginRowsHint').textContent = rows.length + ' ' + t('msg_schemas_rows', 'rows') + ' · ' + t('msg_schemas_sort_hint', 'Click a column to sort the visible rows.') + (pluginPreview.truncated ? ' · ' + t('msg_schemas_truncated', 'Preview limited to 200 rows.') : '');
+            }
+
+            function sortPluginRows(column) {
+                if (pluginSort.column === column) pluginSort.direction *= -1;
+                else pluginSort = { column: column, direction: 1 };
+                renderSortedPluginRows();
+            }
+
+            function comparePluginValues(left, right) {
+                if (left === null || left === undefined) return right === null || right === undefined ? 0 : -1;
+                if (right === null || right === undefined) return 1;
+                var leftNumber = Number(left);
+                var rightNumber = Number(right);
+                if (!isNaN(leftNumber) && !isNaN(rightNumber)) return leftNumber - rightNumber;
+                return String(left).localeCompare(String(right), undefined, { numeric: true, sensitivity: 'base' });
+            }
+
+            document.getElementById('btnRefreshSchemas').addEventListener('click', loadPluginSchemas);
+            document.getElementById('pluginSchemaSelect').addEventListener('change', loadSelectedPluginSchema);
+            document.getElementById('pluginTableSelect').addEventListener('change', loadSelectedPluginTable);
 
             function loadStatus() {
                 hideBanner();

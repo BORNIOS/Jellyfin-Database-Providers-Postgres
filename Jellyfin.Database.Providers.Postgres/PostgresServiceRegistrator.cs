@@ -29,6 +29,7 @@ public class PostgresServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<ExportToSqliteService>();
         serviceCollection.AddSingleton<HealthCheckService>();
         serviceCollection.AddSingleton<QueryConsoleService>();
+        serviceCollection.AddSingleton<PluginSchemaExplorerService>();
         serviceCollection.AddSingleton<IScheduledTask, BackupTask>();
         serviceCollection.AddSingleton<IScheduledTask, VacuumAnalyzeTask>();
         serviceCollection.AddSingleton<IScheduledTask, ReindexTask>();

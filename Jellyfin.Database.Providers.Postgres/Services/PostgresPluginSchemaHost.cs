@@ -441,7 +441,7 @@ internal sealed partial class PostgresPluginSchemaHost : IPluginSchemaHost
 
     private static void ValidateDdlSql(string sql) => ValidateSql(sql, "CREATE", "ALTER", "DROP");
 
-    private static void ValidateDataSql(string sql) => ValidateSql(sql, "INSERT", "UPDATE", "DELETE");
+    private static void ValidateDataSql(string sql) => ValidateSql(sql, "WITH", "INSERT", "UPDATE", "DELETE");
 
     private static void ValidateQuerySql(string sql) => ValidateSql(sql, "SELECT", "WITH");
 
@@ -459,7 +459,8 @@ internal sealed partial class PostgresPluginSchemaHost : IPluginSchemaHost
             throw new ArgumentException("The SQL operation is not allowed by the private-schema contract.", nameof(sql));
         }
 
-        if (normalized.Contains(';', StringComparison.Ordinal) || ForbiddenSqlRegex().IsMatch(normalized) || QualifiedIdentifierRegex().IsMatch(normalized))
+        var withoutExcludedReferences = ExcludedIdentifierRegex().Replace(normalized, string.Empty);
+        if (normalized.Contains(';', StringComparison.Ordinal) || ForbiddenSqlRegex().IsMatch(normalized) || QualifiedIdentifierRegex().IsMatch(withoutExcludedReferences))
         {
             throw new ArgumentException("SQL must be one unqualified statement limited to the plugin's private schema.", nameof(sql));
         }
@@ -481,4 +482,7 @@ internal sealed partial class PostgresPluginSchemaHost : IPluginSchemaHost
 
     [GeneratedRegex("(?:\\\"[A-Za-z_][A-Za-z0-9_]*\\\"|[A-Za-z_][A-Za-z0-9_]*)\\s*\\.", RegexOptions.CultureInvariant)]
     private static partial Regex QualifiedIdentifierRegex();
+
+    [GeneratedRegex("\\bexcluded\\s*\\.", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex ExcludedIdentifierRegex();
 }
