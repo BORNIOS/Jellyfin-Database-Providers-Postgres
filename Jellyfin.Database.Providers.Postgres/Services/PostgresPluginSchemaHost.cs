@@ -86,6 +86,59 @@ internal sealed partial class PostgresPluginSchemaHost : IPluginSchemaHost
     }
 
     /// <inheritdoc/>
+    public async Task<PluginSchema> MigratePreRegistrySchemaAsync(
+        PluginSchemaRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.PluginId == Guid.Empty)
+        {
+            throw new ArgumentException("A plugin identifier is required.", nameof(request));
+        }
+
+        ValidateSchemaName(request.SchemaName);
+        var legacySchemaName = request.SchemaName[..request.SchemaName.LastIndexOf('_')];
+        ValidateLegacySchemaName(legacySchemaName);
+
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await EnsureRegistryAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+            if (await SchemaExistsAsync(connection, transaction, request.SchemaName, cancellationToken).ConfigureAwait(false))
+            {
+                throw new InvalidOperationException($"Target schema '{request.SchemaName}' already exists; it will not be overwritten by a pre-registry migration.");
+            }
+
+            if (!await SchemaExistsAsync(connection, transaction, legacySchemaName, cancellationToken).ConfigureAwait(false))
+            {
+                throw new InvalidOperationException($"Pre-registry schema '{legacySchemaName}' does not exist.");
+            }
+
+            await EnsureLegacySchemaIsUnregisteredAsync(connection, transaction, legacySchemaName, cancellationToken).ConfigureAwait(false);
+            using (var rename = new NpgsqlCommand($"ALTER SCHEMA {QuoteIdentifier(legacySchemaName)} RENAME TO {QuoteIdentifier(request.SchemaName)};", connection, transaction))
+            {
+                await rename.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            await RegisterSchemaAsync(
+                connection,
+                transaction,
+                request with { AdoptExistingSchema = true },
+                existed: true,
+                cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            PostgresLog.Info($"[PluginSchema] Esquema pre-registro migrado: {legacySchemaName} -> {request.SchemaName}.");
+            return new PluginSchema(request.PluginId, request.SchemaName);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    /// <inheritdoc/>
     public async Task ApplyMigrationsAsync(
         PluginSchema schema,
         IReadOnlyList<PluginSchemaMigration> migrations,
@@ -251,6 +304,17 @@ internal sealed partial class PostgresPluginSchemaHost : IPluginSchemaHost
         await upsert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    private static async Task EnsureLegacySchemaIsUnregisteredAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, string legacySchemaName, CancellationToken cancellationToken)
+    {
+        const string sql = "SELECT EXISTS (SELECT 1 FROM jellyfin_provider.plugin_schemas WHERE schema_name = @schema);";
+        using var command = new NpgsqlCommand(sql, connection, transaction);
+        command.Parameters.AddWithValue("schema", legacySchemaName);
+        if ((bool)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!)
+        {
+            throw new InvalidOperationException($"Pre-registry schema '{legacySchemaName}' is already registered and cannot be claimed.");
+        }
+    }
+
     private static async Task SetSchemaAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, PluginSchema schema, CancellationToken cancellationToken)
     {
         using var command = new NpgsqlCommand($"SET LOCAL search_path TO {QuoteIdentifier(schema.Name)}, pg_catalog;", connection, transaction);
@@ -347,6 +411,16 @@ internal sealed partial class PostgresPluginSchemaHost : IPluginSchemaHost
         if (!SchemaNameRegex().IsMatch(schemaName) || string.Equals(schemaName, "public", StringComparison.Ordinal) || !SchemaGuidSuffixRegex().IsMatch(schemaName))
         {
             throw new ArgumentException("Schema names must use lowercase <plugin_name>_<guid-without-hyphens> format and cannot be public.", nameof(schemaName));
+        }
+    }
+
+    private static void ValidateLegacySchemaName(string schemaName)
+    {
+        if (!SchemaNameRegex().IsMatch(schemaName)
+            || string.Equals(schemaName, "public", StringComparison.Ordinal)
+            || string.Equals(schemaName, RegistrySchema, StringComparison.Ordinal))
+        {
+            throw new ArgumentException("The derived pre-registry schema name is not eligible for migration.", nameof(schemaName));
         }
     }
 

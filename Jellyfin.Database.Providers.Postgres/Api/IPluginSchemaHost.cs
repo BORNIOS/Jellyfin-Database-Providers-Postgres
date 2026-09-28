@@ -34,6 +34,22 @@ public interface IPluginSchemaHost
     Task<PluginSchema> OpenSchemaAsync(Guid pluginId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Claims the immediate pre-registry schema matching the target plugin name and moves it to the
+    /// target private-schema name.
+    /// </summary>
+    /// <param name="request">The target schema name and immutable plugin owner.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The handle of the registered target schema.</returns>
+    /// <remarks>
+    /// The only legacy source accepted is the exact prefix of <paramref name="request"/>'s target
+    /// name: <c>name_guid</c> may claim only <c>name</c>. The target must not exist and the source must
+    /// be unregistered. This preserves the source tables by an atomic PostgreSQL schema rename.
+    /// </remarks>
+    Task<PluginSchema> MigratePreRegistrySchemaAsync(
+        PluginSchemaRequest request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Applies versioned DDL migrations in the schema represented by <paramref name="schema"/>.
     /// </summary>
     /// <param name="schema">Schema handle returned by <see cref="OpenSchemaAsync(PluginSchemaRequest, CancellationToken)"/>.</param>
