@@ -57,7 +57,7 @@ public sealed class PluginSchemaExplorerService
     public async Task<IReadOnlyList<PluginSchemaTableInfo>> ListTablesAsync(string connectionString, string schemaName, CancellationToken cancellationToken)
     {
         await EnsureRegisteredAsync(connectionString, schemaName, cancellationToken).ConfigureAwait(false);
-        const string sql = "SELECT c.relname, c.reltuples::bigint, pg_size_pretty(pg_total_relation_size(c.oid)) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = @schema AND c.relkind IN ('r', 'p') ORDER BY pg_total_relation_size(c.oid) DESC, c.relname";
+        const string sql = "SELECT c.relname, pg_size_pretty(pg_total_relation_size(c.oid)) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = @schema AND c.relkind IN ('r', 'p') ORDER BY pg_total_relation_size(c.oid) DESC, c.relname";
         var result = new List<PluginSchemaTableInfo>();
         using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -66,7 +66,7 @@ public sealed class PluginSchemaExplorerService
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            result.Add(new PluginSchemaTableInfo(reader.GetString(0), reader.GetInt64(1), reader.GetString(2)));
+            result.Add(new PluginSchemaTableInfo(reader.GetString(0), reader.GetString(1)));
         }
 
         return result;

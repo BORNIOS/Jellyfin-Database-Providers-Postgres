@@ -643,8 +643,9 @@
                     <div id="pluginSchemaDetails" class="verticalSection pg-card" style="display:none; background:rgba(18,26,48,.88); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2);">
                         <div id="pluginTableDetails" style="display:none;">
                             <div id="pluginRowsHint" style="font-size:12px; color:#9fb2d9; margin:0 0 8px;"></div>
-                            <div style="max-height:500px; overflow:auto; border:1px solid rgba(124,146,196,.28); border-radius:8px; background:rgba(9,14,28,.55);">
-                                <table id="pluginRowsTable" style="width:100%; border-collapse:collapse; font-size:12px; color:#dbe7ff;">
+                            <div id="pluginRowsViewport" style="max-height:500px; overflow:auto; border:1px solid rgba(124,146,196,.28); border-radius:8px; background:rgba(9,14,28,.55);">
+                                <table id="pluginRowsTable" style="min-width:100%; border-collapse:collapse; table-layout:fixed; font-size:12px; color:#dbe7ff;">
+                                    <colgroup id="pluginRowsColumns"></colgroup>
                                     <thead><tr id="pluginRowsHead"></tr></thead>
                                     <tbody id="pluginRowsBody"></tbody>
                                 </table>
@@ -1619,6 +1620,7 @@
             var pluginTables = [];
             var pluginPreview = null;
             var pluginSort = { column: -1, direction: 1 };
+            var pluginColumnWidths = [];
 
             function addSelectPlaceholder(select, label) {
                 var option = document.createElement('option');
@@ -1631,6 +1633,7 @@
             function clearPluginPreview() {
                 pluginPreview = null;
                 pluginSort = { column: -1, direction: 1 };
+                pluginColumnWidths = [];
                 document.getElementById('pluginSchemaDetails').style.display = 'none';
                 document.getElementById('pluginTableDetails').style.display = 'none';
                 document.getElementById('pluginRowsHead').innerHTML = '';
@@ -1706,10 +1709,9 @@
                         pluginTables.forEach(function(table, tableIndex) {
                             var option = document.createElement('option');
                             var tableName = schemaValue(table, 'TableName', 'tableName') || '';
-                            var rows = schemaValue(table, 'EstimatedRows', 'estimatedRows') || 0;
                             var size = schemaValue(table, 'TotalSize', 'totalSize') || '';
                             option.value = String(tableIndex);
-                            option.textContent = tableName + ' · ' + rows + ' ' + t('msg_schemas_rows', 'rows') + ' · ' + size;
+                            option.textContent = tableName + (size ? ' · ' + size : '');
                             tableSelect.appendChild(option);
                         });
                         tableSelect.disabled = !pluginTables.length;
@@ -1747,6 +1749,9 @@
                 var rows = preview.Rows !== undefined ? preview.Rows : (preview.rows || []);
                 pluginPreview = { columns: columns, rows: rows, truncated: preview.Truncated || preview.truncated };
                 pluginSort = { column: -1, direction: 1 };
+                pluginColumnWidths = columns.map(function(column) {
+                    return Math.max(140, Math.min(360, String(column).length * 9 + 96));
+                });
                 renderSortedPluginRows();
             }
 
@@ -1754,6 +1759,7 @@
                 if (!pluginPreview) return;
                 var head = document.getElementById('pluginRowsHead');
                 var body = document.getElementById('pluginRowsBody');
+                var columnGroup = document.getElementById('pluginRowsColumns');
                 var columns = pluginPreview.columns;
                 var rows = pluginPreview.rows.slice();
                 if (pluginSort.column >= 0) {
@@ -1761,9 +1767,16 @@
                 }
                 head.innerHTML = '';
                 body.innerHTML = '';
+                columnGroup.innerHTML = '';
+                columns.forEach(function(column, columnIndex) {
+                    var col = document.createElement('col');
+                    col.style.width = pluginColumnWidths[columnIndex] + 'px';
+                    columnGroup.appendChild(col);
+                });
+                updatePluginTableWidth();
                 columns.forEach(function(column, columnIndex) {
                     var cell = document.createElement('th');
-                    cell.style.cssText = 'text-align:left; padding:0; position:sticky; top:0; background:#131c33; border-bottom:1px solid rgba(124,146,196,.35); white-space:nowrap;';
+                    cell.style.cssText = 'text-align:left; padding:0; position:sticky; top:0; background:#131c33; border-bottom:1px solid rgba(124,146,196,.35); white-space:nowrap; position:sticky;';
                     var sort = document.createElement('button');
                     sort.type = 'button';
                     sort.className = 'button-link';
@@ -1771,6 +1784,7 @@
                     sort.textContent = column + (pluginSort.column === columnIndex ? (pluginSort.direction === 1 ? ' ▲' : ' ▼') : ' ↕');
                     sort.addEventListener('click', function() { sortPluginRows(columnIndex); });
                     cell.appendChild(sort);
+                    cell.appendChild(createColumnResizer(columnIndex));
                     head.appendChild(cell);
                 });
                 rows.forEach(function(row, index) {
@@ -1785,6 +1799,42 @@
                     body.appendChild(tr);
                 });
                 document.getElementById('pluginRowsHint').textContent = rows.length + ' ' + t('msg_schemas_rows', 'rows') + ' · ' + t('msg_schemas_sort_hint', 'Click a column to sort the visible rows.') + (pluginPreview.truncated ? ' · ' + t('msg_schemas_truncated', 'Preview limited to 200 rows.') : '');
+            }
+
+            function updatePluginTableWidth() {
+                var table = document.getElementById('pluginRowsTable');
+                var viewport = document.getElementById('pluginRowsViewport');
+                var totalWidth = pluginColumnWidths.reduce(function(total, width) { return total + width; }, 0);
+                table.style.width = Math.max(totalWidth, viewport.clientWidth) + 'px';
+            }
+
+            function createColumnResizer(columnIndex) {
+                var handle = document.createElement('div');
+                handle.setAttribute('role', 'separator');
+                handle.setAttribute('aria-orientation', 'vertical');
+                handle.setAttribute('aria-label', 'Resize column');
+                handle.style.cssText = 'position:absolute; top:0; right:-3px; width:7px; height:100%; cursor:col-resize; z-index:2; touch-action:none;';
+                handle.addEventListener('pointerdown', function(event) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    var startX = event.clientX;
+                    var startWidth = pluginColumnWidths[columnIndex];
+                    function move(moveEvent) {
+                        pluginColumnWidths[columnIndex] = Math.max(96, startWidth + moveEvent.clientX - startX);
+                        var col = document.getElementById('pluginRowsColumns').children[columnIndex];
+                        if (col) col.style.width = pluginColumnWidths[columnIndex] + 'px';
+                        updatePluginTableWidth();
+                    }
+                    function stop() {
+                        document.removeEventListener('pointermove', move);
+                        document.removeEventListener('pointerup', stop);
+                        document.removeEventListener('pointercancel', stop);
+                    }
+                    document.addEventListener('pointermove', move);
+                    document.addEventListener('pointerup', stop);
+                    document.addEventListener('pointercancel', stop);
+                });
+                return handle;
             }
 
             function sortPluginRows(column) {
