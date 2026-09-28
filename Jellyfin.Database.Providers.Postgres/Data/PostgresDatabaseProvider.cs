@@ -9,10 +9,12 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.DbConfiguration;
+using Jellyfin.Database.Providers.Postgres.Logging;
 using Jellyfin.Database.Providers.Postgres.Services;
 using Jellyfin.Database.Providers.Postgres.Services.Models;
 using MediaBrowser.Common.Configuration;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
@@ -178,6 +180,13 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
                         npgsql.CommandTimeout(commandTimeout);
                     }
                 })
+            // Direct EF Core diagnostics are reliable even though Jellyfin's ILoggerFactory is constructed
+            // before plugins. Command lifecycle messages are intentionally excluded: the interceptor records
+            // slow commands and failures with richer, redacted SQL context in Postgres-*.log.
+            .LogTo(
+                EfCoreDatabaseDiagnostics.Write,
+                (eventId, level) => level >= LogLevel.Information
+                    && !(eventId.Name?.Contains("Command", StringComparison.Ordinal) ?? false))
             .AddInterceptors(
                 new Jellyfin121MigrationInterceptor(),
                 // This must precede HomeQueryCacheInterceptor: the cache buffers a miss by executing
@@ -239,6 +248,11 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         int commandTimeout)
     {
         var builder = new NpgsqlConnectionStringBuilder(connectionString);
+
+        // Home/page prefetching opens an independent pooled connection after EF Core has returned the
+        // current page. Npgsql otherwise redacts Password from ConnectionString after Open(), leaving the
+        // background connection unable to authenticate. This value remains process-local and is never logged.
+        builder.PersistSecurityInfo = true;
 
         // ShouldSerialize tells whether the key was explicitly present in the connection string.
         if (!builder.ShouldSerialize("Minimum Pool Size") && (config?.MinPoolSize ?? 0) > 0)

@@ -50,7 +50,7 @@ health check automático, mantenimiento programado e integración opcional con J
 - 🛡️ **Prevención de errores** — interceptores EF Core para upserts, logging de errores DB y normalización de `DateTime.Kind`.
 - 🔧 **Optimización automática** — índices GIN CONCURRENTLY, tuning de autovacuum en tablas críticas.
 - 💾 **Backups programados** con `pg_dump`, compresión ZIP opcional y restore desde la UI.
-- ⚡ **Integración opcional con JellyTrend** — con JellyTrend 3.x sus datos viven en el esquema `jellytrend` de tu base (creado solo si ese plugin está) y las recomendaciones van **4-10× más rápidas** con SQL nativo optimizado.
+- 🔐 **Host de esquemas privados** — contrato reutilizable para que otros plugins persistan únicamente sus propios datos, sin credenciales ni acceso al esquema `public` de Jellyfin.
 - 📊 **Estadísticas de BD** — tamaño, conexiones activas y análisis tabla por tabla desde la UI.
 - 🧪 **Consola SQL de solo lectura** — lanza consultas de diagnóstico desde el panel con 10 plantillas e historial; rechaza cualquier sentencia que modifique datos.
 - 🔁 **Rollback a SQLite** en un clic desde la configuración.
@@ -298,31 +298,6 @@ En **Mantenimiento**: **Crear backup ahora** / **Restablecer backup** (acepta `.
 | **Optimize GIN Indexes** | Domingo 05:00 | Mantiene los índices GIN trigram frescos |
 
 > ⚠️ Evita solapar REINDEX, VACUUM y Backup en la misma ventana horaria.
-
----
-
-## ⚡ Integración con JellyTrend
-
-Si tienes instalado [**JellyTrend**](https://github.com/BORNIOS/JellyTrend), este plugin le ofrece **dos cosas** y JellyTrend las detecta solo, sin configurar nada:
-
-| Rol | Qué hace |
-|---|---|
-| 🗄️ **Almacén de datos** (JellyTrend 3.x) | JellyTrend crea el esquema **`jellytrend`** en tu base y guarda ahí su caché de características, la lista de tendencias, los perfiles de gusto y las recomendaciones de cada usuario, los títulos ocultos y el historial de corridas. El esquema se crea la primera vez que JellyTrend lo pide: **un servidor sin JellyTrend nunca ve esas tablas** |
-| 🔍 **Acelerador de consultas** | El motor de recomendaciones sustituye las consultas de `ILibraryManager` por SQL nativo con el operador `&&` de arrays y los índices GIN — **4-10× más rápido** |
-
-| Motor | Comportamiento |
-|---|---|
-| **SQLite** (sin este plugin) | `ILibraryManager` — compatible con cualquier instalación |
-| **PostgreSQL** (con este plugin) | Almacén propio + SQL directo con índices GIN — **4-10× más rápido** |
-
-**Sobre el esquema `jellytrend`:**
-
-- Vive **fuera de `public`** a propósito: la exportación de PostgreSQL a SQLite enumera las tablas de `public`, así que estas **nunca acaban dentro de un archivo SQLite**, y el Health Check y las estadísticas del panel siguen analizando solo las tablas de Jellyfin.
-- JellyTrend sigue escribiendo sus JSON en `{DataDir}/data/JellyTrend` como **copia de cortesía**: quitar cualquiera de los dos plugins no pierde nada.
-- Versión actual del esquema: **v4**, y JellyTrend la muestra en su pestaña *Actividad*.
-
-> ✅ Sin configuración manual: si ambos plugins están instalados, las dos integraciones se activan solas.
-> ℹ️ Y es opcional en los dos sentidos: JellyTrend funciona igual sobre SQLite, y este proveedor funciona sin JellyTrend.
 
 ---
 
