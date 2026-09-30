@@ -83,7 +83,10 @@ public class PostgresPlugin : BasePlugin<PluginConfiguration>, IHasWebPages
         yield return new PluginPageInfo
         {
             Name = Name,
-            EmbeddedResourcePath = GetType().Namespace + ".Web.configurationPage.html"
+            DisplayName = "PostgreSQL Database Provider",
+            EmbeddedResourcePath = GetType().Namespace + ".Web.configurationPage.html",
+            EnableInMainMenu = true,
+            MenuIcon = "storage"
         };
     }
 

@@ -170,8 +170,9 @@ public sealed class HomeQueryCacheTests
     }
 
     /// <summary>
-    /// Media-table queries must retain Npgsql's native reader conversions. A DataTableReader used to turn
-    /// a numeric expression into Int32 and make EF Core's GetFloat fail in the built-in search provider.
+    /// Media-table queries must retain Npgsql's native reader conversions. Jellyfin's built-in search
+    /// projects an integer expression into a float; Npgsql permits that conversion while DataTableReader
+    /// requires an exact CLR type and used to make EF Core's GetFloat fail.
     /// </summary>
     [SkippableFact]
     public async Task CachedMediaTableQueryPreservesSingle()
@@ -196,7 +197,7 @@ public sealed class HomeQueryCacheTests
             await start.Task;
             using var context = CreateContext(scratch.Database.ConnectionString, interceptor);
             return await context.Database
-                    .SqlQueryRaw<float>("SELECT 1::real AS \"Value\" FROM \"ItemValues\" LIMIT 1")
+                    .SqlQueryRaw<float>("SELECT 1::integer AS \"Value\" FROM \"ItemValues\" LIMIT 1")
                 .SingleAsync();
         });
 
@@ -205,6 +206,34 @@ public sealed class HomeQueryCacheTests
 
         Assert.All(results, value => Assert.Equal(1f, value));
         Assert.Equal(0, HomeQueryCacheInterceptor.InFlightCount);
+    }
+
+    /// <summary>
+    /// The plugin role owns its database, so enabling search optimizations must
+    /// install pg_trgm in a new database instead of only warning that it is absent.
+    /// </summary>
+    [SkippableFact]
+    public async Task SearchOptimizationsEnablePgTrgmForDatabaseOwner()
+    {
+        Skip.IfNot(TestEnvironment.PostgresAvailable, SkipReason);
+        await using var scratch = await TestEnvironment.ScratchDatabaseScope.CreateAsync();
+        await MigrateAsync(scratch.Database.ConnectionString);
+
+        await PostgresDatabaseProvider.RunOptimizationsAsync(
+            scratch.Database.ConnectionString,
+            enableSearch: true,
+            enableVacuum: false,
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        await using var connection = new NpgsqlConnection(scratch.Database.ConnectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(
+            "SELECT COUNT(*) FROM pg_extension WHERE extname = 'pg_trgm';",
+            connection);
+        var installed = Convert.ToInt64(await command.ExecuteScalarAsync(), CultureInfo.InvariantCulture);
+
+        Assert.Equal(1, installed);
     }
 
     /// <summary>Reads the identifiers of the values of a kind, using the shape Jellyfin's checks use.</summary>

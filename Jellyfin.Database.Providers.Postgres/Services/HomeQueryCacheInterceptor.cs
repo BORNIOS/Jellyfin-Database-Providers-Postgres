@@ -193,7 +193,7 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
                     command.CommandText[..Math.Min(command.CommandText.Length, 120)]);
             }
 
-            return InterceptionResult<DbDataReader>.SuppressWithResult(new DataTableReader(cached));
+            return InterceptionResult<DbDataReader>.SuppressWithResult(CreateBufferedReader(cached));
         }
 
         // Miss — execute the command ourselves so we can capture the full result set
@@ -249,7 +249,7 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
         if (cacheKey is not null && TryGetCachedResult(cacheKey, out var cached))
         {
             ScheduleNextPagePrefetch(command, cached);
-            return InterceptionResult<DbDataReader>.SuppressWithResult(new DataTableReader(cached));
+            return InterceptionResult<DbDataReader>.SuppressWithResult(CreateBufferedReader(cached));
         }
 
         return ExecuteAndCache(command, cacheKey);
@@ -388,7 +388,7 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
             if (TryGetCachedResult(cacheKey, out var cached))
             {
                 ScheduleNextPagePrefetch(command, cached);
-                return InterceptionResult<DbDataReader>.SuppressWithResult(new DataTableReader(cached));
+                return InterceptionResult<DbDataReader>.SuppressWithResult(CreateBufferedReader(cached));
             }
 
             return await ExecuteAndCacheCoreAsync(command, cacheKey, ct).ConfigureAwait(false);
@@ -428,7 +428,7 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
                     ScheduleNextPagePrefetch(command, dt);
                 }
 
-                return InterceptionResult<DbDataReader>.SuppressWithResult(new DataTableReader(dt));
+                return InterceptionResult<DbDataReader>.SuppressWithResult(CreateBufferedReader(dt));
             }
         }
         catch (Exception ex)
@@ -458,7 +458,7 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
             if (TryGetCachedResult(cacheKey, out var cached))
             {
                 ScheduleNextPagePrefetch(command, cached);
-                return InterceptionResult<DbDataReader>.SuppressWithResult(new DataTableReader(cached));
+                return InterceptionResult<DbDataReader>.SuppressWithResult(CreateBufferedReader(cached));
             }
 
             return ExecuteAndCacheCore(command, cacheKey);
@@ -490,7 +490,7 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
                     ScheduleNextPagePrefetch(command, dt);
                 }
 
-                return InterceptionResult<DbDataReader>.SuppressWithResult(new DataTableReader(dt));
+                return InterceptionResult<DbDataReader>.SuppressWithResult(CreateBufferedReader(dt));
             }
         }
         catch (Exception ex)
@@ -709,6 +709,16 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
         return table;
     }
 
+    /// <summary>
+    /// Creates a buffered reader that retains the numeric conversion behavior EF Core
+    /// receives from Npgsql. <see cref="DataTableReader"/> requires an exact CLR type
+    /// for methods such as <see cref="DbDataReader.GetFloat(int)"/>, while Npgsql can
+    /// safely read an integer projection as a <see cref="float"/>. Jellyfin's search
+    /// query relies on that provider conversion.
+    /// </summary>
+    private static NpgsqlCompatibleDataTableReader CreateBufferedReader(DataTable table)
+        => new NpgsqlCompatibleDataTableReader(table.CreateDataReader());
+
     private static DataTable CreateTypedTable(DbDataReader reader)
     {
         var table = new DataTable();
@@ -778,7 +788,7 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
                     _logger?.LogDebug("HomeQueryCache RANDOM rewritten with TABLESAMPLE: {Rows} rows", dt.Rows.Count);
                 }
 
-                return InterceptionResult<DbDataReader>.SuppressWithResult(new DataTableReader(dt));
+                return InterceptionResult<DbDataReader>.SuppressWithResult(CreateBufferedReader(dt));
             }
         }
         catch (Exception ex)
@@ -896,6 +906,131 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
             }
 
             return new CommandSnapshot(connectionString, source.CommandText, parameters, cacheKey, plan.NextOffset);
+        }
+    }
+
+    /// <summary>
+    /// Buffered reader with Npgsql-compatible scalar conversion semantics.
+    /// </summary>
+    private sealed class NpgsqlCompatibleDataTableReader : DbDataReader
+    {
+        private readonly DataTableReader _inner;
+
+        public NpgsqlCompatibleDataTableReader(DataTableReader inner)
+        {
+            _inner = inner;
+        }
+
+        public override int Depth => _inner.Depth;
+
+        public override int FieldCount => _inner.FieldCount;
+
+        public override bool HasRows => _inner.HasRows;
+
+        public override bool IsClosed => _inner.IsClosed;
+
+        public override int RecordsAffected => _inner.RecordsAffected;
+
+        public override object this[int ordinal] => GetValue(ordinal);
+
+        public override object this[string name] => GetValue(GetOrdinal(name));
+
+        public override bool GetBoolean(int ordinal) => GetFieldValue<bool>(ordinal);
+
+        public override byte GetByte(int ordinal) => GetFieldValue<byte>(ordinal);
+
+        public override long GetBytes(int ordinal, long dataOffset, byte[]? buffer, int bufferOffset, int length)
+            => _inner.GetBytes(ordinal, dataOffset, buffer, bufferOffset, length);
+
+        public override char GetChar(int ordinal) => GetFieldValue<char>(ordinal);
+
+        public override long GetChars(int ordinal, long dataOffset, char[]? buffer, int bufferOffset, int length)
+            => _inner.GetChars(ordinal, dataOffset, buffer, bufferOffset, length);
+
+        public override string GetDataTypeName(int ordinal) => _inner.GetDataTypeName(ordinal);
+
+        public override DateTime GetDateTime(int ordinal) => GetFieldValue<DateTime>(ordinal);
+
+        public override decimal GetDecimal(int ordinal) => GetFieldValue<decimal>(ordinal);
+
+        public override double GetDouble(int ordinal) => GetFieldValue<double>(ordinal);
+
+        public override System.Collections.IEnumerator GetEnumerator() => ((System.Collections.IEnumerable)_inner).GetEnumerator();
+
+        public override Type GetFieldType(int ordinal) => _inner.GetFieldType(ordinal);
+
+        public override float GetFloat(int ordinal) => GetFieldValue<float>(ordinal);
+
+        public override Guid GetGuid(int ordinal) => GetFieldValue<Guid>(ordinal);
+
+        public override short GetInt16(int ordinal) => GetFieldValue<short>(ordinal);
+
+        public override int GetInt32(int ordinal) => GetFieldValue<int>(ordinal);
+
+        public override long GetInt64(int ordinal) => GetFieldValue<long>(ordinal);
+
+        public override string GetName(int ordinal) => _inner.GetName(ordinal);
+
+        public override int GetOrdinal(string name) => _inner.GetOrdinal(name);
+
+        public override string GetString(int ordinal) => GetFieldValue<string>(ordinal);
+
+        public override object GetValue(int ordinal) => _inner.GetValue(ordinal);
+
+        public override int GetValues(object[] values) => _inner.GetValues(values);
+
+        public override bool IsDBNull(int ordinal) => _inner.IsDBNull(ordinal);
+
+        public override bool NextResult() => _inner.NextResult();
+
+        public override bool Read() => _inner.Read();
+
+        public override Task<bool> ReadAsync(CancellationToken cancellationToken) => _inner.ReadAsync(cancellationToken);
+
+        public override Task<bool> NextResultAsync(CancellationToken cancellationToken) => _inner.NextResultAsync(cancellationToken);
+
+        public override System.IO.Stream GetStream(int ordinal) => _inner.GetStream(ordinal);
+
+        public override System.IO.TextReader GetTextReader(int ordinal) => _inner.GetTextReader(ordinal);
+
+        public override T GetFieldValue<T>(int ordinal)
+        {
+            var value = _inner.GetValue(ordinal);
+            if (value is T typed)
+            {
+                return typed;
+            }
+
+            if (value is DBNull)
+            {
+                throw new InvalidCastException($"Column {ordinal} contains DBNull.");
+            }
+
+            var target = Nullable.GetUnderlyingType(typeof(T)) ?? typeof(T);
+            if (target == typeof(Guid))
+            {
+                return (T)(object)Guid.Parse(Convert.ToString(value, CultureInfo.InvariantCulture)!);
+            }
+
+            if (target.IsEnum)
+            {
+                return (T)Enum.ToObject(target, value);
+            }
+
+            return (T)Convert.ChangeType(value, target, CultureInfo.InvariantCulture);
+        }
+
+        public override Task<T> GetFieldValueAsync<T>(int ordinal, CancellationToken cancellationToken)
+            => Task.FromResult(GetFieldValue<T>(ordinal));
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _inner.Dispose();
+            }
+
+            base.Dispose(disposing);
         }
     }
 
