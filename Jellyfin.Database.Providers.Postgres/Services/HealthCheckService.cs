@@ -361,7 +361,12 @@ public sealed partial class HealthCheckService
                 ROUND(mean_exec_time::numeric, 2)               AS mean_ms,
                 calls,
                 ROUND(total_exec_time::numeric, 2)              AS total_ms,
-                ROUND(rows::numeric / NULLIF(calls, 0), 1)      AS avg_rows
+                ROUND(rows::numeric / NULLIF(calls, 0), 1)      AS avg_rows,
+                ROUND(100.0 * shared_blks_hit / NULLIF(shared_blks_hit + shared_blks_read, 0), 1)
+                                                               AS shared_hit_pct,
+                shared_blks_read,
+                temp_blks_read + temp_blks_written              AS temp_blks,
+                pg_size_pretty(wal_bytes)                       AS wal
             FROM pg_stat_statements
             WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
               AND query NOT LIKE '%pg\_%'
@@ -401,7 +406,13 @@ public sealed partial class HealthCheckService
                     MeanMs: Convert.ToDouble(reader.GetValue(1), CultureInfo.InvariantCulture),
                     Calls: reader.GetInt64(2),
                     TotalMs: Convert.ToDouble(reader.GetValue(3), CultureInfo.InvariantCulture),
-                    Rows: Convert.ToDouble(reader.GetValue(4), CultureInfo.InvariantCulture)));
+                    Rows: Convert.ToDouble(reader.GetValue(4), CultureInfo.InvariantCulture),
+                    SharedHitPercent: await reader.IsDBNullAsync(5, ct).ConfigureAwait(false)
+                        ? null
+                        : Convert.ToDouble(reader.GetValue(5), CultureInfo.InvariantCulture),
+                    SharedBlocksRead: reader.GetInt64(6),
+                    TempBlocks: reader.GetInt64(7),
+                    Wal: reader.GetString(8)));
             }
         }
 
@@ -414,7 +425,11 @@ public sealed partial class HealthCheckService
         foreach (var q in slow)
         {
             var severity = q.MeanMs >= WarnThresholdMs ? HealthSeverity.Warn : HealthSeverity.Ok;
-            var detail = $"media={q.MeanMs:F0} ms | llamadas={q.Calls:N0} | total={q.TotalMs / 1000.0:F1} s | filas̅={q.Rows:F0}";
+            var bufferHit = q.SharedHitPercent is double hit
+                ? $"buffer hit={hit:F1}%"
+                : "buffer hit=n/a";
+            var detail = $"media={q.MeanMs:F0} ms | llamadas={q.Calls:N0} | total={q.TotalMs / 1000.0:F1} s | filas̅={q.Rows:F0} | " +
+                $"{bufferHit} | bloques leídos={q.SharedBlocksRead:N0} | temp={q.TempBlocks:N0} | WAL={q.Wal}";
             findings.Add(new HealthFinding(
                 Check: "SlowQuery",
                 Severity: severity,
