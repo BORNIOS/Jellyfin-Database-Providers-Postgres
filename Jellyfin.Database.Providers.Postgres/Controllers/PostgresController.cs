@@ -90,14 +90,12 @@ public class PostgresController : ControllerBase
     [ProducesResponseType(StatusCodes.Status200OK)]
     public ActionResult<object> GetStatus()
     {
-        var isActive = PostgresPlugin.IsPostgresActive(_appPaths);
         var activeConn = PostgresPlugin.ReadActivePgConnectionString(_appPaths);
+        var isActive = !string.IsNullOrWhiteSpace(activeConn);
         var config = PostgresPlugin.Instance?.Configuration;
 
         var sqliteDefault = Path.Combine(_appPaths.DataPath, "jellyfin.db");
         var sqliteExists = System.IO.File.Exists(sqliteDefault);
-        var sqliteValidationError = string.Empty;
-        var sqliteIsValid = sqliteExists && TryValidateSqliteDatabase(sqliteDefault, out sqliteValidationError);
         var defaultBackupDir = Path.Combine(_appPaths.DataPath, "postgres-backups");
 
         return Ok(new
@@ -106,8 +104,6 @@ public class PostgresController : ControllerBase
             ActiveConnectionString = isActive ? MaskPassword(activeConn) : null,
             SqliteDefaultPath = sqliteDefault,
             SqliteExists = sqliteExists,
-            SqliteIsValid = sqliteIsValid,
-            SqliteValidationError = sqliteExists && !sqliteIsValid ? sqliteValidationError : null,
             SqliteSize = sqliteExists
                 ? FormatBytes(new FileInfo(sqliteDefault).Length)
                 : null,
@@ -126,6 +122,25 @@ public class PostgresController : ControllerBase
             MigrationState = config?.MigrationState.ToString() ?? "NotStarted",
             LastMigrationError = config?.LastMigrationError,
             MigrationCompletedAt = config?.MigrationCompletedAt
+        });
+    }
+
+    /// <summary>
+    /// Validates the local SQLite target immediately before a PostgreSQL to SQLite reversal.
+    /// Kept separate from <see cref="GetStatus"/> so a locked or very large SQLite file never delays
+    /// the configuration page's active-engine indicator.
+    /// </summary>
+    /// <returns>Whether the SQLite database passed integrity and table checks.</returns>
+    [HttpGet("SqliteValidation")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult<object> ValidateSqlite()
+    {
+        var sqlitePath = Services.ExportToSqliteService.DetectDefaultSqlitePath(_appPaths.DataPath);
+        var isValid = TryValidateSqliteDatabase(sqlitePath, out var error);
+        return Ok(new
+        {
+            IsValid = isValid,
+            Error = isValid ? null : error
         });
     }
 

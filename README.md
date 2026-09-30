@@ -108,8 +108,9 @@ Consulta la [guía de integración para desarrolladores](docs/integracion-desarr
 ## 🖥️ Interfaz del plugin
 
 El plugin añade una página propia en **Panel → Complementos → PostgreSQL Database Provider** con
-**cinco pestañas**, en este orden: **Configuración**, **Migración**, **Mantenimiento**, **Health** y
-**Consola SQL**. Cada una agrupa una parte del ciclo de vida de la base de datos.
+**seis pestañas**, en este orden: **Configuración**, **Migración**, **Mantenimiento**, **Health**,
+**Consola SQL** e **🧩 Integraciones**. La barra se adapta a pantallas pequeñas y conserva el nombre
+de cada sección como ayuda contextual.
 
 ### ⚙️ Configuración — conexión, pool y motor activo
 
@@ -149,8 +150,8 @@ archivo SQLite detectado, esquema y una línea con `Pool: min-max · Timeout · 
 |---|---|
 | **Probar conexion** | Valida la cadena y devuelve la versión del servidor PostgreSQL |
 | **Guardar configuracion** | Persiste conexión, opciones avanzadas y rutas (rechaza `max < min`) |
-| **Activar PostgreSQL y reiniciar** | Escribe `config/database.xml` en modo `PLUGIN_PROVIDER` y reinicia el servidor |
-| **Revertir a SQLite y reiniciar** | Elimina `config/database.xml` y vuelve a SQLite |
+| **Activar PostgreSQL y reiniciar** | Solo aparece cuando Jellyfin usa SQLite; valida la conexión antes de escribir `config/database.xml` en modo `PLUGIN_PROVIDER` y reinicia el servidor |
+| **Revertir a SQLite y reiniciar** | Solo aparece cuando PostgreSQL está activo; valida que exista una base SQLite utilizable, elimina `config/database.xml` y reinicia |
 
 **Flujo recomendado:** 1) **Probar conexión** → 2) ajustar pool y timeout → 3) **Guardar
 configuración** → 4) migrar los datos → 5) **Activar PostgreSQL**.
@@ -182,6 +183,7 @@ Exporta toda la base directamente a un archivo `.db` nativo sin herramientas ext
 - Si el `.db` no existe → lo crea con el schema derivado de PostgreSQL.
 - Si el `.db` ya existe → preserva las tablas y reemplaza solo el contenido (`DELETE` + `INSERT`).
 - Escritura en transacciones de 10 000 filas con `PRAGMA journal_mode=WAL`.
+- Cuando Jellyfin 12.1 requiere el archivo heredado `library.db`, se crea mediante SQLite y se valida con `PRAGMA integrity_check`; el export falla de forma explícita en vez de dejar un archivo inválido.
 
 **Casos de uso:** revertir a SQLite, copia portable de seguridad, inspección local.
 
@@ -195,8 +197,8 @@ Operaciones de mantenimiento, backups y estadísticas de la base de datos.
 
 | Acción | Función |
 |---|---|
-| **VACUUM ANALYZE** | Libera espacio y actualiza estadísticas del planificador |
-| **REINDEX DATABASE** | Reconstruye todos los índices |
+| **VACUUM ANALYZE** | Mantiene las tablas `public` de Jellyfin; los esquemas privados solo participan si el administrador los habilita en **Integraciones** |
+| **REINDEX DATABASE** | Reconstruye índices de `public`; los esquemas privados requieren habilitación explícita en **Integraciones** |
 | **Aplicar optimizaciones** | Crea 9 índices GIN CONCURRENTLY y ajusta autovacuum en las tablas críticas |
 | **Crear backup ahora** | Genera un `.sql` con `pg_dump` (y `.zip` si la compresión está activa) |
 | **Restablecer backup** | Restaura desde `.sql` o `.zip`, con selector de backups disponibles |
@@ -223,6 +225,7 @@ mano desde la propia pestaña.
 | **Secuencias desfasadas** | Secuencias fuera de rango respecto a los datos |
 | **Estadísticas obsoletas** | Tablas sin `ANALYZE` reciente |
 | **Queries lentas** | Top consultas por tiempo acumulado (vía `pg_stat_statements`) |
+| **Presión de buffers** | Porcentaje de aciertos en caché compartida, bloques leídos de disco, uso temporal y WAL de las consultas lentas |
 
 Cada resultado lleva semáforo `Info` / `Warn` / `Error`, y los problemas marcados como reparables se
 corrigen desde la misma card. El resumen del arranque queda además en el log del plugin:
@@ -248,6 +251,23 @@ abrir una sesión `psql`.
   arrastran ruido de otras bases del mismo servidor PostgreSQL.
 - **Historial** de las últimas consultas conservado en la sesión del navegador, con botón para
   limpiarlo.
+
+---
+
+### 🧩 Integraciones — esquemas privados de otros plugins
+
+Permite revisar únicamente los esquemas registrados mediante el contrato público del proveedor, sin
+exponer credenciales, `public` ni datos de otra integración. Elige una integración y después una
+tabla para consultar una muestra limitada y ordenable de sus datos.
+
+- La tabla de estado muestra filas estimadas, tamaño, índices, tuplas muertas y cambios.
+- **ANALYZE** programado está activo inicialmente; `VACUUM (ANALYZE)` y `REINDEX` programados solo
+  se ejecutan cuando el administrador los selecciona para ese esquema.
+- El backup completo incluye todos los esquemas privados registrados; las acciones manuales quedan
+  limitadas al esquema o tabla elegidos.
+
+Consulta la [guía de integración para desarrolladores](docs/integracion-desarrolladores.md) para el
+contrato, el aislamiento y la estrategia de migraciones.
 
 ---
 
@@ -302,8 +322,8 @@ En **Mantenimiento**: **Crear backup ahora** / **Restablecer backup** (acepta `.
 | Tarea | Default | Descripción |
 |---|---|---|
 | **PostgreSQL Backup** | Diario 02:00 | Backup con `pg_dump` |
-| **PostgreSQL VACUUM ANALYZE** | Domingo 03:00 | Libera espacio y actualiza estadísticas |
-| **PostgreSQL REINDEX DATABASE** | Domingo 04:00 | Reconstruye todos los índices |
+| **PostgreSQL VACUUM ANALYZE (managed schemas)** | Domingo 03:00 | Mantiene `public` y solo los esquemas privados autorizados en **Integraciones** |
+| **PostgreSQL REINDEX (managed schemas)** | Domingo 04:00 | Reconstruye índices de `public` y únicamente los esquemas privados autorizados |
 | **Optimize GIN Indexes** | Domingo 05:00 | Mantiene los índices GIN trigram frescos |
 
 > ⚠️ Evita solapar REINDEX, VACUUM y Backup en la misma ventana horaria.
@@ -349,15 +369,24 @@ El plugin preserva la estructura de tablas y reemplaza solo los datos (DELETE + 
 </details>
 
 <details>
+<summary><b>¿Uso Docker; por qué falla un backup o la copia de migración con <code>pg_dump</code>?</b></summary>
+
+`pg_dump`, `psql` y `pg_restore` se ejecutan dentro del contenedor de Jellyfin. Instala un cliente
+PostgreSQL compatible —se recomienda PostgreSQL 17— en tu imagen derivada de Jellyfin y configura su
+directorio de binarios en **PgBin path**. Instalarlo solo en el host Docker no lo hace disponible para
+el plugin dentro del contenedor.
+</details>
+
+<details>
 <summary><b>¿La búsqueda rápida requiere cambios en el cliente Jellyfin?</b></summary>
 
 No. Es un endpoint de servidor. La UI del plugin lo usa internamente cuando PostgreSQL está activo y los índices GIN existen.
 </details>
 
 <details>
-<summary><b>¿Por qué los timestamps muestran UTC en lugar de mi zona horaria?</b></summary>
+<summary><b>¿Por qué los timestamps muestran UTC en lugar de mi zona horaria o una fecha mínima?</b></summary>
 
-En versiones anteriores se usaba el switch global `Npgsql.EnableLegacyTimestampBehavior` que forzaba UTC en todas las lecturas. Desde v2.0.0.0 esto se reemplazó por el interceptor `DateTimeKindNormalizingInterceptor`, que solo normaliza parámetros de escritura con `Kind=Unspecified`, respetando la timezone del servidor PostgreSQL en las lecturas.
+Las versiones anteriores usaban el switch global `Npgsql.EnableLegacyTimestampBehavior`, que forzaba UTC en todas las lecturas. El interceptor actual normaliza parámetros de escritura sin zona horaria sin alterar las lecturas y convierte `DateTime.MinValue` a un valor UTC seguro para clientes antes de que Npgsql lo represente como `-infinity`.
 </details>
 
 ---

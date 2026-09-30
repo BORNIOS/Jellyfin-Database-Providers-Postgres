@@ -73,6 +73,25 @@ public sealed class WebPageTests
         Assert.Contains(expected, typeof(PostgresPlugin).Assembly.GetManifestResourceNames());
     }
 
+    [Fact]
+    public void ConnectionPasswordIsContainedInANamedForm()
+    {
+        Assert.Matches(
+            "<form id=\"pgConnectionForm\"[\\s\\S]*?<input is=\"emby-input\" type=\"password\" id=\"pgPassword\" name=\"pg-password\"[\\s\\S]*?</form>",
+            Html);
+    }
+
+    [Fact]
+    public void SQLiteValidationIsDeferredUntilRollbackIsRequested()
+    {
+        Assert.Contains("apiGet('/SqliteValidation')", Html, StringComparison.Ordinal);
+
+        var statusStart = Html.IndexOf("function loadStatus()", StringComparison.Ordinal);
+        var statusEnd = Html.IndexOf("function switchToTab", statusStart, StringComparison.Ordinal);
+        Assert.True(statusStart >= 0 && statusEnd > statusStart, "No se pudo aislar loadStatus.");
+        Assert.DoesNotContain("SqliteValidation", Html[statusStart..statusEnd], StringComparison.Ordinal);
+    }
+
     private static HashSet<string> Matches(string pattern)
         => Regex.Matches(Html, pattern, RegexOptions.CultureInvariant)
             .Select(match => match.Groups[1].Value)

@@ -307,6 +307,7 @@
 
                     <div class="verticalSection pg-card" style="background:rgba(18,26,48,.88); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2); margin-bottom:16px;">
                         <h2 id="connectionHeading">Conexion PostgreSQL</h2>
+                        <form id="pgConnectionForm" autocomplete="on" onsubmit="return false;">
 
                         <div class="pg-grid-connection" style="display:grid; grid-template-columns:2fr 1fr; gap:0 16px;">
                             <div class="inputContainer">
@@ -324,7 +325,7 @@
                             <input is="emby-input" type="text" id="pgUsername" label="Usuario" autocomplete="off"/>
                         </div>
                         <div class="inputContainer">
-                            <input is="emby-input" type="password" id="pgPassword" label="Contrasena" autocomplete="new-password"/>
+                            <input is="emby-input" type="password" id="pgPassword" name="pg-password" label="Contrasena" autocomplete="current-password"/>
                             <div class="fieldDescription" id="passwordMaskHelp">Solo la contrasena se enmascara. El resto de los campos son visibles.</div>
                         </div>
 
@@ -360,6 +361,7 @@
                             </button>
                         </div>
                         <div id="testConnectionResult" style="margin-top:10px; font-size:13px;"></div>
+                        </form>
                     </div>
 
                     <div class="verticalSection pg-card" id="activateSection" style="display:none; background:rgba(18,26,48,.88); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2); margin-bottom:16px;">
@@ -2278,8 +2280,6 @@
                     var activateHeading = document.getElementById('activateHeading');
                     var activateDescription = document.getElementById('activateDescription');
                     var activateResult  = document.getElementById('activateResult');
-                    var sqliteIsValid = data.SqliteIsValid !== undefined ? data.SqliteIsValid : data.sqliteIsValid;
-
                     if (data.IsPostgresActive) {
                         box.innerHTML = '&#10003; <strong>' + escapeHtml(t('msg_postgres_active', 'PostgreSQL active')) + '</strong><br>' + escapeHtml(t('msg_connection_prefix', 'Connection: ')) + '<code>' + escapeHtml(data.ActiveConnectionString || '') + '</code>';
                         box.style.background = '#1b3a1b'; box.style.color = '#a5d6a7';
@@ -2288,11 +2288,11 @@
                         activateBtn.style.display = 'none';
                         activateHeading.textContent = t('msg_postgres_active', 'PostgreSQL active');
                         activateDescription.textContent = 'La reversión solo se habilita si Jellyfin puede abrir y validar la base SQLite local.';
-                        deactivateBtn.disabled = !sqliteIsValid;
-                        activateResult.style.color = sqliteIsValid ? '#a5d6a7' : '#ef9a9a';
-                        activateResult.textContent = sqliteIsValid
-                            ? 'SQLite validada. Puedes revertir y reiniciar con seguridad.'
-                            : 'La reversión está bloqueada: la base SQLite local no existe o no superó la validación.';
+                        deactivateBtn.disabled = !data.SqliteExists;
+                        activateResult.style.color = data.SqliteExists ? '#90caf9' : '#ef9a9a';
+                        activateResult.textContent = data.SqliteExists
+                            ? 'La base SQLite se validará justo antes de confirmar la reversión.'
+                            : 'La reversión está bloqueada: la base SQLite local no existe.';
                     } else {
                         box.innerHTML = '&#9888; <strong>' + escapeHtml(t('msg_sqlite_mode', 'Using SQLite')) + '</strong>';
                         if (data.SqliteExists) {
@@ -2455,13 +2455,13 @@
                 resultEl.style.color = '#90caf9';
                 resultEl.textContent = 'Validando la base SQLite de destino…';
                 button.disabled = true;
-                apiGet('/Status')
+                apiGet('/SqliteValidation')
                     .then(function(response) { return response.json(); })
                     .then(function(status) {
-                        var sqliteIsValid = status.SqliteIsValid !== undefined ? status.SqliteIsValid : status.sqliteIsValid;
+                        var sqliteIsValid = status.IsValid !== undefined ? status.IsValid : status.isValid;
                         if (!sqliteIsValid) {
                             resultEl.style.color = '#ef9a9a';
-                            resultEl.textContent = 'La reversión está bloqueada: la base SQLite local no existe, está vacía o no superó integrity_check.';
+                            resultEl.textContent = 'La reversión está bloqueada: ' + (status.Error || status.error || 'la base SQLite local no existe, está vacía o no superó integrity_check.');
                             return;
                         }
 
