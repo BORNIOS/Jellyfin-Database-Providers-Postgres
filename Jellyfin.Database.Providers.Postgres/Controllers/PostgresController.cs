@@ -15,6 +15,7 @@ using MediaBrowser.Controller;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -95,6 +96,8 @@ public class PostgresController : ControllerBase
 
         var sqliteDefault = Path.Combine(_appPaths.DataPath, "jellyfin.db");
         var sqliteExists = System.IO.File.Exists(sqliteDefault);
+        var sqliteValidationError = string.Empty;
+        var sqliteIsValid = sqliteExists && TryValidateSqliteDatabase(sqliteDefault, out sqliteValidationError);
         var defaultBackupDir = Path.Combine(_appPaths.DataPath, "postgres-backups");
 
         return Ok(new
@@ -103,6 +106,8 @@ public class PostgresController : ControllerBase
             ActiveConnectionString = isActive ? MaskPassword(activeConn) : null,
             SqliteDefaultPath = sqliteDefault,
             SqliteExists = sqliteExists,
+            SqliteIsValid = sqliteIsValid,
+            SqliteValidationError = sqliteExists && !sqliteIsValid ? sqliteValidationError : null,
             SqliteSize = sqliteExists
                 ? FormatBytes(new FileInfo(sqliteDefault).Length)
                 : null,
@@ -433,13 +438,21 @@ public class PostgresController : ControllerBase
     public ActionResult<object> Deactivate()
     {
         var configPath = Path.Combine(_appPaths.ConfigurationDirectoryPath, "database.xml");
+        var sqlitePath = Services.ExportToSqliteService.DetectDefaultSqlitePath(_appPaths.DataPath);
+        if (!TryValidateSqliteDatabase(sqlitePath, out var sqliteValidationError))
+        {
+            var message = $"SQLite validation failed; PostgreSQL remains active. {sqliteValidationError}";
+            _logger.LogWarning("PostgreSQL to SQLite switch rejected: {Error}", sqliteValidationError);
+            Logging.PostgresLog.Warn($"[ENGINE SWITCH] Reversión rechazada: {sqliteValidationError}");
+            return Conflict(new { Error = message });
+        }
+
         if (System.IO.File.Exists(configPath))
         {
             System.IO.File.Delete(configPath);
             _logger.LogInformation("database.xml deleted — Jellyfin will use SQLite on next start.");
 
             // Log the engine switch prominently so it appears in the plugin log
-            var sqlitePath = Services.ExportToSqliteService.DetectDefaultSqlitePath(_appPaths.DataPath);
             var sqliteSize = System.IO.File.Exists(sqlitePath)
                 ? $"{new System.IO.FileInfo(sqlitePath).Length / 1_048_576.0:F1} MB"
                 : "(file not found)";
@@ -469,6 +482,50 @@ public class PostgresController : ControllerBase
         });
 
         return Accepted(new { Status = "Reverted to SQLite. Jellyfin is restarting..." });
+    }
+
+    private static bool TryValidateSqliteDatabase(string sqlitePath, out string error)
+    {
+        error = string.Empty;
+        if (!System.IO.File.Exists(sqlitePath))
+        {
+            error = $"SQLite database was not found at {sqlitePath}.";
+            return false;
+        }
+
+        try
+        {
+            var builder = new SqliteConnectionStringBuilder
+            {
+                DataSource = sqlitePath,
+                Mode = SqliteOpenMode.ReadOnly
+            };
+            using var connection = new SqliteConnection(builder.ToString());
+            connection.Open();
+
+            using var integrity = connection.CreateCommand();
+            integrity.CommandText = "PRAGMA integrity_check;";
+            if (!string.Equals(integrity.ExecuteScalar() as string, "ok", StringComparison.OrdinalIgnoreCase))
+            {
+                error = "SQLite integrity_check did not return ok.";
+                return false;
+            }
+
+            using var tables = connection.CreateCommand();
+            tables.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%';";
+            if (Convert.ToInt64(tables.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) < 1)
+            {
+                error = "SQLite contains no user tables.";
+                return false;
+            }
+
+            return true;
+        }
+        catch (SqliteException ex)
+        {
+            error = ex.Message;
+            return false;
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────

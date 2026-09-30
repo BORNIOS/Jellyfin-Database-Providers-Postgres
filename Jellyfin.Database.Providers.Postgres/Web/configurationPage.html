@@ -33,19 +33,45 @@
         }
 
         #PostgresProviderConfigPage .pg-tabbar {
-            display: flex;
-            gap: 8px;
+            display: grid;
+            grid-template-columns: repeat(6, minmax(0, max-content));
+            gap: 4px;
             margin-bottom: 20px;
-            border-bottom: 1px solid rgba(144, 170, 225, 0.25);
-            padding-bottom: 10px;
+            padding: 5px;
+            width: max-content;
+            max-width: 100%;
+            border: 1px solid rgba(124, 146, 196, .28);
+            border-radius: 12px;
+            background: rgba(9, 14, 28, .6);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035);
         }
 
         #PostgresProviderConfigPage .pg-tab-btn {
-            border-radius: 999px !important;
-            padding: 8px 16px !important;
-            border: 1px solid rgba(123, 156, 226, 0.25);
-            background: rgba(22, 32, 58, 0.75);
-            color: #d6e4ff;
+            border-radius: 8px !important;
+            padding: 8px 13px !important;
+            border: 1px solid transparent !important;
+            background: transparent !important;
+            color: #aebfdf !important;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 7px;
+            min-height: 38px;
+            white-space: nowrap;
+            box-shadow: none !important;
+            text-transform: none !important;
+            transition: background .16s ease, border-color .16s ease, color .16s ease, transform .16s ease;
+        }
+
+        #PostgresProviderConfigPage .pg-tab-btn[aria-selected="true"] {
+            background: linear-gradient(135deg, #246fd0, #19a9d9) !important;
+            border-color: rgba(156, 223, 255, .38) !important;
+            color: #fff !important;
+            box-shadow: 0 5px 14px rgba(26, 142, 221, .27) !important;
+        }
+
+        #PostgresProviderConfigPage .pg-tab-btn:hover {
+            transform: translateY(-1px);
         }
 
         #PostgresProviderConfigPage .pg-card {
@@ -103,21 +129,45 @@
             }
 
             #PostgresProviderConfigPage .pg-tabbar {
-                overflow-x: auto;
-                padding-bottom: 8px;
+                grid-template-columns: repeat(6, minmax(0, 1fr));
+                gap: 5px;
+                width: 100%;
+            }
+
+            #PostgresProviderConfigPage .pg-tab-btn {
+                min-width: 0;
+                padding: 8px !important;
+            }
+
+            #PostgresProviderConfigPage .pg-tab-label {
+                display: none;
+            }
+
+            #PostgresProviderConfigPage .pg-tab-icon {
+                font-size: 20px;
+            }
+
+            #PostgresProviderConfigPage .pg-card {
+                padding: 12px;
             }
         }
 
         /* The script toggles Jellyfin's button-submit/button-default classes; giving them the panel
            accent makes the section the user is on unmistakable. */
         #PostgresProviderConfigPage .pg-tab-btn.button-submit {
-            background: linear-gradient(135deg, #3a6dd8, #5a8ff0) !important;
-            border-color: rgba(140, 190, 255, 0.55);
-            color: #fff;
+            background: linear-gradient(135deg, #246fd0, #19a9d9) !important;
+            border-color: rgba(156, 223, 255, .38) !important;
+            color: #fff !important;
         }
 
         #PostgresProviderConfigPage .pg-tab-btn:hover {
-            background: rgba(38, 54, 92, 0.9);
+            background: rgba(70, 109, 174, .28) !important;
+            color: #e8f2ff !important;
+        }
+
+        #PostgresProviderConfigPage .pg-tab-btn[aria-selected="true"]:hover {
+            background: linear-gradient(135deg, #246fd0, #19a9d9) !important;
+            color: #fff !important;
         }
 
         /* One table style for every section: sticky header, subtle separators and readable rows. */
@@ -237,20 +287,20 @@
                 <div id="pgStatusBanner" style="display:none; padding:12px 16px; border-radius:6px; margin-bottom:20px; font-weight:500;"></div>
 
                 <!-- Tab bar -->
-                <div class="pg-tabbar" style="display:flex; gap:8px; margin-bottom:20px; border-bottom:1px solid rgba(144,170,225,.25); padding-bottom:10px;">
-                    <button type="button" class="pg-tab-btn raised emby-button" data-tab="config"      style="border-radius:4px 4px 0 0; padding:8px 18px;">&#9881; Configuracion</button>
-                    <button type="button" class="pg-tab-btn raised emby-button" data-tab="migration"   style="border-radius:4px 4px 0 0; padding:8px 18px;">&#128260; Migracion</button>
-                    <button type="button" class="pg-tab-btn raised emby-button" data-tab="maintenance" style="border-radius:4px 4px 0 0; padding:8px 18px;">&#128295; Mantenimiento</button>
-                    <button type="button" class="pg-tab-btn raised emby-button" data-tab="health"      style="border-radius:4px 4px 0 0; padding:8px 18px;">&#128138; Health</button>
-                    <button type="button" class="pg-tab-btn raised emby-button" data-tab="query"       style="border-radius:4px 4px 0 0; padding:8px 18px;">&#128203; SQL</button>
-                    <button type="button" class="pg-tab-btn raised emby-button" data-tab="schemas"     style="border-radius:4px 4px 0 0; padding:8px 18px;">&#129513; Integraciones</button>
+                <div class="pg-tabbar" role="tablist" aria-label="Secciones de PostgreSQL Database Provider" style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:20px; padding:6px; border:1px solid rgba(124,146,196,.28); border-radius:12px; background:rgba(9,14,28,.58);">
+                    <button type="button" class="pg-tab-btn emby-button" data-tab="config" title="Configuración" aria-label="Configuración"><span aria-hidden="true">⚙</span><span class="pg-tab-label">Configuración</span></button>
+                    <button type="button" class="pg-tab-btn emby-button" data-tab="migration" title="Migración" aria-label="Migración"><span aria-hidden="true">⇄</span><span class="pg-tab-label">Migración</span></button>
+                    <button type="button" class="pg-tab-btn emby-button" data-tab="maintenance" title="Mantenimiento" aria-label="Mantenimiento"><span aria-hidden="true">🛠</span><span class="pg-tab-label">Mantenimiento</span></button>
+                    <button type="button" class="pg-tab-btn emby-button" data-tab="health" title="Health" aria-label="Health"><span aria-hidden="true">♥</span><span class="pg-tab-label">Health</span></button>
+                    <button type="button" class="pg-tab-btn emby-button" data-tab="query" title="Consola SQL" aria-label="Consola SQL"><span aria-hidden="true">▣</span><span class="pg-tab-label">SQL</span></button>
+                    <button type="button" class="pg-tab-btn emby-button" data-tab="schemas" title="Integraciones" aria-label="Integraciones"><span aria-hidden="true">🧩</span><span class="pg-tab-label">Integraciones</span></button>
                 </div>
 
                 <!-- TAB 1: CONFIGURACION -->
                 <div id="pg-tab-config" class="pg-tab-content">
                     <div class="verticalSection pg-card" style="background:rgba(18,26,48,.88); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2); margin-bottom:16px;">
                         <h2 id="statusHeading">Estado actual</h2>
-                        <div id="currentStatusBox" style="padding:10px 14px; border-radius:6px; background:#1a1a2e; color:#a0c4ff; font-size:14px; margin-bottom:16px;">
+                        <div id="currentStatusBox" style="padding:10px 14px; border-radius:6px; background:#1a1a2e; color:#a0c4ff; font-size:14px; margin-bottom:16px; max-width:100%; box-sizing:border-box; overflow-wrap:anywhere; word-break:break-word;">
                             Cargando...
                         </div>
                     </div>
@@ -280,7 +330,7 @@
 
                         <details style="margin-top:8px; margin-bottom:8px;">
                             <summary style="cursor:pointer; color:#90caf9; font-size:13px; user-select:none; padding:4px 0;">
-                                <span id="advancedOptionsSummary">&#9654; Opciones avanzadas</span>
+                                <span id="advancedOptionsSummary">Opciones avanzadas</span>
                             </summary>
                             <div style="margin-top:10px;">
                                 <div class="inputContainer">
@@ -300,21 +350,6 @@
                                 <div class="fieldDescription" id="advancedRestartHelp">Estas opciones se aplican al reiniciar Jellyfin.</div>
                             </div>
                         </details>
-
-                        <div class="pg-card pg-card-muted" style="background:rgba(21,31,57,.7); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2); margin-top:12px; margin-bottom:0;">
-                            <h3 style="margin-top:0; margin-bottom:10px;" id="configBackupHeading">Backup y Restore (configuracion persistente)</h3>
-                            <div class="inputContainer">
-                                <input is="emby-input" type="text" id="configBackupDirectory" label="Directorio de backup por defecto" autocomplete="off"/>
-                            </div>
-                            <div class="inputContainer">
-                                <input is="emby-input" type="text" id="configPgBinPath" label="Directorio de binarios PostgreSQL (opcional)" autocomplete="off"/>
-                                <div class="fieldDescription" id="configPgBinHelp">Carpeta que contiene pg_dump, psql, etc. Ej: C:\Program Files\PostgreSQL\17\bin &nbsp;|&nbsp; /usr/lib/postgresql/17/bin &nbsp;|&nbsp; Vacío = auto-detectar</div>
-                            </div>
-                            <label class="checkboxContainer" style="margin-bottom:0;">
-                                <input is="emby-checkbox" type="checkbox" id="configBackupCompress" checked />
-                                <span id="configBackupCompressLabel">Comprimir backup en ZIP por defecto</span>
-                            </label>
-                        </div>
 
                         <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:16px;">
                             <button is="emby-button" type="button" id="btnTestConnection" class="raised button-default">
@@ -467,6 +502,23 @@
                             </button>
                         </div>
 
+                        <div class="pg-card pg-card-muted" style="background:rgba(21,31,57,.7); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2); margin-bottom:14px;">
+                            <h3 style="margin-top:0; margin-bottom:6px;" id="configBackupHeading">Configuración de respaldos</h3>
+                            <p class="fieldDescription" style="margin:0 0 10px;">Define dónde se guardan los respaldos y cómo se encuentran las herramientas de PostgreSQL.</p>
+                            <div class="inputContainer">
+                                <input is="emby-input" type="text" id="configBackupDirectory" label="Directorio de backup por defecto" autocomplete="off"/>
+                            </div>
+                            <div class="inputContainer">
+                                <input is="emby-input" type="text" id="configPgBinPath" label="Directorio de binarios PostgreSQL (opcional)" autocomplete="off"/>
+                                <div class="fieldDescription" id="configPgBinHelp">Carpeta que contiene pg_dump, psql, etc. Ej: C:\Program Files\PostgreSQL\17\bin &nbsp;|&nbsp; /usr/lib/postgresql/17/bin &nbsp;|&nbsp; Vacío = auto-detectar</div>
+                            </div>
+                            <label class="checkboxContainer" style="margin-bottom:12px;">
+                                <input is="emby-checkbox" type="checkbox" id="configBackupCompress" checked />
+                                <span id="configBackupCompressLabel">Comprimir backup en ZIP por defecto</span>
+                            </label>
+                            <button is="emby-button" type="button" id="btnSaveBackupConfig" class="raised button-submit">Guardar configuración de respaldos</button>
+                        </div>
+
                         <div class="pg-card pg-card-muted" style="background:rgba(21,31,57,.7); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2);">
                             <h3 style="margin-top:0; margin-bottom:6px;" id="backupHeading">Backups PostgreSQL</h3>
                             <div class="fieldDescription" id="maintenanceConfigHint" style="margin-bottom:10px;">
@@ -534,6 +586,10 @@
                         </div>
                     </div>
 
+                </div>
+
+                <!-- TAB 4: HEALTH -->
+                <div id="pg-tab-health" class="pg-tab-content" style="display:none;">
                     <div id="statsSection" class="verticalSection pg-card" style="display:none; background:rgba(18,26,48,.88); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2); margin-bottom:16px;">
                         <h2 id="dbStateHeading">Estado de la base de datos</h2>
                         <div id="dbOverview" style="font-size:14px; padding:10px 14px; background:#1a1a2e; border-radius:6px; margin-bottom:16px; color:#a0c4ff;"></div>
@@ -552,15 +608,12 @@
                             </table>
                         </div>
                     </div>
-                </div>
-
-                <!-- TAB 4: HEALTH -->
-                <div id="pg-tab-health" class="pg-tab-content" style="display:none;">
                     <div class="verticalSection pg-card" style="background:rgba(18,26,48,.88); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2); margin-bottom:16px;">
-                        <h2 id="healthHeading">Salud de la base de datos</h2>
-                        <p class="fieldDescription" id="healthDescription">Diagnostica indices invalidos, bloat, secuencias desincronizadas, estadisticas obsoletas e indices sin uso.</p>
-
-                        <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
+                        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                            <div style="flex:1 1 260px;">
+                                <h2 id="healthHeading" style="margin:0 0 3px; font-size:17px;">Salud de la base de datos</h2>
+                                <p class="fieldDescription" id="healthDescription" style="margin:0; font-size:12px;">Diagnostica índices, bloat, secuencias y estadísticas.</p>
+                            </div>
                             <button is="emby-button" type="button" id="btnHealthCheck" class="raised button-default">
                                 &#128138; <span id="btnHealthCheckLabel">Ejecutar Health Check</span>
                             </button>
@@ -569,8 +622,11 @@
                             </button>
                         </div>
 
-                        <div id="healthResult" style="font-size:13px; margin-bottom:10px;"></div>
-                        <div id="healthFindings" style="display:none; font-size:12px; line-height:1.8; padding:10px 12px; background:rgba(13,20,38,.55); border-radius:6px;"></div>
+                        <div id="healthResult" style="font-size:13px; margin:12px 0 0;"></div>
+                        <details id="healthFindingsPanel" style="display:none; margin-top:10px; border:1px solid rgba(124,146,196,.28); border-radius:8px; background:rgba(9,14,28,.4);">
+                            <summary id="healthFindingsSummary" style="cursor:pointer; padding:9px 12px; color:#cfe0ff; font-size:13px; font-weight:600;">Ver detalles</summary>
+                            <div id="healthFindings" style="font-size:12px; line-height:1.65; padding:0 12px 10px;"></div>
+                        </details>
                     </div>
                 </div>
 
@@ -666,6 +722,7 @@
                     </div>
                     <div id="pluginSchemaDetails" class="verticalSection pg-card" style="display:none; background:rgba(18,26,48,.88); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2);">
                         <div id="pluginTableDetails" style="display:none;">
+                            <h3 id="pluginSelectedTableHeading" style="margin:0 0 4px; font-size:16px; color:#dbe7ff;"></h3>
                             <div id="pluginRowsHint" style="font-size:12px; color:#9fb2d9; margin:0 0 8px;"></div>
                             <div id="pluginRowsViewport" style="max-height:500px; overflow:auto; border:1px solid rgba(124,146,196,.28); border-radius:8px; background:rgba(9,14,28,.55);">
                                 <table id="pluginRowsTable" style="min-width:100%; border-collapse:collapse; table-layout:fixed; font-size:12px; color:#dbe7ff;">
@@ -1214,10 +1271,10 @@
                 setText('maintenanceHeading', t('heading_maintenance', 'Maintenance operations', 'HeaderMaintenance'));
                 setText('dbStateHeading', t('heading_dbstate', 'Database status', 'HeaderDatabase'));
                 setText('backupHeading', t('heading_backup', 'PostgreSQL backups'));
-                setText('configBackupHeading', t('heading_config_backup', 'Backup and restore (persistent configuration)'));
+                setText('configBackupHeading', t('heading_config_backup', 'Backup configuration'));
                 setText('configBackupCompressLabel', t('label_backup_compress_default', 'Compress backup as ZIP by default'));
                 setText('passwordMaskHelp', t('help_password_mask', 'Only the password is masked. Other fields are visible.'));
-                setText('advancedOptionsSummary', '\u25B6 ' + t('summary_advanced_options', 'Advanced options'));
+                setText('advancedOptionsSummary', t('summary_advanced_options', 'Advanced options'));
                 setText('poolSizeHelp', t('help_pool_size', 'Maximum number of connections in the Npgsql pool.'));
                 setHtml('activateDescription', t('desc_activate', 'When migration is complete, write <code>database.xml</code> and restart Jellyfin.'));
                 setHtml('migrationDescription', t('desc_migration', 'Copy all data from <code>jellyfin.db</code> to PostgreSQL. Jellyfin can keep running during migration (in SQLite mode).'));
@@ -1242,6 +1299,7 @@
 
                 setText('btnTestConnection', t('button_test_connection', 'Test connection', 'HeaderTestConnection'));
                 setText('btnSaveConfig', t('button_save_config', 'Save configuration', 'ButtonSave'));
+                setText('btnSaveBackupConfig', t('button_save_config', 'Save backup configuration', 'ButtonSave'));
                 setText('btnActivate', t('button_activate', 'Activate PostgreSQL and restart', 'HeaderActivate'));
                 setText('btnDeactivate', t('button_deactivate', 'Revert to SQLite and restart', 'HeaderRevert'));
                 setText('btnStartMigration', t('button_start_migration', 'Start migration', 'ButtonStart'));
@@ -1288,21 +1346,20 @@
                 setInputLabel('configBackupDirectory', t('field_backup_directory_default', 'Default backup directory'));
                 setInputLabel('configPgBinPath', t('field_pgbin_path', 'PostgreSQL bin directory (optional)'));
 
-                var tabs = document.querySelectorAll('.pg-tab-btn');
-                if (tabs.length >= 3) {
-                    tabs[0].innerHTML = '&#9881; ' + t('tab_config', 'Configuration', 'HeaderSettings');
-                    tabs[1].innerHTML = '&#128260; ' + t('tab_migration', 'Migration', 'HeaderMigrate');
-                    tabs[2].innerHTML = '&#128295; ' + t('tab_maintenance', 'Maintenance', 'HeaderMaintenance');
-                }
-                if (tabs.length >= 4) {
-                    tabs[3].innerHTML = '&#128138; ' + t('tab_health', 'Health');
-                }
-                if (tabs.length >= 5) {
-                    tabs[4].innerHTML = '&#128203; ' + t('tab_query', 'SQL console');
-                }
-                if (tabs.length >= 6) {
-                    tabs[5].innerHTML = '&#129513; ' + t('tab_schemas', 'Integrations');
-                }
+                [
+                    ['config', t('tab_config', 'Configuration', 'HeaderSettings')],
+                    ['migration', t('tab_migration', 'Migration', 'HeaderMigrate')],
+                    ['maintenance', t('tab_maintenance', 'Maintenance', 'HeaderMaintenance')],
+                    ['health', t('tab_health', 'Health')],
+                    ['query', t('tab_query', 'SQL console')],
+                    ['schemas', t('tab_schemas', 'Integrations')]
+                ].forEach(function(tab) {
+                    var button = document.querySelector('.pg-tab-btn[data-tab="' + tab[0] + '"]');
+                    if (!button) return;
+                    button.querySelector('.pg-tab-label').textContent = tab[1];
+                    button.title = tab[1];
+                    button.setAttribute('aria-label', tab[1]);
+                });
 
                 setText('schemasHeading', t('heading_schemas', 'Plugin integrations'));
                 setText('schemasDescription', t('desc_schemas', 'Explore and maintain private schemas registered through PG Provider.'));
@@ -1379,6 +1436,98 @@
                 document.getElementById('pgMaxAutoPrepare').value = p['maxautoprepare'] || '50';
             }
 
+            // Jellyfin sanitizes plugin <head> styles on some clients. Keep this navigation self-contained
+            // so the responsive layout and active state do not depend on an external icon font or stylesheet.
+            function applyTabPresentation() {
+                var compact = window.matchMedia && window.matchMedia('(max-width: 767px)').matches;
+                var bar = document.querySelector('.pg-tabbar');
+                if (bar) {
+                    bar.style.setProperty('display', 'grid', 'important');
+                    bar.style.setProperty('grid-template-columns', 'repeat(6, minmax(0, 1fr))', 'important');
+                    bar.style.setProperty('width', '100%', 'important');
+                }
+
+                document.querySelectorAll('.pg-tab-btn').forEach(function(button) {
+                    var active = button.getAttribute('aria-selected') === 'true';
+                    button.classList.remove('raised');
+                    button.style.setProperty('display', 'inline-flex', 'important');
+                    button.style.setProperty('align-items', 'center', 'important');
+                    button.style.setProperty('justify-content', 'center', 'important');
+                    button.style.setProperty('gap', compact ? '0' : '7px', 'important');
+                    button.style.setProperty('min-height', '38px', 'important');
+                    button.style.setProperty('min-width', '0', 'important');
+                    button.style.setProperty('width', '100%', 'important');
+                    button.style.setProperty('padding', compact ? '8px' : '8px 13px', 'important');
+                    button.style.setProperty('border-radius', '8px', 'important');
+                    button.style.setProperty('border', active ? '1px solid rgba(156,223,255,.38)' : '1px solid transparent', 'important');
+                    button.style.setProperty('background', active ? 'linear-gradient(135deg,#246fd0,#19a9d9)' : 'transparent', 'important');
+                    button.style.setProperty('box-shadow', active ? '0 5px 14px rgba(26,142,221,.27)' : 'none', 'important');
+                    button.style.setProperty('color', active ? '#fff' : '#aebfdf', 'important');
+                    button.querySelectorAll('.pg-tab-label').forEach(function(label) { label.style.display = compact ? 'none' : ''; });
+                });
+            }
+
+            // Apply a single flat action style in the page body. Jellyfin can discard plugin CSS from
+            // the document head, so this intentionally uses direct styles and visible Unicode symbols.
+            function modernizeActionButtons() {
+                var icons = {
+                    btnTestConnection: '◉', btnSaveConfig: '✓', btnSaveBackupConfig: '✓', btnActivate: '▶', btnDeactivate: '↶',
+                    btnTruncatePg: '×', btnStartMigration: '▶', btnActivateAfterMigration: '▶', btnStartExport: '⇩',
+                    btnVacuum: '⌁', btnReindex: '↻', btnRefreshStats: '↻', btnCreateBackup: '▣',
+                    btnRefreshBackups: '↻', btnRestoreBackup: '↶', btnApplyOptimizations: '⚡',
+                    btnHealthCheck: '♥', btnHealthRepair: '✚', btnRunQuery: '▶', btnClearQuery: '×',
+                    btnClearQueryHistory: '×', btnRefreshSchemas: '↻', btnRefreshPluginMaintenance: '↻',
+                    btnAnalyzePluginSchema: '↻'
+                };
+                var danger = { btnTruncatePg: true, btnDeactivate: true };
+                var warning = { btnRestoreBackup: true, btnHealthRepair: true };
+                var success = { btnActivate: true, btnActivateAfterMigration: true };
+
+                document.querySelectorAll('#PostgresProviderConfigPage button:not(.pg-tab-btn):not(.pg-table-sort)').forEach(function(button) {
+                    button.classList.remove('raised');
+                    var isPrimary = button.classList.contains('button-submit');
+                    var background = isPrimary ? 'linear-gradient(135deg,#3672da,#56a0f2)' : 'rgba(37,52,88,.92)';
+                    var color = '#dbe7ff';
+                    if (danger[button.id]) { background = 'linear-gradient(135deg,#ae3d49,#da5963)'; color = '#fff'; }
+                    if (warning[button.id]) { background = 'linear-gradient(135deg,#d47c20,#f0a545)'; color = '#141b2d'; }
+                    if (success[button.id]) { background = 'linear-gradient(135deg,#2c8b59,#59b977)'; color = '#fff'; }
+                    button.style.setProperty('display', 'inline-flex', 'important');
+                    button.style.setProperty('align-items', 'center', 'important');
+                    button.style.setProperty('justify-content', 'center', 'important');
+                    button.style.setProperty('gap', '7px', 'important');
+                    button.style.setProperty('min-height', '36px', 'important');
+                    button.style.setProperty('padding', '7px 12px', 'important');
+                    button.style.setProperty('border', '1px solid rgba(123,156,226,.35)', 'important');
+                    button.style.setProperty('border-radius', '8px', 'important');
+                    button.style.setProperty('box-shadow', 'none', 'important');
+                    button.style.setProperty('background', background, 'important');
+                    button.style.setProperty('color', color, 'important');
+                    button.style.setProperty('font-weight', '600', 'important');
+                    button.style.setProperty('text-transform', 'none', 'important');
+
+                    var iconName = icons[button.id];
+                    if (!iconName || button.querySelector('.pg-action-symbol')) return;
+                    var label = button.querySelector('span');
+                    if (!label) {
+                        var text = button.textContent.trim().replace(/^(?:[^\p{L}\p{N}]+\s*)+/u, '');
+                        label = document.createElement('span');
+                        label.textContent = text;
+                        button.textContent = '';
+                        button.appendChild(label);
+                    } else {
+                        Array.prototype.slice.call(button.childNodes).forEach(function(node) {
+                            if (node.nodeType === Node.TEXT_NODE) button.removeChild(node);
+                        });
+                    }
+                    var icon = document.createElement('span');
+                    icon.className = 'pg-action-symbol';
+                    icon.setAttribute('aria-hidden', 'true');
+                    icon.style.cssText = 'font-size:16px; line-height:1; font-weight:700;';
+                    icon.textContent = iconName;
+                    button.insertBefore(icon, button.firstChild);
+                });
+            }
+
             document.querySelectorAll('.pg-tab-btn').forEach(function(btn) {
                 btn.addEventListener('click', function() {
                     var target = btn.getAttribute('data-tab');
@@ -1387,11 +1536,14 @@
                     document.querySelectorAll('.pg-tab-btn').forEach(function(b) {
                         b.classList.remove('button-submit');
                         b.classList.add('button-default');
+                        b.setAttribute('aria-selected', 'false');
                     });
                     btn.classList.remove('button-default');
                     btn.classList.add('button-submit');
-                    if (target === 'maintenance') { loadStats(); loadBackupList(); }
-                    if (target === 'health') { loadHealthCheck(); }
+                    btn.setAttribute('aria-selected', 'true');
+                    applyTabPresentation();
+                    if (target === 'maintenance') { loadBackupList(); }
+                    if (target === 'health') { loadStats(); loadHealthCheck(); }
                     if (target === 'schemas') { loadPluginSchemas(); }
                     if (target === 'migration') {
                         // Pre-fill export target path with the auto-detected native SQLite path
@@ -1420,6 +1572,8 @@
                     }
                 });
             });
+
+            window.addEventListener('resize', applyTabPresentation);
 
             function apiGet(path) {
                 return ApiClient.fetch({ url: ApiClient.getUrl(API_BASE + path), type: 'GET' });
@@ -1601,17 +1755,17 @@
                 (data.Columns || []).forEach(function(column) {
                     var th = document.createElement('th');
                     th.textContent = column;
-                    th.style.cssText = 'text-align:left; padding:6px 10px; position:sticky; top:0; background:#131c33; border-bottom:1px solid rgba(124,146,196,.35); white-space:nowrap;';
+                    th.style.cssText = 'text-align:left; padding:8px 12px; position:sticky; top:0; background:#1e1e2e; border-bottom:1px solid #333; white-space:nowrap;';
                     head.appendChild(th);
                 });
 
                 body.innerHTML = '';
                 (data.Rows || []).forEach(function(row, index) {
                     var tr = document.createElement('tr');
-                    tr.style.background = index % 2 === 0 ? 'rgba(255,255,255,.02)' : 'transparent';
+                    tr.style.background = index % 2 === 0 ? '#111' : '#181818';
                     row.forEach(function(value) {
                         var td = document.createElement('td');
-                        td.style.cssText = 'padding:5px 10px; border-bottom:1px solid rgba(124,146,196,.12); white-space:nowrap; max-width:520px; overflow:hidden; text-overflow:ellipsis;';
+                        td.style.cssText = 'padding:6px 12px; border-bottom:1px solid #272727; white-space:nowrap; max-width:520px; overflow:hidden; text-overflow:ellipsis;';
                         if (value === null || value === undefined) {
                             td.textContent = t('msg_query_null', 'NULL');
                             td.style.color = '#8a94ad';
@@ -1696,6 +1850,7 @@
                 document.getElementById('pluginRowsHead').innerHTML = '';
                 document.getElementById('pluginRowsBody').innerHTML = '';
                 document.getElementById('pluginRowsHint').textContent = '';
+                document.getElementById('pluginSelectedTableHeading').textContent = '';
             }
 
             function clearPluginMaintenance() {
@@ -1807,6 +1962,7 @@
                 var encoded = '/PluginSchemas/' + encodeURIComponent(schemaName) + '/Tables/' + encodeURIComponent(tableName);
                 document.getElementById('pluginSchemaDetails').style.display = '';
                 document.getElementById('pluginTableDetails').style.display = '';
+                document.getElementById('pluginSelectedTableHeading').textContent = 'Contenido de ' + schemaName + '.' + tableName;
                 document.getElementById('pluginRowsHint').textContent = t('msg_schemas_loading', 'Loading registered schemas...');
                 apiGet(encoded + '/Rows?limit=100')
                     .then(function(response) { return response.json(); })
@@ -1883,30 +2039,30 @@
                 ['Tabla', 'Filas (~)', 'Tamaño total', 'Índices', 'Tuplas muertas', 'Cambios', 'Estado', 'Acciones'].forEach(function(label) {
                     var th = document.createElement('th');
                     th.textContent = label;
-                    th.style.cssText = 'text-align:left; padding:8px 10px; position:sticky; top:0; background:#131c33; border-bottom:1px solid rgba(124,146,196,.35); white-space:nowrap;';
+                    th.style.cssText = 'text-align:left; padding:8px 12px; position:sticky; top:0; background:#1e1e2e; border-bottom:1px solid #333; white-space:nowrap;';
                     head.appendChild(th);
                 });
-                tables.forEach(function(table, index) {
+                    tables.forEach(function(table, index) {
                     var name = maintenanceValue(table, 'TableName', 'tableName') || '';
                     var needsAnalyze = !!maintenanceValue(table, 'NeedsAnalyze', 'needsAnalyze');
                     var needsVacuum = !!maintenanceValue(table, 'NeedsVacuum', 'needsVacuum');
                     var tr = document.createElement('tr');
-                    tr.style.background = index % 2 === 0 ? 'rgba(255,255,255,.02)' : 'transparent';
+                    tr.style.background = index % 2 === 0 ? '#111' : '#181818';
                     [name, maintenanceValue(table, 'EstimatedRows', 'estimatedRows'), maintenanceValue(table, 'TotalSize', 'totalSize'), maintenanceValue(table, 'IndexCount', 'indexCount'), maintenanceValue(table, 'DeadTuples', 'deadTuples'), maintenanceValue(table, 'ModifiedSinceAnalyze', 'modifiedSinceAnalyze')].forEach(function(value) {
                         var td = document.createElement('td');
                         td.textContent = value === null || value === undefined ? '—' : value;
-                        td.style.cssText = 'padding:7px 10px; border-bottom:1px solid rgba(124,146,196,.12); white-space:nowrap;';
+                        td.style.cssText = 'padding:6px 12px; border-bottom:1px solid #272727; white-space:nowrap;';
                         tr.appendChild(td);
                     });
                     var state = document.createElement('td');
-                    state.style.cssText = 'padding:7px 10px; border-bottom:1px solid rgba(124,146,196,.12); white-space:nowrap;';
+                    state.style.cssText = 'padding:6px 12px; border-bottom:1px solid #272727; white-space:nowrap;';
                     var badge = document.createElement('span');
                     badge.style.cssText = 'display:inline-block; padding:3px 7px; border-radius:10px; font-size:11px; background:' + (needsVacuum ? 'rgba(255,152,0,.18)' : needsAnalyze ? 'rgba(255,193,7,.16)' : 'rgba(76,175,80,.14)') + '; color:' + (needsVacuum ? '#ffcc80' : needsAnalyze ? '#fff59d' : '#a5d6a7') + ';';
                     badge.textContent = needsVacuum ? 'VACUUM recomendado' : needsAnalyze ? 'ANALYZE recomendado' : 'Actualizado';
                     state.appendChild(badge);
                     tr.appendChild(state);
                     var actions = document.createElement('td');
-                    actions.style.cssText = 'padding:6px 10px; border-bottom:1px solid rgba(124,146,196,.12); white-space:nowrap;';
+                    actions.style.cssText = 'padding:6px 12px; border-bottom:1px solid #272727; white-space:nowrap;';
                     var vacuumButton = document.createElement('button');
                     vacuumButton.type = 'button'; vacuumButton.className = 'raised button-default'; vacuumButton.textContent = 'VACUUM';
                     vacuumButton.style.cssText = 'font-size:11px; margin-right:6px;';
@@ -1916,9 +2072,10 @@
                     reindexButton.style.cssText = 'font-size:11px;';
                     reindexButton.addEventListener('click', function() { requestTableMaintenance(name, 'Reindex'); });
                     actions.appendChild(vacuumButton); actions.appendChild(reindexButton);
-                    tr.appendChild(actions);
-                    body.appendChild(tr);
-                });
+                        tr.appendChild(actions);
+                        body.appendChild(tr);
+                    });
+                modernizeActionButtons();
             }
 
             function requestSchemaAnalyze() {
@@ -2023,11 +2180,11 @@
                 updatePluginTableWidth();
                 columns.forEach(function(column, columnIndex) {
                     var cell = document.createElement('th');
-                    cell.style.cssText = 'text-align:left; padding:0; position:sticky; top:0; background:#131c33; border-bottom:1px solid rgba(124,146,196,.35); white-space:nowrap; position:sticky;';
+                    cell.style.cssText = 'text-align:left; padding:0; position:sticky; top:0; background:#1e1e2e; border-bottom:1px solid #333; white-space:nowrap;';
                     var sort = document.createElement('button');
                     sort.type = 'button';
-                    sort.className = 'button-link';
-                    sort.style.cssText = 'width:100%; text-align:left; padding:7px 10px; color:#dbe7ff; cursor:pointer; font-weight:600;';
+                    sort.className = '';
+                    sort.style.cssText = 'width:100%; text-align:left; padding:8px 12px; color:#dbe7ff !important; background:transparent !important; border:0 !important; border-radius:0 !important; box-shadow:none !important; cursor:pointer; font-weight:600; font-size:12px;';
                     sort.textContent = column + (pluginSort.column === columnIndex ? (pluginSort.direction === 1 ? ' ▲' : ' ▼') : ' ↕');
                     sort.addEventListener('click', function() { sortPluginRows(columnIndex); });
                     cell.appendChild(sort);
@@ -2036,10 +2193,10 @@
                 });
                 rows.forEach(function(row, index) {
                     var tr = document.createElement('tr');
-                    tr.style.background = index % 2 === 0 ? 'rgba(255,255,255,.02)' : 'transparent';
+                    tr.style.background = index % 2 === 0 ? '#111' : '#181818';
                     row.forEach(function(value) {
                         var cell = document.createElement('td');
-                        cell.style.cssText = 'padding:5px 10px; border-bottom:1px solid rgba(124,146,196,.12); white-space:nowrap; max-width:520px; overflow:hidden; text-overflow:ellipsis;';
+                        cell.style.cssText = 'padding:6px 12px; border-bottom:1px solid #272727; white-space:nowrap; max-width:520px; overflow:hidden; text-overflow:ellipsis;';
                         cell.textContent = value === null || value === undefined ? 'NULL' : value;
                         tr.appendChild(cell);
                     });
@@ -2117,13 +2274,25 @@
                     var box             = document.getElementById('currentStatusBox');
                     var activateSection = document.getElementById('activateSection');
                     var deactivateBtn   = document.getElementById('btnDeactivate');
+                    var activateBtn     = document.getElementById('btnActivate');
+                    var activateHeading = document.getElementById('activateHeading');
+                    var activateDescription = document.getElementById('activateDescription');
+                    var activateResult  = document.getElementById('activateResult');
+                    var sqliteIsValid = data.SqliteIsValid !== undefined ? data.SqliteIsValid : data.sqliteIsValid;
 
                     if (data.IsPostgresActive) {
                         box.innerHTML = '&#10003; <strong>' + escapeHtml(t('msg_postgres_active', 'PostgreSQL active')) + '</strong><br>' + escapeHtml(t('msg_connection_prefix', 'Connection: ')) + '<code>' + escapeHtml(data.ActiveConnectionString || '') + '</code>';
                         box.style.background = '#1b3a1b'; box.style.color = '#a5d6a7';
                         activateSection.style.display = '';
                         deactivateBtn.style.display = '';
-                        document.getElementById('btnActivate').style.display = 'none';
+                        activateBtn.style.display = 'none';
+                        activateHeading.textContent = t('msg_postgres_active', 'PostgreSQL active');
+                        activateDescription.textContent = 'La reversión solo se habilita si Jellyfin puede abrir y validar la base SQLite local.';
+                        deactivateBtn.disabled = !sqliteIsValid;
+                        activateResult.style.color = sqliteIsValid ? '#a5d6a7' : '#ef9a9a';
+                        activateResult.textContent = sqliteIsValid
+                            ? 'SQLite validada. Puedes revertir y reiniciar con seguridad.'
+                            : 'La reversión está bloqueada: la base SQLite local no existe o no superó la validación.';
                     } else {
                         box.innerHTML = '&#9888; <strong>' + escapeHtml(t('msg_sqlite_mode', 'Using SQLite')) + '</strong>';
                         if (data.SqliteExists) {
@@ -2132,7 +2301,11 @@
                         box.style.background = '#2a2a1a'; box.style.color = '#fff9c4';
                         activateSection.style.display = '';
                         deactivateBtn.style.display = 'none';
-                        document.getElementById('btnActivate').style.display = '';
+                        activateBtn.style.display = '';
+                        activateBtn.disabled = false;
+                        activateHeading.textContent = t('heading_activate', 'Activate PostgreSQL');
+                        activateDescription.textContent = 'Se validará la conexión PostgreSQL antes de confirmar el cambio y reiniciar Jellyfin.';
+                        activateResult.textContent = '';
                     }
 
                     fillFieldsFromConnStr(data.SavedConnectionString);
@@ -2191,7 +2364,7 @@
                     }).catch(function(err) { resultEl.textContent = t('msg_network_error', 'Network error: ') + err; resultEl.style.color = '#ef9a9a'; });
             });
 
-            document.getElementById('btnSaveConfig').addEventListener('click', function() {
+            function saveConfiguration() {
                 var connStr = buildConnStr();
                 var timeout = parseInt(document.getElementById('pgCommandTimeout').value, 10); if (isNaN(timeout) || timeout < 0) timeout = 600;
                 var minPool = parseInt(document.getElementById('pgMinPoolSize').value, 10); if (isNaN(minPool) || minPool < 0) minPool = 4;
@@ -2221,7 +2394,10 @@
                             showBanner(t('msg_connection_save_error', 'Error while saving: ') + (data.Error || ''), 'error');
                         }
                     }).catch(function(err) { showBanner(t('msg_network_error', 'Network error: ') + err, 'error'); });
-            });
+            }
+
+            document.getElementById('btnSaveConfig').addEventListener('click', saveConfiguration);
+            document.getElementById('btnSaveBackupConfig').addEventListener('click', saveConfiguration);
 
             function doActivate(timeout) {
                 var connStr  = buildConnStr();
@@ -2236,31 +2412,83 @@
                     }).catch(function(err) { resultEl.textContent = 'Error: ' + err; });
             }
 
-            function askActivate(timeout) {
-                showConfirm(
-                    t('msg_activate_restart_confirm', 'Esto escribirá database.xml y reiniciará Jellyfin. ¿Continuar?'),
-                    function() { doActivate(timeout); },
-                    { icon: '\uD83D\uDE80', title: t('heading_activate', 'Activar PostgreSQL'), confirmLabel: t('button_activate', 'Activar y reiniciar'), confirmColor: 'safe' }
-                );
+            function validateActivationAndConfirm(timeout) {
+                var host = document.getElementById('pgHost').value.trim();
+                var database = document.getElementById('pgDatabase').value.trim();
+                var resultEl = document.getElementById('activateResult');
+                var button = document.getElementById('btnActivate');
+                if (!host || !database) {
+                    resultEl.style.color = '#ef9a9a';
+                    resultEl.textContent = 'Indica al menos host y base de datos antes de activar PostgreSQL.';
+                    return;
+                }
+
+                resultEl.style.color = '#90caf9';
+                resultEl.textContent = 'Validando la conexión PostgreSQL antes del cambio…';
+                button.disabled = true;
+                apiPost('/TestConnection', { connectionString: buildConnStr() })
+                    .then(function(response) { return response.json(); })
+                    .then(function(data) {
+                        if (!data.Success) {
+                            resultEl.style.color = '#ef9a9a';
+                            resultEl.textContent = 'No se activó PostgreSQL: la conexión no pudo validarse. ' + (data.Error || '');
+                            return;
+                        }
+
+                        resultEl.style.color = '#a5d6a7';
+                        resultEl.textContent = 'Conexión validada (' + (data.Version || 'PostgreSQL') + ').';
+                        showConfirm(
+                            'La conexión PostgreSQL fue validada. Jellyfin escribirá database.xml y se reiniciará. ¿Deseas continuar?',
+                            function() { doActivate(timeout); },
+                            { icon: '\uD83D\uDE80', title: t('heading_activate', 'Activar PostgreSQL'), confirmLabel: t('button_activate', 'Activar y reiniciar'), confirmColor: 'safe' });
+                    })
+                    .catch(function(error) {
+                        resultEl.style.color = '#ef9a9a';
+                        resultEl.textContent = 'No se activó PostgreSQL: no se pudo validar la conexión. ' + error;
+                    })
+                    .then(function() { button.disabled = false; });
             }
 
             function askDeactivate() {
-                showConfirm(
-                    t('msg_deactivate_confirm', 'Esto eliminará database.xml y revertirá a SQLite. ¿Continuar?'),
-                    function() {
-                        apiPost('/Deactivate', {}).then(function(r) { return r.json(); })
-                            .then(function(data) { showBanner(data.Status || data.Error, 'info'); })
-                            .catch(function(err) { showBanner('Error: ' + err, 'error'); });
-                    },
-                    { icon: '\u21A9\uFE0F', title: t('button_deactivate', 'Revertir a SQLite'), confirmLabel: t('button_deactivate', 'Revertir y reiniciar'), confirmColor: 'warning' }
-                );
+                var resultEl = document.getElementById('activateResult');
+                var button = document.getElementById('btnDeactivate');
+                resultEl.style.color = '#90caf9';
+                resultEl.textContent = 'Validando la base SQLite de destino…';
+                button.disabled = true;
+                apiGet('/Status')
+                    .then(function(response) { return response.json(); })
+                    .then(function(status) {
+                        var sqliteIsValid = status.SqliteIsValid !== undefined ? status.SqliteIsValid : status.sqliteIsValid;
+                        if (!sqliteIsValid) {
+                            resultEl.style.color = '#ef9a9a';
+                            resultEl.textContent = 'La reversión está bloqueada: la base SQLite local no existe, está vacía o no superó integrity_check.';
+                            return;
+                        }
+
+                        resultEl.style.color = '#a5d6a7';
+                        resultEl.textContent = 'SQLite validada. La reversión puede continuar.';
+                        showConfirm(
+                            'SQLite fue validada. Se eliminará database.xml, Jellyfin volverá a SQLite y se reiniciará. ¿Deseas continuar?',
+                            function() {
+                                apiPost('/Deactivate', {})
+                                    .then(function(r) { return r.json(); })
+                                    .then(function(data) { showBanner(data.Status || data.Error, data.Error ? 'error' : 'info'); })
+                                    .catch(function(err) { showBanner('Error: ' + err, 'error'); });
+                            },
+                            { icon: '\u21A9\uFE0F', title: t('button_deactivate', 'Revertir a SQLite'), confirmLabel: t('button_deactivate', 'Revertir y reiniciar'), confirmColor: 'warning' });
+                    })
+                    .catch(function(error) {
+                        resultEl.style.color = '#ef9a9a';
+                        resultEl.textContent = 'No se pudo validar SQLite antes de la reversión. ' + error;
+                    })
+                    .then(function() { button.disabled = false; });
             }
 
             document.getElementById('btnActivate').addEventListener('click', function() {
-                var t0 = parseInt(document.getElementById('pgCommandTimeout').value, 10); askActivate(isNaN(t0) || t0 < 0 ? 60 : t0);
+                var t0 = parseInt(document.getElementById('pgCommandTimeout').value, 10); validateActivationAndConfirm(isNaN(t0) || t0 < 0 ? 60 : t0);
             });
             document.getElementById('btnActivateAfterMigration').addEventListener('click', function() {
-                var t1 = parseInt(document.getElementById('pgCommandTimeout').value, 10); askActivate(isNaN(t1) || t1 < 0 ? 60 : t1);
+                var t1 = parseInt(document.getElementById('pgCommandTimeout').value, 10); validateActivationAndConfirm(isNaN(t1) || t1 < 0 ? 60 : t1);
             });
             document.getElementById('btnDeactivate').addEventListener('click', askDeactivate);
 
@@ -2830,7 +3058,11 @@
                     + (duration != null ? ' &nbsp;|&nbsp; ' + duration + ' ms' : '');
 
                 var box = document.getElementById('healthFindings');
-                box.style.display = findings.length ? '' : 'none';
+                var panel = document.getElementById('healthFindingsPanel');
+                var panelSummary = document.getElementById('healthFindingsSummary');
+                panel.style.display = findings.length ? '' : 'none';
+                panelSummary.textContent = findings.length + ' ' + t('msg_health_findings_suffix', 'finding(s)') + ' · Ver detalles';
+                panel.open = String(overall || '').toLowerCase() === 'error';
                 var html = '';
                 findings.forEach(function(f) {
                     var fsev = f.Severity !== undefined ? f.Severity : f.severity;
@@ -2915,6 +3147,7 @@
             document.getElementById('btnHealthRepair').addEventListener('click', runHealthRepair);
 
             applyLocalization();
+            modernizeActionButtons();
             document.getElementById('currentStatusBox').textContent = t('msg_loading', 'Loading...');
             loadQueryHistory();
             document.querySelector('.pg-tab-btn[data-tab="config"]').click();
