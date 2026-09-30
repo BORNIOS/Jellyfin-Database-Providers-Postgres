@@ -2270,6 +2270,36 @@
             document.getElementById('pluginSchemaSelect').addEventListener('change', loadSelectedPluginSchema);
             document.getElementById('pluginTableSelect').addEventListener('change', loadSelectedPluginTable);
 
+            var sqliteValidationRequest = 0;
+
+            function validateSqliteInBackground() {
+                var request = ++sqliteValidationRequest;
+                var resultEl = document.getElementById('activateResult');
+                var button = document.getElementById('btnDeactivate');
+                if (!button || !resultEl || button.style.display === 'none') return;
+
+                button.disabled = true;
+                resultEl.style.color = '#90caf9';
+                resultEl.textContent = 'Validando la base SQLite de destino en segundo plano…';
+                apiGet('/SqliteValidation')
+                    .then(function(response) { return response.json(); })
+                    .then(function(status) {
+                        if (request !== sqliteValidationRequest) return;
+                        var sqliteIsValid = status.IsValid !== undefined ? status.IsValid : status.isValid;
+                        button.disabled = !sqliteIsValid;
+                        resultEl.style.color = sqliteIsValid ? '#a5d6a7' : '#ef9a9a';
+                        resultEl.textContent = sqliteIsValid
+                            ? 'SQLite validada. Puedes revertir y reiniciar con seguridad.'
+                            : 'La reversión está bloqueada: ' + (status.Error || status.error || 'la base SQLite local no existe, está vacía o no superó integrity_check.');
+                    })
+                    .catch(function(error) {
+                        if (request !== sqliteValidationRequest) return;
+                        button.disabled = true;
+                        resultEl.style.color = '#ef9a9a';
+                        resultEl.textContent = 'La reversión está bloqueada: no se pudo validar SQLite. ' + error;
+                    });
+            }
+
             function loadStatus() {
                 hideBanner();
                 apiGet('/Status').then(function(resp) { return resp.json(); }).then(function(data) {
@@ -2288,12 +2318,14 @@
                         activateBtn.style.display = 'none';
                         activateHeading.textContent = t('msg_postgres_active', 'PostgreSQL active');
                         activateDescription.textContent = 'La reversión solo se habilita si Jellyfin puede abrir y validar la base SQLite local.';
-                        deactivateBtn.disabled = !data.SqliteExists;
+                        deactivateBtn.disabled = true;
                         activateResult.style.color = data.SqliteExists ? '#90caf9' : '#ef9a9a';
                         activateResult.textContent = data.SqliteExists
-                            ? 'La base SQLite se validará justo antes de confirmar la reversión.'
+                            ? 'Estado del motor confirmado. SQLite se validará en segundo plano.'
                             : 'La reversión está bloqueada: la base SQLite local no existe.';
+                        if (data.SqliteExists) validateSqliteInBackground();
                     } else {
+                        sqliteValidationRequest++;
                         box.innerHTML = '&#9888; <strong>' + escapeHtml(t('msg_sqlite_mode', 'Using SQLite')) + '</strong>';
                         if (data.SqliteExists) {
                             box.innerHTML += '<br>' + escapeHtml(t('msg_sqlite_file_prefix', 'File: ')) + '<code>' + escapeHtml(data.SqliteDefaultPath) + '</code> (' + escapeHtml(data.SqliteSize || '') + ')';
