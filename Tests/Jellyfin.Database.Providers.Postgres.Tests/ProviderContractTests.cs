@@ -1,9 +1,12 @@
 using System.Reflection;
 using System.Text.RegularExpressions;
 using Jellyfin.Database.Implementations;
+using Jellyfin.Database.Providers.Postgres.Api;
+using Jellyfin.Database.Providers.Postgres.Services;
 using MediaBrowser.Common.Plugins;
 using MediaBrowser.Controller.Plugins;
 using MediaBrowser.Model.Plugins;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Jellyfin.Database.Providers.Postgres.Tests;
@@ -40,6 +43,20 @@ public sealed class ProviderContractTests
         Assert.True(typeof(IPluginServiceRegistrator).IsAssignableFrom(typeof(PostgresServiceRegistrator)));
         Assert.True(typeof(BasePlugin<PluginConfiguration>).IsAssignableFrom(typeof(PostgresPlugin)));
         Assert.True(typeof(IHasWebPages).IsAssignableFrom(typeof(PostgresPlugin)));
+    }
+
+    /// <summary>
+    /// The optional cross-plugin contract is registered as a private-schema host, never as a raw database
+    /// connection or a provider for Jellyfin's own model.
+    /// </summary>
+    [Fact]
+    public void PrivateSchemaHostIsRegistered()
+    {
+        var services = new ServiceCollection();
+        new PostgresServiceRegistrator().RegisterServices(services, null!);
+
+        var registration = Assert.Single(services, service => service.ServiceType == typeof(IPluginSchemaHost));
+        Assert.Equal(typeof(PostgresPluginSchemaHost), registration.ImplementationType);
     }
 
     /// <summary>

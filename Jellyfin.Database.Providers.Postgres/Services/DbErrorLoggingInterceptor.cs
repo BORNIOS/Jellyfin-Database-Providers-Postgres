@@ -23,6 +23,10 @@ namespace Jellyfin.Database.Providers.Postgres.Services;
 /// </remarks>
 public sealed class DbErrorLoggingInterceptor : DbCommandInterceptor
 {
+    // A command above this threshold is useful operational information, while logging every successful
+    // command would turn the dedicated database log into an I/O bottleneck during Home fan-out.
+    private const int SlowCommandThresholdMilliseconds = 500;
+
     // Longest SQL preview written for a failed command (EF Core statements are long, and the head of
     // the statement is what identifies it).
     private const int MaxSqlPreviewLength = 500;
@@ -58,6 +62,60 @@ public sealed class DbErrorLoggingInterceptor : DbCommandInterceptor
     {
         LogCommandError(command, eventData.Exception);
         return Task.CompletedTask;
+    }
+
+    /// <inheritdoc />
+    public override DbDataReader ReaderExecuted(DbCommand command, CommandExecutedEventData eventData, DbDataReader result)
+    {
+        LogSlowCommand(command, eventData.Duration, "reader");
+        return result;
+    }
+
+    /// <inheritdoc />
+    public override ValueTask<DbDataReader> ReaderExecutedAsync(
+        DbCommand command,
+        CommandExecutedEventData eventData,
+        DbDataReader result,
+        CancellationToken cancellationToken = default)
+    {
+        LogSlowCommand(command, eventData.Duration, "reader");
+        return ValueTask.FromResult(result);
+    }
+
+    /// <inheritdoc />
+    public override int NonQueryExecuted(DbCommand command, CommandExecutedEventData eventData, int result)
+    {
+        LogSlowCommand(command, eventData.Duration, "non-query");
+        return result;
+    }
+
+    /// <inheritdoc />
+    public override ValueTask<int> NonQueryExecutedAsync(
+        DbCommand command,
+        CommandExecutedEventData eventData,
+        int result,
+        CancellationToken cancellationToken = default)
+    {
+        LogSlowCommand(command, eventData.Duration, "non-query");
+        return ValueTask.FromResult(result);
+    }
+
+    /// <inheritdoc />
+    public override object? ScalarExecuted(DbCommand command, CommandExecutedEventData eventData, object? result)
+    {
+        LogSlowCommand(command, eventData.Duration, "scalar");
+        return result;
+    }
+
+    /// <inheritdoc />
+    public override ValueTask<object?> ScalarExecutedAsync(
+        DbCommand command,
+        CommandExecutedEventData eventData,
+        object? result,
+        CancellationToken cancellationToken = default)
+    {
+        LogSlowCommand(command, eventData.Duration, "scalar");
+        return ValueTask.FromResult(result);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -104,6 +162,18 @@ public sealed class DbErrorLoggingInterceptor : DbCommandInterceptor
         {
             PostgresLog.Error(BuildMessage(exception, command), exception);
         }
+    }
+
+    private static void LogSlowCommand(DbCommand command, TimeSpan duration, string commandKind)
+    {
+        if (duration.TotalMilliseconds < SlowCommandThresholdMilliseconds)
+        {
+            return;
+        }
+
+        PostgresLog.Warn(string.Create(
+            CultureInfo.InvariantCulture,
+            $"[DB] Consulta lenta ({commandKind}): {duration.TotalMilliseconds:F0} ms | SQL: {Truncate(command.CommandText, MaxSqlPreviewLength)}"));
     }
 
     /// <summary>

@@ -38,4 +38,16 @@ public sealed class DateTimeKindNormalizingInterceptorTests
         Assert.All(values, value => Assert.Equal(DateTimeKind.Utc, value.Kind));
         Assert.Equal(local.ToUniversalTime(), values[0]);
     }
+
+    /// <summary>Missing-date sentinels must remain representable after a client timezone conversion.</summary>
+    [Fact]
+    public void DateTimeMinimumIsReplacedWithClientSafeUtcSentinel()
+    {
+        var command = new NpgsqlCommand("SELECT @date");
+        command.Parameters.AddWithValue("date", DateTime.MinValue);
+
+        new DateTimeKindNormalizingInterceptor().ReaderExecuting(command, null!, default);
+
+        Assert.Equal(DateTime.UnixEpoch, Assert.IsType<DateTime>(command.Parameters["date"].Value));
+    }
 }

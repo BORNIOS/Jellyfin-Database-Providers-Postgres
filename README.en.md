@@ -38,6 +38,7 @@ automatic health check, scheduled maintenance and optional JellyTrend integratio
 | [What is new in 3.0.0](docs/whats-new-3.0.0.en.md) · [ES](docs/novedades-3.0.0.md) | Every change in 3.0.0 vs 2.0.1 |
 | [Jellyfin 12.1 adaptation](docs/JELLYFIN-12.1.md) | Technical notes and how to run the test suite |
 | [Automated verification](docs/VERIFICACION-RESUMEN.md) | Executive summary generated from the real suite |
+| [Developer integration](docs/developer-integration.en.md) · [ES](docs/integracion-desarrolladores.md) | Public contract, private schemas, migrations and managed maintenance |
 
 ---
 
@@ -50,10 +51,18 @@ automatic health check, scheduled maintenance and optional JellyTrend integratio
 - 🛡️ **Error prevention** — EF Core interceptors for upserts, DB error logging and `DateTime.Kind` normalization.
 - 🔧 **Automatic optimization** — GIN indexes CONCURRENTLY, autovacuum tuning on critical tables.
 - 💾 **Scheduled backups** with `pg_dump`, optional ZIP compression and restore from the UI.
-- ⚡ **Optional JellyTrend integration** — with JellyTrend 3.x its data lives in the `jellytrend` schema of your database (created only when that plugin is present) and recommendations are **4-10× faster** with optimized native SQL.
+- 🔐 **Private-schema host** — a reusable contract through which other plugins persist only their own data, without credentials or access to Jellyfin's `public` schema.
 - 📊 **Database statistics** — total size, active connections and per-table metrics from the UI.
 - 🧪 **Read-only SQL console** — run diagnostic queries from the panel with 10 templates and history; any data-modifying statement is rejected.
 - 🔁 **One-click rollback to SQLite** from the configuration tab.
+
+## 🧩 Plugin integrations
+
+PG Provider can act as private PostgreSQL storage for other plugins without giving them credentials or access to Jellyfin's `public` schema. From **Integrations**, the administrator can review registered integrations, their tables and maintenance signals, and choose which schemas participate in scheduled work.
+
+![Integrations tab](Screenshots/Tab-Intergations.png)
+
+Read the [developer integration guide](docs/developer-integration.en.md) for the public contract, migration design and security limits.
 
 ## ⚙️ Compatibility
 
@@ -97,8 +106,9 @@ automatic health check, scheduled maintenance and optional JellyTrend integratio
 ## 🖥️ Plugin tabs
 
 The plugin adds its own page under **Dashboard → Plugins → PostgreSQL Database Provider** with
-**five tabs**, in this order: **Configuration**, **Migration**, **Maintenance**, **Health** and
-**SQL console**. Each one covers a part of the database lifecycle.
+**six tabs**, in this order: **Configuration**, **Migration**, **Maintenance**, **Health**,
+**SQL console**, and **🧩 Integrations**. The tab bar adapts to narrow screens while retaining each
+section name as contextual help.
 
 ### ⚙️ Configuration — connection, pool and active engine
 
@@ -138,8 +148,8 @@ file, schema, plus a line with `Pool: min-max · Timeout · Prepared statements`
 |---|---|
 | **Test connection** | Validates the connection string and returns the PostgreSQL server version |
 | **Save configuration** | Persists connection, advanced options and paths (rejects `max < min`) |
-| **Activate PostgreSQL and restart** | Writes `config/database.xml` in `PLUGIN_PROVIDER` mode and restarts the server |
-| **Revert to SQLite and restart** | Removes `config/database.xml` and switches back to SQLite |
+| **Activate PostgreSQL and restart** | Shown only while Jellyfin uses SQLite; validates the connection before writing `config/database.xml` in `PLUGIN_PROVIDER` mode and restarting |
+| **Revert to SQLite and restart** | Shown only while PostgreSQL is active; validates that a usable SQLite database exists, removes `config/database.xml`, and restarts |
 
 **Recommended flow:** 1) **Test connection** → 2) tune pool and timeout → 3) **Save
 configuration** → 4) migrate data → 5) **Activate PostgreSQL**.
@@ -171,6 +181,7 @@ Exports the entire database to a native `.db` file without external tools.
 - If `.db` doesn't exist → created with schema derived from PostgreSQL.
 - If `.db` already exists → table structure is preserved; only data is replaced (`DELETE` + `INSERT`).
 - Written in 10,000-row transactions with `PRAGMA journal_mode=WAL`.
+- When Jellyfin 12.1 requires the legacy `library.db` file, it is created by SQLite itself and validated with `PRAGMA integrity_check`; export fails explicitly instead of leaving an invalid file.
 
 **Use cases:** revert to SQLite, portable backup, local inspection.
 
@@ -184,8 +195,8 @@ Maintenance operations, backups and database statistics.
 
 | Action | Function |
 |---|---|
-| **VACUUM ANALYZE** | Free space and update planner statistics |
-| **REINDEX DATABASE** | Rebuild all indexes |
+| **VACUUM ANALYZE** | Maintains Jellyfin `public` tables; private schemas participate only when enabled by an administrator in **Integrations** |
+| **REINDEX DATABASE** | Rebuilds indexes in `public`; private schemas require explicit opt-in in **Integrations** |
 | **Apply optimizations** | Create 9 GIN indexes CONCURRENTLY and tune autovacuum on critical tables |
 | **Create backup now** | Generate a `.sql` with `pg_dump` (plus `.zip` when compression is on) |
 | **Restore backup** | Restore from `.sql` or `.zip`, with a picker of available backups |
@@ -212,6 +223,7 @@ tab itself.
 | **Drifted sequences** | Sequences out of range vs actual data |
 | **Stale statistics** | Tables without recent `ANALYZE` |
 | **Slow queries** | Top queries by cumulative time (`pg_stat_statements`) |
+| **Buffer pressure** | Shared-cache hit rate, blocks read from disk, temporary I/O, and WAL generated by slow queries |
 
 Every result carries a traffic light `Info` / `Warn` / `Error`, and repairable issues are fixed from
 the same card. The startup summary also lands in the plugin log:
@@ -236,6 +248,23 @@ opening a `psql` session.
 - Templates filter by database and exclude administrative statements, so they carry no noise from
   other databases on the same PostgreSQL server.
 - **History** of recent queries kept in the browser session, with a button to clear it.
+
+---
+
+### 🧩 Integrations — private schemas for other plugins
+
+Inspect only schemas registered through the provider's public contract, without exposing credentials,
+`public`, or another integration's data. Choose an integration and then a table to view a bounded,
+sortable data preview.
+
+- The status table reports estimated rows, size, indexes, dead tuples, and changes.
+- Scheduled **ANALYZE** starts enabled; scheduled `VACUUM (ANALYZE)` and `REINDEX` run only when an
+  administrator selects that schema.
+- A complete backup includes every registered private schema; manual operations stay limited to the
+  selected schema or table.
+
+Read the [developer integration guide](docs/developer-integration.en.md) for the contract, isolation,
+and migration strategy.
 
 ---
 
@@ -290,36 +319,11 @@ In **Maintenance**: **Create backup now** / **Restore backup** (accepts `.sql` o
 | Task | Default | Description |
 |---|---|---|
 | **PostgreSQL Backup** | Daily 02:00 | Backup with `pg_dump` |
-| **PostgreSQL VACUUM ANALYZE** | Sunday 03:00 | Free space and update statistics |
-| **PostgreSQL REINDEX DATABASE** | Sunday 04:00 | Rebuild all indexes |
+| **PostgreSQL VACUUM ANALYZE (managed schemas)** | Sunday 03:00 | Maintains `public` and only private schemas enabled in **Integrations** |
+| **PostgreSQL REINDEX (managed schemas)** | Sunday 04:00 | Rebuilds indexes in `public` and only opted-in private schemas |
 | **Optimize GIN Indexes** | Sunday 05:00 | Keep GIN trigram indexes fresh |
 
 > ⚠️ Avoid overlapping REINDEX, VACUUM and Backup in the same time window.
-
----
-
-## ⚡ JellyTrend integration
-
-If you have [**JellyTrend**](https://github.com/BORNIOS/JellyTrend) installed, this plugin offers it **two things** and JellyTrend detects both on its own, with nothing to configure:
-
-| Role | What it does |
-|---|---|
-| 🗄️ **Data store** (JellyTrend 3.x) | JellyTrend creates the **`jellytrend`** schema in your database and keeps its feature cache, trending list, per-user taste profiles and recommendations, hidden titles and run history there. The schema is created the first time JellyTrend asks for it: **a server without JellyTrend never sees those tables** |
-| 🔍 **Query accelerator** | The recommendation engine replaces `ILibraryManager` queries with native SQL using the `&&` array operator and the GIN indexes — **4-10× faster** |
-
-| Engine | Behavior |
-|---|---|
-| **SQLite** (without this plugin) | `ILibraryManager` — compatible with any installation |
-| **PostgreSQL** (with this plugin) | Its own store + direct SQL with GIN indexes — **4-10× faster** |
-
-**About the `jellytrend` schema:**
-
-- It lives **outside `public`** on purpose: the PostgreSQL to SQLite export enumerates the tables of `public`, so these **never end up inside a SQLite file**, and the Health Check and the panel statistics keep analysing Jellyfin's tables only.
-- JellyTrend still writes its JSON files to `{DataDir}/data/JellyTrend` as a **courtesy copy**: removing either plugin loses nothing.
-- Current schema version: **v4**, and JellyTrend shows it on its *Activity* tab.
-
-> ✅ No manual setup needed: if both plugins are installed, both integrations activate on their own.
-> ℹ️ And it is optional in both directions: JellyTrend runs just as well on SQLite, and this provider runs without JellyTrend.
 
 ---
 
@@ -362,15 +366,24 @@ The plugin preserves the table structure and replaces only the data (DELETE + IN
 </details>
 
 <details>
+<summary><b>I use Docker; why does a backup or migration copy fail with <code>pg_dump</code>?</b></summary>
+
+`pg_dump`, `psql`, and `pg_restore` run inside the Jellyfin container. Install a compatible PostgreSQL
+client —PostgreSQL 17 is recommended— in your image derived from Jellyfin and set its binary directory
+in **PgBin path**. Installing it only on the Docker host does not make it available to the plugin in
+the container.
+</details>
+
+<details>
 <summary><b>Does the fast search require client changes?</b></summary>
 
 No. It is a server-side endpoint. The plugin UI uses it internally when PostgreSQL is active and GIN indexes exist.
 </details>
 
 <details>
-<summary><b>Why do timestamps show UTC instead of my timezone?</b></summary>
+<summary><b>Why do timestamps show UTC instead of my timezone, or a minimum date?</b></summary>
 
-Earlier versions used the global `Npgsql.EnableLegacyTimestampBehavior` switch which forced UTC on all reads. Since v2.0.0.0 this was replaced by `DateTimeKindNormalizingInterceptor`, which only normalizes write parameters with `Kind=Unspecified`, respecting the PostgreSQL server timezone on reads.
+Earlier versions used the global `Npgsql.EnableLegacyTimestampBehavior` switch, which forced UTC on all reads. The current interceptor normalizes timezone-less write parameters without changing reads and replaces `DateTime.MinValue` with a client-safe UTC value before Npgsql represents it as `-infinity`.
 </details>
 
 ---

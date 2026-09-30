@@ -131,11 +131,51 @@ public sealed class HomeQueryCacheTests
     }
 
     /// <summary>
-    /// A cold home-query cache must execute one database command even when many callers arrive together.
-    /// The sequence exposes physical executions: each execution would otherwise return a different value.
+    /// A deterministic 100-row BaseItems page must warm only its immediate successor. The request for the
+    /// second page is then served from memory, while that cache hit starts warming page three.
     /// </summary>
     [SkippableFact]
-    public async Task ConcurrentMissesForTheSameKeyShareOneDatabaseExecution()
+    public async Task FullBaseItemsPagePrefetchesTheNextPage()
+    {
+        Skip.IfNot(TestEnvironment.PostgresAvailable, SkipReason);
+        await using var scratch = await TestEnvironment.ScratchDatabaseScope.CreateAsync();
+        HomeQueryCacheInterceptor.Purge();
+        await MigrateAsync(scratch.Database.ConnectionString);
+
+        await ExecuteAsync(
+            scratch.Database.ConnectionString,
+            """
+            INSERT INTO "BaseItems" ("Id", "Type", "IsMovie", "IsLocked", "IsSeries", "IsRepeat", "IsInMixedFolder", "IsFolder", "IsVirtualItem", "Name")
+            SELECT md5('home-prefetch-' || value::text)::uuid, 'Movie', false, false, false, false, false, false, false, 'Home prefetch ' || lpad(value::text, 3, '0')
+            FROM generate_series(0, 200) AS value;
+            """);
+
+        var interceptor = new HomeQueryCacheInterceptor();
+        using var context = CreateContext(scratch.Database.ConnectionString, interceptor);
+        const string Sql = "SELECT \"Id\" AS \"Value\" FROM \"BaseItems\" ORDER BY \"Name\" LIMIT @limit OFFSET @offset";
+
+        var firstPage = await context.Database.SqlQueryRaw<Guid>(Sql, new NpgsqlParameter { ParameterName = "limit", Value = 100 }, new NpgsqlParameter { ParameterName = "offset", Value = 0 }).ToListAsync();
+        Assert.Equal(100, firstPage.Count);
+
+        for (var attempt = 0; attempt < 50 && HomeQueryCacheInterceptor.PrefetchCompletedCount == 0; attempt++)
+        {
+            await Task.Delay(50);
+        }
+
+        Assert.Equal(1, HomeQueryCacheInterceptor.PrefetchCompletedCount);
+
+        var secondPage = await context.Database.SqlQueryRaw<Guid>(Sql, new NpgsqlParameter { ParameterName = "limit", Value = 100 }, new NpgsqlParameter { ParameterName = "offset", Value = 100 }).ToListAsync();
+        Assert.Equal(100, secondPage.Count);
+        Assert.Equal(1, HomeQueryCacheInterceptor.PrefetchedPageHitCount);
+    }
+
+    /// <summary>
+    /// Media-table queries must retain Npgsql's native reader conversions. Jellyfin's built-in search
+    /// projects an integer expression into a float; Npgsql permits that conversion while DataTableReader
+    /// requires an exact CLR type and used to make EF Core's GetFloat fail.
+    /// </summary>
+    [SkippableFact]
+    public async Task CachedMediaTableQueryPreservesSingle()
     {
         Skip.IfNot(TestEnvironment.PostgresAvailable, SkipReason);
         await using var scratch = await TestEnvironment.ScratchDatabaseScope.CreateAsync();
@@ -146,7 +186,6 @@ public sealed class HomeQueryCacheTests
         await ExecuteAsync(
             scratch.Database.ConnectionString,
             string.Concat(
-                "CREATE SEQUENCE home_query_cache_probe; ",
                 "INSERT INTO \"ItemValues\" (\"ItemValueId\", \"Type\", \"Value\", \"CleanValue\") VALUES ('",
                 itemId.ToString(),
                 "', 2, 'SingleFlightProbe', 'singleflightprobe');"));
@@ -158,15 +197,43 @@ public sealed class HomeQueryCacheTests
             await start.Task;
             using var context = CreateContext(scratch.Database.ConnectionString, interceptor);
             return await context.Database
-                .SqlQueryRaw<long>("SELECT nextval('home_query_cache_probe') AS \"Value\" FROM \"ItemValues\" LIMIT 1")
+                    .SqlQueryRaw<float>("SELECT 1::integer AS \"Value\" FROM \"ItemValues\" LIMIT 1")
                 .SingleAsync();
         });
 
         start.SetResult();
         var results = await Task.WhenAll(callers);
 
-        Assert.All(results, value => Assert.Equal(1, value));
+        Assert.All(results, value => Assert.Equal(1f, value));
         Assert.Equal(0, HomeQueryCacheInterceptor.InFlightCount);
+    }
+
+    /// <summary>
+    /// The plugin role owns its database, so enabling search optimizations must
+    /// install pg_trgm in a new database instead of only warning that it is absent.
+    /// </summary>
+    [SkippableFact]
+    public async Task SearchOptimizationsEnablePgTrgmForDatabaseOwner()
+    {
+        Skip.IfNot(TestEnvironment.PostgresAvailable, SkipReason);
+        await using var scratch = await TestEnvironment.ScratchDatabaseScope.CreateAsync();
+        await MigrateAsync(scratch.Database.ConnectionString);
+
+        await PostgresDatabaseProvider.RunOptimizationsAsync(
+            scratch.Database.ConnectionString,
+            enableSearch: true,
+            enableVacuum: false,
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        await using var connection = new NpgsqlConnection(scratch.Database.ConnectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(
+            "SELECT COUNT(*) FROM pg_extension WHERE extname = 'pg_trgm';",
+            connection);
+        var installed = Convert.ToInt64(await command.ExecuteScalarAsync(), CultureInfo.InvariantCulture);
+
+        Assert.Equal(1, installed);
     }
 
     /// <summary>Reads the identifiers of the values of a kind, using the shape Jellyfin's checks use.</summary>
@@ -195,6 +262,10 @@ public sealed class HomeQueryCacheTests
 
     private static JellyfinDbContext CreateContext(string connectionString, params IInterceptor[] interceptors)
     {
+        connectionString = new NpgsqlConnectionStringBuilder(connectionString)
+        {
+            PersistSecurityInfo = true,
+        }.ConnectionString;
         var builder = new DbContextOptionsBuilder<JellyfinDbContext>()
             .UseNpgsql(connectionString, pg => pg.MigrationsAssembly(typeof(PostgresDatabaseProvider).Assembly.FullName));
         if (interceptors.Length > 0)

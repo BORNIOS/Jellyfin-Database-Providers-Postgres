@@ -9,10 +9,12 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.DbConfiguration;
+using Jellyfin.Database.Providers.Postgres.Logging;
 using Jellyfin.Database.Providers.Postgres.Services;
 using Jellyfin.Database.Providers.Postgres.Services.Models;
 using MediaBrowser.Common.Configuration;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
@@ -178,6 +180,13 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
                         npgsql.CommandTimeout(commandTimeout);
                     }
                 })
+            // Direct EF Core diagnostics are reliable even though Jellyfin's ILoggerFactory is constructed
+            // before plugins. Command lifecycle messages are intentionally excluded: the interceptor records
+            // slow commands and failures with richer, redacted SQL context in Postgres-*.log.
+            .LogTo(
+                EfCoreDatabaseDiagnostics.Write,
+                (eventId, level) => level >= LogLevel.Information
+                    && !(eventId.Name?.Contains("Command", StringComparison.Ordinal) ?? false))
             .AddInterceptors(
                 new Jellyfin121MigrationInterceptor(),
                 // This must precede HomeQueryCacheInterceptor: the cache buffers a miss by executing
@@ -239,6 +248,11 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         int commandTimeout)
     {
         var builder = new NpgsqlConnectionStringBuilder(connectionString);
+
+        // Home/page prefetching opens an independent pooled connection after EF Core has returned the
+        // current page. Npgsql otherwise redacts Password from ConnectionString after Open(), leaving the
+        // background connection unable to authenticate. This value remains process-local and is never logged.
+        builder.PersistSecurityInfo = true;
 
         // ShouldSerialize tells whether the key was explicitly present in the connection string.
         if (!builder.ShouldSerialize("Minimum Pool Size") && (config?.MinPoolSize ?? 0) > 0)
@@ -606,7 +620,7 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         using var conn = new NpgsqlConnection(connectionString);
         await conn.OpenAsync(ct).ConfigureAwait(false);
 
-        _trgmAvailable = await CheckTrgmAsync(conn, logger, ct).ConfigureAwait(false);
+        _trgmAvailable = await EnsureTrgmAsync(conn, logger, ct).ConfigureAwait(false);
         Logging.PostgresLog.Info($"[Optimization] pg_trgm: {(_trgmAvailable ? "disponible \u2713" : "no disponible \u2717 \u2014 InstantSearch usar\u00e1 ILIKE")}");
 
         if (enableSearch && _trgmAvailable)
@@ -646,7 +660,7 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
-    private static async Task<bool> CheckTrgmAsync(NpgsqlConnection conn, ILogger logger, CancellationToken ct)
+    private static async Task<bool> EnsureTrgmAsync(NpgsqlConnection conn, ILogger logger, CancellationToken ct)
     {
         // Hardcoded SQL literal — no user input (CA2100)
         const string sql = "SELECT COUNT(*) FROM pg_extension WHERE extname = 'pg_trgm';";
@@ -655,16 +669,30 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
             using var cmd = new NpgsqlCommand(sql, conn);
             var result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
             var available = Convert.ToInt64(result, System.Globalization.CultureInfo.InvariantCulture) > 0;
-            if (!available)
+            if (available)
             {
-                logger.LogWarning("pg_trgm extension not found. Run: CREATE EXTENSION pg_trgm;");
+                return true;
             }
 
-            return available;
+            // The plugin database role is documented as the database owner. Creating
+            // pg_trgm is therefore an idempotent native optimization, not a manual
+            // DBA prerequisite. A server without the extension files still reports a
+            // clear warning and continues with the ILIKE fallback.
+            using var create = new NpgsqlCommand("CREATE EXTENSION IF NOT EXISTS pg_trgm;", conn);
+            await create.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            Logging.PostgresLog.Info("[Optimization] pg_trgm activado ✓.");
+            return true;
+        }
+        catch (PostgresException pgEx) when (pgEx.SqlState is "42501" or "0A000" or "58P01")
+        {
+            logger.LogWarning(
+                "pg_trgm could not be enabled automatically ({Reason}). InstantSearch will use ILIKE.",
+                pgEx.MessageText);
+            return false;
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Could not probe pg_trgm availability.");
+            logger.LogWarning(ex, "Could not enable pg_trgm availability.");
             return false;
         }
     }

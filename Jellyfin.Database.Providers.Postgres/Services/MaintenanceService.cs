@@ -13,6 +13,8 @@ using Jellyfin.Database.Providers.Postgres.Services.Models;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
+#pragma warning disable SA1611, SA1615, SA1503
+
 namespace Jellyfin.Database.Providers.Postgres.Services;
 
 /// <summary>
@@ -83,6 +85,21 @@ public sealed class MaintenanceService
         PostgresLog.Info($"[Vacuum] COMPLETADO en {sw.Elapsed.TotalSeconds:F1}s. Las tablas han sido analizadas y el espacio muerto recuperado.");
     }
 
+    /// <summary>Runs VACUUM (ANALYZE) one table at a time for a validated provider-owned schema.</summary>
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The schema is validated against a strict PostgreSQL identifier allow-list and table names come only from pg_class before both are quoted.")]
+    public async Task VacuumAnalyzeSchemaAsync(string connectionString, string schema, CancellationToken ct = default)
+    {
+        var safeSchema = RequireSchemaIdentifier(schema);
+        var tables = await ListSchemaTablesAsync(connectionString, safeSchema, ct).ConfigureAwait(false);
+        using var pg = new NpgsqlConnection(connectionString);
+        await pg.OpenAsync(ct).ConfigureAwait(false);
+        foreach (var table in tables)
+        {
+            using var command = new NpgsqlCommand($"VACUUM (ANALYZE) {QuoteIdentifier(safeSchema)}.{QuoteIdentifier(table)}", pg) { CommandTimeout = 0 };
+            await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+    }
+
     // ── REINDEX ───────────────────────────────────────────────────────────────
 
     /// <summary>Runs <c>REINDEX DATABASE CONCURRENTLY</c>.</summary>
@@ -115,6 +132,17 @@ public sealed class MaintenanceService
         sw.Stop();
         _logger.LogInformation("REINDEX DATABASE completed.");
         PostgresLog.Info($"[Reindex] COMPLETADO en {sw.Elapsed.TotalSeconds:F1}s. Todos los índices de '{dbName}' han sido reconstruidos.");
+    }
+
+    /// <summary>Rebuilds all indexes in a provider-owned schema concurrently.</summary>
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The schema is validated against a strict PostgreSQL identifier allow-list before it is quoted.")]
+    public async Task ReindexSchemaAsync(string connectionString, string schema, CancellationToken ct = default)
+    {
+        var safeSchema = RequireSchemaIdentifier(schema);
+        using var pg = new NpgsqlConnection(connectionString);
+        await pg.OpenAsync(ct).ConfigureAwait(false);
+        using var command = new NpgsqlCommand($"REINDEX SCHEMA CONCURRENTLY {QuoteIdentifier(safeSchema)}", pg) { CommandTimeout = 0 };
+        await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
     // ── Table statistics ──────────────────────────────────────────────────────
@@ -232,6 +260,29 @@ public sealed class MaintenanceService
 
     internal static string QuoteIdentifier(string input)
         => $"\"{input.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
+
+    private static async Task<List<string>> ListSchemaTablesAsync(string connectionString, string schema, CancellationToken ct)
+    {
+        const string sql = "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = @schema AND c.relkind IN ('r', 'p') ORDER BY c.relname";
+        var tables = new List<string>();
+        using var pg = new NpgsqlConnection(connectionString);
+        await pg.OpenAsync(ct).ConfigureAwait(false);
+        using var command = new NpgsqlCommand(sql, pg);
+        command.Parameters.AddWithValue("schema", schema);
+        using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false)) tables.Add(reader.GetString(0));
+        return tables;
+    }
+
+    private static string RequireSchemaIdentifier(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || !System.Text.RegularExpressions.Regex.IsMatch(value, "^[a-z][a-z0-9_]{0,62}$", System.Text.RegularExpressions.RegexOptions.CultureInvariant))
+        {
+            throw new ArgumentException("Invalid PostgreSQL schema identifier.", nameof(value));
+        }
+
+        return value;
+    }
 
     internal static string ValidateBackupFilePath(string path)
     {
@@ -434,3 +485,4 @@ public sealed class MaintenanceService
         return new NpgsqlCommand(sql, pg) { CommandTimeout = 0 };
     }
 }
+#pragma warning restore SA1611, SA1615, SA1503

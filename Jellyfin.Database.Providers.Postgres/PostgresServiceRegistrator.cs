@@ -1,4 +1,5 @@
 using System;
+using Jellyfin.Database.Providers.Postgres.Api;
 using Jellyfin.Database.Providers.Postgres.Services;
 using Jellyfin.Database.Providers.Postgres.Tasks;
 using MediaBrowser.Controller;
@@ -19,21 +20,20 @@ public class PostgresServiceRegistrator : IPluginServiceRegistrator
     /// <inheritdoc/>
     public void RegisterServices(IServiceCollection serviceCollection, IServerApplicationHost applicationHost)
     {
+        // This is intentionally the only public cross-plugin database contract. It gives a consumer an
+        // isolated schema but never a connection, credential, or route to Jellyfin's public schema.
+        serviceCollection.AddSingleton<IPluginSchemaHost, PostgresPluginSchemaHost>();
         serviceCollection.AddSingleton<MigrationService>();
         serviceCollection.AddSingleton<MaintenanceService>();
         serviceCollection.AddSingleton<InstantSearchService>();
         serviceCollection.AddSingleton<ExportToSqliteService>();
         serviceCollection.AddSingleton<HealthCheckService>();
         serviceCollection.AddSingleton<QueryConsoleService>();
+        serviceCollection.AddSingleton<PluginSchemaExplorerService>();
+        serviceCollection.AddSingleton<PluginSchemaMaintenanceService>();
         serviceCollection.AddSingleton<IScheduledTask, BackupTask>();
         serviceCollection.AddSingleton<IScheduledTask, VacuumAnalyzeTask>();
         serviceCollection.AddSingleton<IScheduledTask, ReindexTask>();
         serviceCollection.AddSingleton<IScheduledTask, OptimizeIndexesTask>();
-
-        // No JellyTrend registration happens here on purpose. This assembly carries a mirror of the
-        // JellyTrend contract, which is the same full name in a different assembly: registering it would
-        // hand JellyTrend an object that does not implement ITS interface, and resolving it throws
-        // InvalidCastException. The plugin that needs the data looks for it, so JellyTrend discovers
-        // PostgresRecommendationQueryProvider by reflection over the loaded plugins.
     }
 }
