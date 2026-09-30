@@ -265,6 +265,9 @@ internal sealed partial class PostgresPluginSchemaHost : IPluginSchemaHost
 
         const string sql = "CREATE TABLE IF NOT EXISTS jellyfin_provider.plugin_schemas (plugin_id uuid PRIMARY KEY, plugin_name text NOT NULL, schema_name text NOT NULL UNIQUE, protocol_version integer NOT NULL, created_at timestamp with time zone NOT NULL DEFAULT now(), last_seen_at timestamp with time zone NOT NULL DEFAULT now(), state text NOT NULL DEFAULT 'active')";
         await ExecuteInTransactionAsync(connection, transaction, sql, null, cancellationToken).ConfigureAwait(false);
+        await ExecuteInTransactionAsync(connection, transaction, "ALTER TABLE jellyfin_provider.plugin_schemas ADD COLUMN IF NOT EXISTS include_analyze boolean NOT NULL DEFAULT true", null, cancellationToken).ConfigureAwait(false);
+        await ExecuteInTransactionAsync(connection, transaction, "ALTER TABLE jellyfin_provider.plugin_schemas ADD COLUMN IF NOT EXISTS include_vacuum boolean NOT NULL DEFAULT false", null, cancellationToken).ConfigureAwait(false);
+        await ExecuteInTransactionAsync(connection, transaction, "ALTER TABLE jellyfin_provider.plugin_schemas ADD COLUMN IF NOT EXISTS include_reindex boolean NOT NULL DEFAULT false", null, cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task RegisterSchemaAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, PluginSchemaRequest request, bool existed, CancellationToken cancellationToken)

@@ -38,6 +38,7 @@ automatic health check, scheduled maintenance and optional JellyTrend integratio
 | [What is new in 3.0.0](docs/whats-new-3.0.0.en.md) · [ES](docs/novedades-3.0.0.md) | Every change in 3.0.0 vs 2.0.1 |
 | [Jellyfin 12.1 adaptation](docs/JELLYFIN-12.1.md) | Technical notes and how to run the test suite |
 | [Automated verification](docs/VERIFICACION-RESUMEN.md) | Executive summary generated from the real suite |
+| [Developer integration](docs/developer-integration.en.md) · [ES](docs/integracion-desarrolladores.md) | Public contract, private schemas, migrations and managed maintenance |
 
 ---
 
@@ -54,6 +55,14 @@ automatic health check, scheduled maintenance and optional JellyTrend integratio
 - 📊 **Database statistics** — total size, active connections and per-table metrics from the UI.
 - 🧪 **Read-only SQL console** — run diagnostic queries from the panel with 10 templates and history; any data-modifying statement is rejected.
 - 🔁 **One-click rollback to SQLite** from the configuration tab.
+
+## 🧩 Plugin integrations
+
+PG Provider can act as private PostgreSQL storage for other plugins without giving them credentials or access to Jellyfin's `public` schema. From **Integrations**, the administrator can review registered integrations, their tables and maintenance signals, and choose which schemas participate in scheduled work.
+
+![Integrations tab](Screenshots/Tab-Intergations.png)
+
+Read the [developer integration guide](docs/developer-integration.en.md) for the public contract, migration design and security limits.
 
 ## ⚙️ Compatibility
 

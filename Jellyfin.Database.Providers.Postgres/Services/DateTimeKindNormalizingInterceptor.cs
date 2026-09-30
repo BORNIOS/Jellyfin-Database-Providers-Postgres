@@ -33,6 +33,11 @@ namespace Jellyfin.Database.Providers.Postgres.Services;
 /// </remarks>
 public sealed class DateTimeKindNormalizingInterceptor : DbCommandInterceptor
 {
+    // Android's java.time cannot represent DateTime.MinValue after a timezone conversion. Npgsql also
+    // maps this sentinel to PostgreSQL -infinity by default, which can later reach clients as an invalid
+    // ISO date. Preserve a valid, explicit sentinel instead.
+    private static readonly DateTime ClientSafeSentinelUtc = DateTime.UnixEpoch;
+
     /// <inheritdoc />
     public override InterceptionResult<int> NonQueryExecuting(
         DbCommand command,
@@ -124,10 +129,17 @@ public sealed class DateTimeKindNormalizingInterceptor : DbCommandInterceptor
     }
 
     private static DateTime NormalizeDateTime(DateTime value)
-        => value.Kind switch
+    {
+        if (value == DateTime.MinValue)
+        {
+            return ClientSafeSentinelUtc;
+        }
+
+        return value.Kind switch
         {
             DateTimeKind.Utc => value,
             DateTimeKind.Local => value.ToUniversalTime(),
             _ => DateTime.SpecifyKind(value, DateTimeKind.Utc),
         };
+    }
 }

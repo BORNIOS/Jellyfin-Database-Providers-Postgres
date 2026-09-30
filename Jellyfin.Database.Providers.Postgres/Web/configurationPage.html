@@ -243,7 +243,7 @@
                     <button type="button" class="pg-tab-btn raised emby-button" data-tab="maintenance" style="border-radius:4px 4px 0 0; padding:8px 18px;">&#128295; Mantenimiento</button>
                     <button type="button" class="pg-tab-btn raised emby-button" data-tab="health"      style="border-radius:4px 4px 0 0; padding:8px 18px;">&#128138; Health</button>
                     <button type="button" class="pg-tab-btn raised emby-button" data-tab="query"       style="border-radius:4px 4px 0 0; padding:8px 18px;">&#128203; SQL</button>
-                    <button type="button" class="pg-tab-btn raised emby-button" data-tab="schemas"     style="border-radius:4px 4px 0 0; padding:8px 18px;">&#128451; Esquemas</button>
+                    <button type="button" class="pg-tab-btn raised emby-button" data-tab="schemas"     style="border-radius:4px 4px 0 0; padding:8px 18px;">&#129513; Integraciones</button>
                 </div>
 
                 <!-- TAB 1: CONFIGURACION -->
@@ -620,25 +620,49 @@
                     </div>
                 </div>
 
-                <!-- TAB 6: ESQUEMAS PRIVADOS DE PLUGINS -->
+                <!-- TAB 6: INTEGRACIONES DE PLUGINS -->
                 <div id="pg-tab-schemas" class="pg-tab-content" style="display:none;">
                     <div class="verticalSection pg-card" style="background:rgba(18,26,48,.88); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2); margin-bottom:16px;">
                         <div style="display:flex; align-items:flex-start; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
                             <div style="flex:1 1 320px;">
-                                <h2 id="schemasHeading" style="margin:0;">Esquemas privados de plugins</h2>
-                                <p id="schemasDescription" class="fieldDescription" style="margin:4px 0 0 0;">Inventario de solo lectura de los esquemas registrados mediante PG Provider.</p>
+                                <h2 id="schemasHeading" style="margin:0;">Integraciones de plugins</h2>
+                                <p id="schemasDescription" class="fieldDescription" style="margin:4px 0 0 0;">Explora y mantiene de forma aislada los esquemas privados registrados mediante PG Provider.</p>
                             </div>
                             <button is="emby-button" type="button" id="btnRefreshSchemas" class="raised button-default">&#10227; <span id="btnRefreshSchemasLabel">Actualizar</span></button>
                         </div>
-                        <div style="display:grid; grid-template-columns:minmax(260px,1fr) minmax(260px,1fr); gap:12px;">
-                            <div class="inputContainer">
-                                <select is="emby-select" id="pluginSchemaSelect" label="Esquema registrado" disabled></select>
-                            </div>
-                            <div class="inputContainer">
-                                <select is="emby-select" id="pluginTableSelect" label="Tabla" disabled></select>
-                            </div>
+                        <div class="inputContainer" style="max-width:760px;">
+                            <select is="emby-select" id="pluginSchemaSelect" label="Integración registrada" disabled></select>
+                        </div>
+                        <div id="pluginTableContainer" class="inputContainer" style="display:none; max-width:760px; margin-top:12px;">
+                            <select is="emby-select" id="pluginTableSelect" label="Tabla" disabled></select>
                         </div>
                         <div id="schemasStatus" style="font-size:13px; min-height:18px; margin:10px 0 0; color:#90caf9;"></div>
+                    </div>
+                    <div id="pluginMaintenanceDetails" class="verticalSection pg-card" style="display:none; background:rgba(18,26,48,.88); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:16px; box-shadow:0 10px 24px rgba(0,0,0,.2); margin-bottom:16px;">
+                        <div style="display:flex; align-items:flex-start; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+                            <div style="flex:1 1 320px;">
+                                <h3 id="pluginMaintenanceHeading" style="margin:0; font-size:18px;">Estado y mantenimiento</h3>
+                                <p id="pluginMaintenanceDescription" class="fieldDescription" style="margin:4px 0 0 0;">Las acciones se limitan al esquema privado seleccionado; no se accede a datos de otros plugins.</p>
+                            </div>
+                            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                                <button is="emby-button" type="button" id="btnRefreshPluginMaintenance" class="raised button-default">&#10227; <span id="btnRefreshPluginMaintenanceLabel">Actualizar estado</span></button>
+                                <button is="emby-button" type="button" id="btnAnalyzePluginSchema" class="raised button-submit">&#128202; <span id="btnAnalyzePluginSchemaLabel">Actualizar estadísticas</span></button>
+                            </div>
+                        </div>
+                        <div id="pluginMaintenanceSummary" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin-bottom:14px;"></div>
+                        <div id="pluginMaintenancePolicy" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:8px; padding:12px; border:1px solid rgba(124,146,196,.22); border-radius:9px; background:rgba(9,14,28,.35); margin-bottom:12px;">
+                            <label style="display:flex; align-items:center; gap:8px; color:#dbe7ff;"><input id="pluginBackupIncluded" type="checkbox" checked disabled> <span><strong id="pluginBackupIncludedLabel">Respaldo completo</strong><br><small style="color:#9fb2d9;">Incluido siempre</small></span></label>
+                            <label style="display:flex; align-items:center; gap:8px; color:#dbe7ff;"><input id="pluginIncludeAnalyze" type="checkbox"> <span><strong id="pluginIncludeAnalyzeLabel">ANALYZE programado</strong><br><small style="color:#9fb2d9;">Actualiza estadísticas</small></span></label>
+                            <label style="display:flex; align-items:center; gap:8px; color:#dbe7ff;"><input id="pluginIncludeVacuum" type="checkbox"> <span><strong id="pluginIncludeVacuumLabel">VACUUM programado</strong><br><small style="color:#9fb2d9;">Solo este esquema</small></span></label>
+                            <label style="display:flex; align-items:center; gap:8px; color:#dbe7ff;"><input id="pluginIncludeReindex" type="checkbox"> <span><strong id="pluginIncludeReindexLabel">REINDEX programado</strong><br><small style="color:#9fb2d9;">Desactivado por defecto</small></span></label>
+                        </div>
+                        <div id="pluginMaintenanceStatus" style="font-size:13px; min-height:18px; margin:0 0 10px; color:#9fb2d9;"></div>
+                        <div id="pluginMaintenanceViewport" style="max-height:380px; overflow:auto; border:1px solid rgba(124,146,196,.28); border-radius:8px; background:rgba(9,14,28,.55);">
+                            <table id="pluginMaintenanceTable" style="width:100%; min-width:900px; border-collapse:collapse; font-size:12px; color:#dbe7ff;">
+                                <thead><tr id="pluginMaintenanceHead"></tr></thead>
+                                <tbody id="pluginMaintenanceBody"></tbody>
+                            </table>
+                        </div>
                     </div>
                     <div id="pluginSchemaDetails" class="verticalSection pg-card" style="display:none; background:rgba(18,26,48,.88); border:1px solid rgba(124,146,196,.28); border-radius:12px; padding:14px; box-shadow:0 10px 24px rgba(0,0,0,.2);">
                         <div id="pluginTableDetails" style="display:none;">
@@ -816,9 +840,9 @@
                     health_sev_warn: 'Warnings detected',
                     health_sev_error: 'Critical issues detected',
                     tab_query: 'SQL console',
-                    tab_schemas: 'Plugin schemas',
-                    heading_schemas: 'Private plugin schemas',
-                    desc_schemas: 'Read-only inventory of schemas registered through PG Provider. Select a table to inspect its columns and a bounded data preview.',
+                    tab_schemas: 'Integrations',
+                    heading_schemas: 'Plugin integrations',
+                    desc_schemas: 'Explore and maintain private schemas registered through PG Provider, without crossing plugin boundaries.',
                     button_refresh_schemas: 'Refresh',
                     msg_schemas_loading: 'Loading registered schemas...',
                     msg_schemas_empty: 'No plugin has registered a private schema yet.',
@@ -828,8 +852,22 @@
                     msg_schemas_preview: 'Preview',
                     msg_schemas_truncated: 'Preview limited to 200 rows.',
                     msg_schemas_sort_hint: 'Click a column to sort the visible rows.',
-                    field_plugin_schema: 'Registered schema',
+                    field_plugin_schema: 'Registered integration',
                     field_plugin_table: 'Table',
+                    heading_plugin_maintenance: 'Status and maintenance',
+                    desc_plugin_maintenance: 'Actions are limited to the selected private schema; other plugin data is never accessed.',
+                    button_refresh_plugin_maintenance: 'Refresh status',
+                    button_analyze_plugin_schema: 'Refresh statistics',
+                    msg_plugin_maintenance_loading: 'Loading maintenance signals...',
+                    msg_plugin_maintenance_ready: 'Maintenance signals updated.',
+                    msg_plugin_analyze_confirm: 'Refresh PostgreSQL planner statistics for every table in this private schema?',
+                    msg_plugin_vacuum_confirm: 'Run VACUUM (ANALYZE) for this table? It may take time on a large table but does not delete data.',
+                    msg_plugin_reindex_confirm: 'Rebuild this table’s indexes concurrently? PostgreSQL keeps normal writes available, but the operation can take time.',
+                    msg_plugin_maintenance_done: 'Operation completed in ',
+                    label_plugin_tables: 'Tables',
+                    label_plugin_analyze: 'Need ANALYZE',
+                    label_plugin_vacuum: 'Need VACUUM',
+                    label_plugin_safe: 'Scope isolated',
                     placeholder_plugin_schema: '— Select a schema —',
                     placeholder_plugin_table: '— Select a table —',
                     placeholder_plugin_table_disabled: '— Select a schema first —',
@@ -1030,9 +1068,9 @@
                     health_sev_warn: 'Advertencias detectadas',
                     health_sev_error: 'Problemas criticos detectados',
                     tab_query: 'Consola SQL',
-                    tab_schemas: 'Esquemas',
-                    heading_schemas: 'Esquemas privados de plugins',
-                    desc_schemas: 'Inventario de solo lectura de los esquemas registrados mediante PG Provider. Selecciona una tabla para ver columnas y una muestra acotada de datos.',
+                    tab_schemas: 'Integraciones',
+                    heading_schemas: 'Integraciones de plugins',
+                    desc_schemas: 'Explora y mantiene los esquemas privados registrados mediante PG Provider sin cruzar los límites entre plugins.',
                     button_refresh_schemas: 'Actualizar',
                     msg_schemas_loading: 'Cargando esquemas registrados...',
                     msg_schemas_empty: 'Ningún plugin ha registrado todavía un esquema privado.',
@@ -1042,8 +1080,22 @@
                     msg_schemas_preview: 'Muestra',
                     msg_schemas_truncated: 'La muestra está limitada a 200 filas.',
                     msg_schemas_sort_hint: 'Haz clic en una columna para ordenar las filas visibles.',
-                    field_plugin_schema: 'Esquema registrado',
+                    field_plugin_schema: 'Integración registrada',
                     field_plugin_table: 'Tabla',
+                    heading_plugin_maintenance: 'Estado y mantenimiento',
+                    desc_plugin_maintenance: 'Las acciones se limitan al esquema privado seleccionado; no se accede a datos de otros plugins.',
+                    button_refresh_plugin_maintenance: 'Actualizar estado',
+                    button_analyze_plugin_schema: 'Actualizar estadísticas',
+                    msg_plugin_maintenance_loading: 'Cargando señales de mantenimiento...',
+                    msg_plugin_maintenance_ready: 'Se actualizaron las señales de mantenimiento.',
+                    msg_plugin_analyze_confirm: '¿Actualizar las estadísticas del planificador PostgreSQL para todas las tablas de este esquema privado?',
+                    msg_plugin_vacuum_confirm: '¿Ejecutar VACUUM (ANALYZE) para esta tabla? Puede tardar en tablas grandes, pero no elimina datos.',
+                    msg_plugin_reindex_confirm: '¿Reconstruir concurrentemente los índices de esta tabla? PostgreSQL mantiene disponibles las escrituras normales, pero la operación puede tardar.',
+                    msg_plugin_maintenance_done: 'Operación completada en ',
+                    label_plugin_tables: 'Tablas',
+                    label_plugin_analyze: 'Requieren ANALYZE',
+                    label_plugin_vacuum: 'Requieren VACUUM',
+                    label_plugin_safe: 'Alcance aislado',
                     placeholder_plugin_schema: '— Selecciona un esquema —',
                     placeholder_plugin_table: '— Selecciona una tabla —',
                     placeholder_plugin_table_disabled: '— Selecciona primero un esquema —',
@@ -1249,14 +1301,18 @@
                     tabs[4].innerHTML = '&#128203; ' + t('tab_query', 'SQL console');
                 }
                 if (tabs.length >= 6) {
-                    tabs[5].innerHTML = '&#128451; ' + t('tab_schemas', 'Plugin schemas');
+                    tabs[5].innerHTML = '&#129513; ' + t('tab_schemas', 'Integrations');
                 }
 
-                setText('schemasHeading', t('heading_schemas', 'Private plugin schemas'));
-                setText('schemasDescription', t('desc_schemas', 'Read-only inventory of schemas registered through PG Provider.'));
+                setText('schemasHeading', t('heading_schemas', 'Plugin integrations'));
+                setText('schemasDescription', t('desc_schemas', 'Explore and maintain private schemas registered through PG Provider.'));
                 setText('btnRefreshSchemasLabel', t('button_refresh_schemas', 'Refresh'));
-                setInputLabel('pluginSchemaSelect', t('field_plugin_schema', 'Registered schema'));
+                setInputLabel('pluginSchemaSelect', t('field_plugin_schema', 'Registered integration'));
                 setInputLabel('pluginTableSelect', t('field_plugin_table', 'Table'));
+                setText('pluginMaintenanceHeading', t('heading_plugin_maintenance', 'Status and maintenance'));
+                setText('pluginMaintenanceDescription', t('desc_plugin_maintenance', 'Actions are limited to the selected private schema.'));
+                setText('btnRefreshPluginMaintenanceLabel', t('button_refresh_plugin_maintenance', 'Refresh status'));
+                setText('btnAnalyzePluginSchemaLabel', t('button_analyze_plugin_schema', 'Refresh statistics'));
 
                 setText('queryHeading', t('heading_query', 'Read-only SQL console'));
                 setHtml('queryDescription', t('desc_query', 'Run read-only statements against PostgreSQL.'));
@@ -1621,6 +1677,7 @@
             var pluginPreview = null;
             var pluginSort = { column: -1, direction: 1 };
             var pluginColumnWidths = [];
+            var pluginMaintenance = null;
 
             function addSelectPlaceholder(select, label) {
                 var option = document.createElement('option');
@@ -1641,6 +1698,15 @@
                 document.getElementById('pluginRowsHint').textContent = '';
             }
 
+            function clearPluginMaintenance() {
+                pluginMaintenance = null;
+                document.getElementById('pluginMaintenanceDetails').style.display = 'none';
+                document.getElementById('pluginMaintenanceSummary').innerHTML = '';
+                document.getElementById('pluginMaintenanceHead').innerHTML = '';
+                document.getElementById('pluginMaintenanceBody').innerHTML = '';
+                document.getElementById('pluginMaintenanceStatus').textContent = '';
+            }
+
             function loadPluginSchemas() {
                 var state = document.getElementById('schemasStatus');
                 var select = document.getElementById('pluginSchemaSelect');
@@ -1651,8 +1717,10 @@
                 tableSelect.disabled = true;
                 select.innerHTML = '';
                 tableSelect.innerHTML = '';
+                document.getElementById('pluginTableContainer').style.display = 'none';
                 addSelectPlaceholder(tableSelect, t('placeholder_plugin_table_disabled', '— Select a schema first —'));
                 clearPluginPreview();
+                clearPluginMaintenance();
                 apiGet('/PluginSchemas')
                     .then(function(response) { return response.json(); })
                     .then(function(data) {
@@ -1695,11 +1763,15 @@
                 if (!schema || selectedValue === '') {
                     addSelectPlaceholder(tableSelect, t('placeholder_plugin_table_disabled', '— Select a schema first —'));
                     tableSelect.disabled = true;
+                    document.getElementById('pluginTableContainer').style.display = 'none';
+                    clearPluginMaintenance();
                     return;
                 }
                 var schemaName = schemaValue(schema, 'SchemaName', 'schemaName');
+                document.getElementById('pluginTableContainer').style.display = '';
                 tableSelect.disabled = true;
                 addSelectPlaceholder(tableSelect, t('msg_schemas_loading', 'Loading registered schemas...'));
+                loadPluginMaintenance(schemaName);
                 apiGet('/PluginSchemas/' + encodeURIComponent(schemaName) + '/Tables')
                     .then(function(response) { return response.json(); })
                     .then(function(tables) {
@@ -1740,6 +1812,181 @@
                     .then(function(response) { return response.json(); })
                     .then(renderPluginRows)
                     .catch(function(error) { document.getElementById('pluginRowsHint').textContent = t('msg_schemas_error', 'Could not load plugin schemas: ') + error; });
+            }
+
+            function selectedPluginSchema() {
+                var value = document.getElementById('pluginSchemaSelect').value;
+                return value === '' ? null : pluginSchemas[parseInt(value, 10)];
+            }
+
+            function maintenanceValue(item, pascal, camel) {
+                return item[pascal] !== undefined ? item[pascal] : item[camel];
+            }
+
+            function loadPluginMaintenance(schemaName) {
+                var details = document.getElementById('pluginMaintenanceDetails');
+                var status = document.getElementById('pluginMaintenanceStatus');
+                details.style.display = '';
+                status.style.color = '#90caf9';
+                status.textContent = t('msg_plugin_maintenance_loading', 'Loading maintenance signals...');
+                document.getElementById('pluginMaintenanceSummary').innerHTML = '';
+                document.getElementById('pluginMaintenanceHead').innerHTML = '';
+                document.getElementById('pluginMaintenanceBody').innerHTML = '';
+                apiGet('/PluginSchemas/' + encodeURIComponent(schemaName) + '/Maintenance')
+                    .then(function(response) {
+                        if (!response.ok) return response.json().then(function(data) { throw new Error(data.Error || data.error || response.statusText); });
+                        return response.json();
+                    })
+                    .then(renderPluginMaintenance)
+                    .catch(function(error) {
+                        status.style.color = '#ef9a9a';
+                        status.textContent = t('msg_schemas_error', 'Could not load plugin schemas: ') + error.message;
+                    });
+            }
+
+            function maintenanceCard(label, value, tone) {
+                var card = document.createElement('div');
+                card.style.cssText = 'padding:11px 12px; border-radius:9px; border:1px solid ' + (tone || 'rgba(124,146,196,.25)') + '; background:rgba(9,14,28,.45);';
+                var caption = document.createElement('div');
+                caption.style.cssText = 'font-size:11px; color:#9fb2d9; margin-bottom:4px; text-transform:uppercase; letter-spacing:.04em;';
+                caption.textContent = label;
+                var number = document.createElement('div');
+                number.style.cssText = 'font-size:20px; font-weight:600; color:#e4ecff;';
+                number.textContent = value;
+                card.appendChild(caption);
+                card.appendChild(number);
+                return card;
+            }
+
+            function renderPluginMaintenance(report) {
+                pluginMaintenance = report;
+                var tables = maintenanceValue(report, 'Tables', 'tables') || [];
+                var analyze = maintenanceValue(report, 'TablesNeedingAnalyze', 'tablesNeedingAnalyze') || 0;
+                var vacuum = maintenanceValue(report, 'TablesNeedingVacuum', 'tablesNeedingVacuum') || 0;
+                var summary = document.getElementById('pluginMaintenanceSummary');
+                summary.innerHTML = '';
+                summary.appendChild(maintenanceCard(t('label_plugin_tables', 'Tables'), String(tables.length)));
+                summary.appendChild(maintenanceCard(t('label_plugin_analyze', 'Need ANALYZE'), String(analyze), analyze ? 'rgba(255,193,7,.52)' : 'rgba(76,175,80,.42)'));
+                summary.appendChild(maintenanceCard(t('label_plugin_vacuum', 'Need VACUUM'), String(vacuum), vacuum ? 'rgba(255,152,0,.55)' : 'rgba(76,175,80,.42)'));
+                summary.appendChild(maintenanceCard(t('label_plugin_safe', 'Scope isolated'), '✓', 'rgba(76,175,80,.42)'));
+                document.getElementById('pluginIncludeAnalyze').checked = !!maintenanceValue(report, 'IncludeAnalyze', 'includeAnalyze');
+                document.getElementById('pluginIncludeVacuum').checked = !!maintenanceValue(report, 'IncludeVacuum', 'includeVacuum');
+                document.getElementById('pluginIncludeReindex').checked = !!maintenanceValue(report, 'IncludeReindex', 'includeReindex');
+                var status = document.getElementById('pluginMaintenanceStatus');
+                status.style.color = '#a5d6a7';
+                status.textContent = t('msg_plugin_maintenance_ready', 'Maintenance signals updated.');
+
+                var head = document.getElementById('pluginMaintenanceHead');
+                var body = document.getElementById('pluginMaintenanceBody');
+                head.innerHTML = '';
+                body.innerHTML = '';
+                ['Tabla', 'Filas (~)', 'Tamaño total', 'Índices', 'Tuplas muertas', 'Cambios', 'Estado', 'Acciones'].forEach(function(label) {
+                    var th = document.createElement('th');
+                    th.textContent = label;
+                    th.style.cssText = 'text-align:left; padding:8px 10px; position:sticky; top:0; background:#131c33; border-bottom:1px solid rgba(124,146,196,.35); white-space:nowrap;';
+                    head.appendChild(th);
+                });
+                tables.forEach(function(table, index) {
+                    var name = maintenanceValue(table, 'TableName', 'tableName') || '';
+                    var needsAnalyze = !!maintenanceValue(table, 'NeedsAnalyze', 'needsAnalyze');
+                    var needsVacuum = !!maintenanceValue(table, 'NeedsVacuum', 'needsVacuum');
+                    var tr = document.createElement('tr');
+                    tr.style.background = index % 2 === 0 ? 'rgba(255,255,255,.02)' : 'transparent';
+                    [name, maintenanceValue(table, 'EstimatedRows', 'estimatedRows'), maintenanceValue(table, 'TotalSize', 'totalSize'), maintenanceValue(table, 'IndexCount', 'indexCount'), maintenanceValue(table, 'DeadTuples', 'deadTuples'), maintenanceValue(table, 'ModifiedSinceAnalyze', 'modifiedSinceAnalyze')].forEach(function(value) {
+                        var td = document.createElement('td');
+                        td.textContent = value === null || value === undefined ? '—' : value;
+                        td.style.cssText = 'padding:7px 10px; border-bottom:1px solid rgba(124,146,196,.12); white-space:nowrap;';
+                        tr.appendChild(td);
+                    });
+                    var state = document.createElement('td');
+                    state.style.cssText = 'padding:7px 10px; border-bottom:1px solid rgba(124,146,196,.12); white-space:nowrap;';
+                    var badge = document.createElement('span');
+                    badge.style.cssText = 'display:inline-block; padding:3px 7px; border-radius:10px; font-size:11px; background:' + (needsVacuum ? 'rgba(255,152,0,.18)' : needsAnalyze ? 'rgba(255,193,7,.16)' : 'rgba(76,175,80,.14)') + '; color:' + (needsVacuum ? '#ffcc80' : needsAnalyze ? '#fff59d' : '#a5d6a7') + ';';
+                    badge.textContent = needsVacuum ? 'VACUUM recomendado' : needsAnalyze ? 'ANALYZE recomendado' : 'Actualizado';
+                    state.appendChild(badge);
+                    tr.appendChild(state);
+                    var actions = document.createElement('td');
+                    actions.style.cssText = 'padding:6px 10px; border-bottom:1px solid rgba(124,146,196,.12); white-space:nowrap;';
+                    var vacuumButton = document.createElement('button');
+                    vacuumButton.type = 'button'; vacuumButton.className = 'raised button-default'; vacuumButton.textContent = 'VACUUM';
+                    vacuumButton.style.cssText = 'font-size:11px; margin-right:6px;';
+                    vacuumButton.addEventListener('click', function() { requestTableMaintenance(name, 'VacuumAnalyze'); });
+                    var reindexButton = document.createElement('button');
+                    reindexButton.type = 'button'; reindexButton.className = 'raised button-default'; reindexButton.textContent = 'REINDEX';
+                    reindexButton.style.cssText = 'font-size:11px;';
+                    reindexButton.addEventListener('click', function() { requestTableMaintenance(name, 'Reindex'); });
+                    actions.appendChild(vacuumButton); actions.appendChild(reindexButton);
+                    tr.appendChild(actions);
+                    body.appendChild(tr);
+                });
+            }
+
+            function requestSchemaAnalyze() {
+                var schema = selectedPluginSchema();
+                if (!schema) return;
+                showConfirm(t('msg_plugin_analyze_confirm', 'Refresh PostgreSQL planner statistics for every table in this private schema?'), function() {
+                    runPluginMaintenance('/PluginSchemas/' + encodeURIComponent(schemaValue(schema, 'SchemaName', 'schemaName')) + '/Maintenance/Analyze');
+                }, { title: t('heading_plugin_maintenance', 'Status and maintenance'), confirmLabel: 'ANALYZE', confirmColor: 'safe', icon: '📊' });
+            }
+
+            function requestTableMaintenance(tableName, operation) {
+                var schema = selectedPluginSchema();
+                if (!schema) return;
+                var isVacuum = operation === 'VacuumAnalyze';
+                var prompt = isVacuum ? t('msg_plugin_vacuum_confirm', 'Run VACUUM (ANALYZE) for this table?') : t('msg_plugin_reindex_confirm', 'Rebuild this table’s indexes concurrently?');
+                showConfirm(prompt, function() {
+                    var base = '/PluginSchemas/' + encodeURIComponent(schemaValue(schema, 'SchemaName', 'schemaName')) + '/Tables/' + encodeURIComponent(tableName) + '/Maintenance/';
+                    runPluginMaintenance(base + operation);
+                }, { title: isVacuum ? 'VACUUM (ANALYZE)' : 'REINDEX CONCURRENTLY', confirmLabel: isVacuum ? 'VACUUM' : 'REINDEX', confirmColor: isVacuum ? 'safe' : 'warning', icon: isVacuum ? '🧹' : '🛠️' });
+            }
+
+            function runPluginMaintenance(path) {
+                var status = document.getElementById('pluginMaintenanceStatus');
+                status.style.color = '#90caf9';
+                status.textContent = t('msg_plugin_maintenance_loading', 'Loading maintenance signals...');
+                apiPost(path, {})
+                    .then(function(response) {
+                        if (!response.ok) return response.json().then(function(data) { throw new Error(data.Error || data.error || response.statusText); });
+                        return response.json();
+                    })
+                    .then(function(result) {
+                        var duration = maintenanceValue(result, 'DurationMs', 'durationMs') || 0;
+                        status.style.color = '#a5d6a7';
+                        status.textContent = t('msg_plugin_maintenance_done', 'Operation completed in ') + duration + ' ms.';
+                        var schema = selectedPluginSchema();
+                        if (schema) loadPluginMaintenance(schemaValue(schema, 'SchemaName', 'schemaName'));
+                    })
+                    .catch(function(error) {
+                        status.style.color = '#ef9a9a';
+                        status.textContent = t('msg_schemas_error', 'Could not load plugin schemas: ') + error.message;
+                    });
+            }
+
+            function savePluginMaintenancePolicy() {
+                var schema = selectedPluginSchema();
+                if (!schema) return;
+                var status = document.getElementById('pluginMaintenanceStatus');
+                var body = {
+                    IncludeAnalyze: document.getElementById('pluginIncludeAnalyze').checked,
+                    IncludeVacuum: document.getElementById('pluginIncludeVacuum').checked,
+                    IncludeReindex: document.getElementById('pluginIncludeReindex').checked
+                };
+                status.style.color = '#90caf9';
+                status.textContent = t('msg_plugin_maintenance_loading', 'Loading maintenance signals...');
+                apiPost('/PluginSchemas/' + encodeURIComponent(schemaValue(schema, 'SchemaName', 'schemaName')) + '/Maintenance/Policy', body)
+                    .then(function(response) {
+                        if (!response.ok) return response.json().then(function(data) { throw new Error(data.Error || data.error || response.statusText); });
+                        return response.json();
+                    })
+                    .then(function() {
+                        status.style.color = '#a5d6a7';
+                        status.textContent = 'Política de tareas programadas actualizada.';
+                        loadPluginMaintenance(schemaValue(schema, 'SchemaName', 'schemaName'));
+                    })
+                    .catch(function(error) {
+                        status.style.color = '#ef9a9a';
+                        status.textContent = t('msg_schemas_error', 'Could not load plugin schemas: ') + error.message;
+                    });
             }
 
             function renderPluginRows(preview) {
@@ -1853,6 +2100,14 @@
             }
 
             document.getElementById('btnRefreshSchemas').addEventListener('click', loadPluginSchemas);
+            document.getElementById('btnRefreshPluginMaintenance').addEventListener('click', function() {
+                var schema = selectedPluginSchema();
+                if (schema) loadPluginMaintenance(schemaValue(schema, 'SchemaName', 'schemaName'));
+            });
+            document.getElementById('btnAnalyzePluginSchema').addEventListener('click', requestSchemaAnalyze);
+            document.getElementById('pluginIncludeAnalyze').addEventListener('change', savePluginMaintenancePolicy);
+            document.getElementById('pluginIncludeVacuum').addEventListener('change', savePluginMaintenancePolicy);
+            document.getElementById('pluginIncludeReindex').addEventListener('change', savePluginMaintenancePolicy);
             document.getElementById('pluginSchemaSelect').addEventListener('change', loadSelectedPluginSchema);
             document.getElementById('pluginTableSelect').addEventListener('change', loadSelectedPluginTable);
 

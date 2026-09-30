@@ -9,6 +9,8 @@ using System.Threading.Tasks;
 using Jellyfin.Database.Providers.Postgres.Services.Models;
 using Npgsql;
 
+#pragma warning disable SA1513
+
 namespace Jellyfin.Database.Providers.Postgres.Services;
 
 /// <summary>
@@ -28,17 +30,25 @@ public sealed class PluginSchemaExplorerService
     /// <returns>The registered private schemas.</returns>
     public async Task<IReadOnlyList<PluginSchemaInfo>> ListSchemasAsync(string connectionString, CancellationToken cancellationToken)
     {
-        const string sql = "SELECT r.plugin_id, r.plugin_name, r.schema_name, r.protocol_version, r.created_at, r.last_seen_at, r.state, count(c.oid)::int, coalesce(pg_size_pretty(sum(pg_total_relation_size(c.oid))), '0 bytes') FROM jellyfin_provider.plugin_schemas r LEFT JOIN pg_namespace n ON n.nspname = r.schema_name LEFT JOIN pg_class c ON c.relnamespace = n.oid AND c.relkind IN ('r', 'p') GROUP BY r.plugin_id, r.plugin_name, r.schema_name, r.protocol_version, r.created_at, r.last_seen_at, r.state ORDER BY r.plugin_name, r.schema_name";
+        const string sql = "SELECT r.plugin_id, r.plugin_name, r.schema_name, r.protocol_version, r.created_at, r.last_seen_at, r.state, count(c.oid)::int, coalesce(pg_size_pretty(sum(pg_total_relation_size(c.oid))), '0 bytes'), r.include_analyze, r.include_vacuum, r.include_reindex FROM jellyfin_provider.plugin_schemas r LEFT JOIN pg_namespace n ON n.nspname = r.schema_name LEFT JOIN pg_class c ON c.relnamespace = n.oid AND c.relkind IN ('r', 'p') GROUP BY r.plugin_id, r.plugin_name, r.schema_name, r.protocol_version, r.created_at, r.last_seen_at, r.state, r.include_analyze, r.include_vacuum, r.include_reindex ORDER BY r.plugin_name, r.schema_name";
         var result = new List<PluginSchemaInfo>();
         using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await EnsurePolicyColumnsAsync(connection, cancellationToken).ConfigureAwait(false);
+        }
+        catch (PostgresException ex) when (ex.SqlState == "42P01")
+        {
+            return result;
+        }
         using var command = new NpgsqlCommand(sql, connection);
         try
         {
             using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                result.Add(new PluginSchemaInfo(reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetInt32(3), reader.GetDateTime(4), reader.GetDateTime(5), reader.GetString(6), reader.GetInt32(7), reader.GetString(8)));
+                result.Add(new PluginSchemaInfo(reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetInt32(3), reader.GetDateTime(4), reader.GetDateTime(5), reader.GetString(6), reader.GetInt32(7), reader.GetString(8), reader.GetBoolean(9), reader.GetBoolean(10), reader.GetBoolean(11)));
             }
         }
         catch (PostgresException ex) when (ex.SqlState == "42P01")
@@ -47,6 +57,13 @@ public sealed class PluginSchemaExplorerService
         }
 
         return result;
+    }
+
+    private static async Task EnsurePolicyColumnsAsync(NpgsqlConnection connection, CancellationToken cancellationToken)
+    {
+        const string sql = "ALTER TABLE jellyfin_provider.plugin_schemas ADD COLUMN IF NOT EXISTS include_analyze boolean NOT NULL DEFAULT true; ALTER TABLE jellyfin_provider.plugin_schemas ADD COLUMN IF NOT EXISTS include_vacuum boolean NOT NULL DEFAULT false; ALTER TABLE jellyfin_provider.plugin_schemas ADD COLUMN IF NOT EXISTS include_reindex boolean NOT NULL DEFAULT false;";
+        using var command = new NpgsqlCommand(sql, connection);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Lists tables that belong to one registered private schema.</summary>
@@ -183,3 +200,4 @@ public sealed class PluginSchemaExplorerService
             _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty,
         };
 }
+#pragma warning restore SA1513

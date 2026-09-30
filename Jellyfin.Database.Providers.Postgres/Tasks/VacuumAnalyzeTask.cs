@@ -1,35 +1,43 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Providers.Postgres.Services;
 using MediaBrowser.Model.Tasks;
 
+#pragma warning disable SA1611, SA1513
+
 namespace Jellyfin.Database.Providers.Postgres.Tasks;
 
 /// <summary>
-/// Jellyfin scheduled task that runs VACUUM ANALYZE on the PostgreSQL database.
+/// Jellyfin scheduled task that maintains Jellyfin and opted-in private plugin schemas.
 /// Appears in Jellyfin's Scheduled Tasks page for automatic scheduling.
 /// </summary>
 public class VacuumAnalyzeTask : IScheduledTask
 {
     private readonly MaintenanceService _maintenance;
+    private readonly PluginSchemaMaintenanceService _pluginMaintenance;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="VacuumAnalyzeTask"/> class.
     /// </summary>
     /// <param name="maintenance">The maintenance service.</param>
-    public VacuumAnalyzeTask(MaintenanceService maintenance)
-        => _maintenance = maintenance;
+    /// <param name="pluginMaintenance">The isolated private-schema maintenance service.</param>
+    public VacuumAnalyzeTask(MaintenanceService maintenance, PluginSchemaMaintenanceService pluginMaintenance)
+    {
+        _maintenance = maintenance;
+        _pluginMaintenance = pluginMaintenance;
+    }
 
     /// <inheritdoc/>
-    public string Name => "PostgreSQL VACUUM ANALYZE";
+    public string Name => "PostgreSQL VACUUM ANALYZE (managed schemas)";
 
     /// <inheritdoc/>
     public string Key => "PostgresVacuumAnalyze";
 
     /// <inheritdoc/>
-    public string Description => "Runs VACUUM ANALYZE on the Jellyfin PostgreSQL database to reclaim storage and update query-planner statistics.";
+    public string Description => "Maintains Jellyfin public tables and only private plugin schemas opted into scheduled ANALYZE or VACUUM.";
 
     /// <inheritdoc/>
     public string Category => "PostgreSQL Maintenance";
@@ -55,7 +63,22 @@ public class VacuumAnalyzeTask : IScheduledTask
         }
 
         progress.Report(10);
-        await _maintenance.VacuumAnalyzeAsync(connStr, cancellationToken).ConfigureAwait(false);
+        await _maintenance.VacuumAnalyzeSchemaAsync(connStr, "public", cancellationToken).ConfigureAwait(false);
+        var analyzeSchemas = await _pluginMaintenance.ListScheduledSchemasAsync(connStr, "analyze", cancellationToken).ConfigureAwait(false);
+        var vacuumSchemas = await _pluginMaintenance.ListScheduledSchemasAsync(connStr, "vacuum", cancellationToken).ConfigureAwait(false);
+        foreach (var schema in analyzeSchemas.Except(vacuumSchemas, StringComparer.Ordinal))
+        {
+            await _pluginMaintenance.AnalyzeAsync(connStr, schema, cancellationToken).ConfigureAwait(false);
+        }
+        foreach (var schema in vacuumSchemas)
+        {
+            var tables = await _pluginMaintenance.GetReportAsync(connStr, schema, cancellationToken).ConfigureAwait(false);
+            foreach (var table in tables.Tables)
+            {
+                await _pluginMaintenance.VacuumAnalyzeTableAsync(connStr, schema, table.TableName, cancellationToken).ConfigureAwait(false);
+            }
+        }
         progress.Report(100);
     }
 }
+#pragma warning restore SA1611, SA1513

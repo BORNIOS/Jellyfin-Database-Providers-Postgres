@@ -19,6 +19,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
+#pragma warning disable SA1611, SA1615
+
 namespace Jellyfin.Database.Providers.Postgres.Controllers;
 
 /// <summary>
@@ -40,6 +42,7 @@ public class PostgresController : ControllerBase
     private readonly InstantSearchService _instantSearch;
     private readonly ExportToSqliteService _exportService;
     private readonly PluginSchemaExplorerService _pluginSchemaExplorer;
+    private readonly PluginSchemaMaintenanceService _pluginSchemaMaintenance;
     private readonly ILogger<PostgresController> _logger;
 
     /// <summary>
@@ -52,6 +55,7 @@ public class PostgresController : ControllerBase
     /// <param name="instantSearch">Instant search service instance.</param>
     /// <param name="exportService">Export service instance.</param>
     /// <param name="pluginSchemaExplorer">Read-only explorer for registered private plugin schemas.</param>
+    /// <param name="pluginSchemaMaintenance">Scoped maintenance for registered private plugin schemas.</param>
     /// <param name="logger">Logger instance.</param>
     public PostgresController(
         IApplicationPaths appPaths,
@@ -61,6 +65,7 @@ public class PostgresController : ControllerBase
         InstantSearchService instantSearch,
         ExportToSqliteService exportService,
         PluginSchemaExplorerService pluginSchemaExplorer,
+        PluginSchemaMaintenanceService pluginSchemaMaintenance,
         ILogger<PostgresController> logger)
     {
         _appPaths = appPaths;
@@ -70,6 +75,7 @@ public class PostgresController : ControllerBase
         _instantSearch = instantSearch;
         _exportService = exportService;
         _pluginSchemaExplorer = pluginSchemaExplorer;
+        _pluginSchemaMaintenance = pluginSchemaMaintenance;
         _logger = logger;
     }
 
@@ -1109,6 +1115,59 @@ public class PostgresController : ControllerBase
         => await ExecuteSchemaInspectionAsync(
             connectionString => _pluginSchemaExplorer.PreviewRowsAsync(connectionString, schemaName, tableName, limit, cancellationToken)).ConfigureAwait(false);
 
+    /// <summary>Gets maintenance signals for a registered private plugin schema.</summary>
+    /// <param name="schemaName">Registered schema to inspect.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Per-table statistics and conservative maintenance recommendations.</returns>
+    [HttpGet("PluginSchemas/{schemaName}/Maintenance")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<object>> GetPluginSchemaMaintenance(string schemaName, CancellationToken cancellationToken)
+        => await ExecuteSchemaInspectionAsync(
+            connectionString => _pluginSchemaMaintenance.GetReportAsync(connectionString, schemaName, cancellationToken)).ConfigureAwait(false);
+
+    /// <summary>Refreshes planner statistics for all tables in a registered private schema.</summary>
+    [HttpPost("PluginSchemas/{schemaName}/Maintenance/Analyze")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<object>> AnalyzePluginSchema(string schemaName, CancellationToken cancellationToken)
+        => await ExecuteSchemaMaintenanceAsync(
+            connectionString => _pluginSchemaMaintenance.AnalyzeAsync(connectionString, schemaName, cancellationToken)).ConfigureAwait(false);
+
+    /// <summary>Runs VACUUM (ANALYZE) for one table in a registered private schema.</summary>
+    [HttpPost("PluginSchemas/{schemaName}/Tables/{tableName}/Maintenance/VacuumAnalyze")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<object>> VacuumAnalyzePluginSchemaTable(string schemaName, string tableName, CancellationToken cancellationToken)
+        => await ExecuteSchemaMaintenanceAsync(
+            connectionString => _pluginSchemaMaintenance.VacuumAnalyzeTableAsync(connectionString, schemaName, tableName, cancellationToken)).ConfigureAwait(false);
+
+    /// <summary>Rebuilds the indexes of one table in a registered private schema concurrently.</summary>
+    [HttpPost("PluginSchemas/{schemaName}/Tables/{tableName}/Maintenance/Reindex")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<object>> ReindexPluginSchemaTable(string schemaName, string tableName, CancellationToken cancellationToken)
+        => await ExecuteSchemaMaintenanceAsync(
+            connectionString => _pluginSchemaMaintenance.ReindexTableAsync(connectionString, schemaName, tableName, cancellationToken)).ConfigureAwait(false);
+
+    /// <summary>Stores the administrator-selected scheduled maintenance policy for a private plugin schema.</summary>
+    [HttpPost("PluginSchemas/{schemaName}/Maintenance/Policy")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<object>> UpdatePluginSchemaMaintenancePolicy(
+        string schemaName,
+        [FromBody] PluginSchemaMaintenancePolicyRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return await ExecuteSchemaMaintenanceAsync(
+            connectionString => _pluginSchemaMaintenance.UpdatePolicyAsync(
+                connectionString,
+                schemaName,
+                new PluginSchemaMaintenancePolicy(request.IncludeAnalyze, request.IncludeVacuum, request.IncludeReindex),
+                cancellationToken)).ConfigureAwait(false);
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Read-only SQL console
     // ─────────────────────────────────────────────────────────────────────────
@@ -1213,6 +1272,36 @@ public class PostgresController : ControllerBase
         catch (Exception ex)
         {
             Logging.PostgresLog.Error("[PluginSchemas] Error inspeccionando esquema privado", ex);
+            return BadRequest(new { Error = ex.Message });
+        }
+    }
+
+    private async Task<ActionResult<object>> ExecuteSchemaMaintenanceAsync<T>(Func<string, Task<T>> operation)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        var connectionString = GetActiveConnectionString();
+        if (connectionString is null)
+        {
+            return NoActiveConnection();
+        }
+
+        try
+        {
+            return Ok(await operation(connectionString).ConfigureAwait(false));
+        }
+        catch (ArgumentException ex)
+        {
+            Logging.PostgresLog.Warn($"[PluginSchemas] Mantenimiento rechazado: {ex.Message}");
+            return BadRequest(new { Error = ex.Message });
+        }
+        catch (Npgsql.PostgresException ex)
+        {
+            Logging.PostgresLog.Error($"[PluginSchemas] PostgreSQL rechazó el mantenimiento ({ex.SqlState})", ex);
+            return BadRequest(new { Error = $"({ex.SqlState}) {ex.MessageText}" });
+        }
+        catch (Exception ex)
+        {
+            Logging.PostgresLog.Error("[PluginSchemas] Error en mantenimiento de esquema privado", ex);
             return BadRequest(new { Error = ex.Message });
         }
     }
@@ -1392,3 +1481,4 @@ public class PostgresController : ControllerBase
         return full;
     }
 }
+#pragma warning restore SA1611, SA1615

@@ -5,8 +5,10 @@ namespace Jellyfin.Database.Providers.Postgres.Api;
 /// </summary>
 /// <remarks>
 /// A consumer obtains <see cref="IPluginSchemaHost"/> by asking Jellyfin's service provider for that
-/// interface type from this loaded assembly. Consumers that cannot reference this assembly at compile time
-/// may discover this marker and the interface by their full names through reflection.
+/// interface type from this loaded assembly. In a plugin load-context mismatch, consumers should first
+/// locate PG Provider's live plugin assembly through <c>IPluginManager.Plugins</c>, then request the
+/// type named by <see cref="ContractTypeName"/> from that assembly. Consumers must not construct an
+/// internal provider implementation through reflection or <c>ActivatorUtilities</c>.
 /// </remarks>
 public static class PostgresSchemaHostCapability
 {

@@ -38,6 +38,7 @@ health check automático, mantenimiento programado e integración opcional con J
 | [Novedades de 3.0.0](docs/novedades-3.0.0.md) · [EN](docs/whats-new-3.0.0.en.md) | Qué cambia en 3.0.0 frente a 2.0.1 |
 | [Adaptación a Jellyfin 12.1](docs/JELLYFIN-12.1.md) | Notas técnicas y cómo ejecutar la suite de pruebas |
 | [Verificación automatizada](docs/VERIFICACION-RESUMEN.md) | Resumen ejecutivo generado desde la suite real |
+| [Integración para desarrolladores](docs/integracion-desarrolladores.md) · [EN](docs/developer-integration.en.md) | Contrato público, esquemas privados, migraciones y mantenimiento administrado |
 
 ---
 
@@ -54,6 +55,14 @@ health check automático, mantenimiento programado e integración opcional con J
 - 📊 **Estadísticas de BD** — tamaño, conexiones activas y análisis tabla por tabla desde la UI.
 - 🧪 **Consola SQL de solo lectura** — lanza consultas de diagnóstico desde el panel con 10 plantillas e historial; rechaza cualquier sentencia que modifique datos.
 - 🔁 **Rollback a SQLite** en un clic desde la configuración.
+
+## 🧩 Integraciones de plugins
+
+PG Provider puede servir como almacén PostgreSQL privado para otros plugins, sin darles acceso a credenciales ni al esquema `public` de Jellyfin. Desde **Integraciones**, el administrador consulta las integraciones registradas, sus tablas y señales de mantenimiento, y decide qué esquemas participan en las tareas programadas.
+
+![Pestaña Integraciones](Screenshots/Tab-Intergations.png)
+
+Consulta la [guía de integración para desarrolladores](docs/integracion-desarrolladores.md) para usar el contrato público, diseñar migraciones y conocer sus límites de seguridad.
 
 ---
 

@@ -12,4 +12,7 @@ public sealed record PluginSchemaInfo(
     DateTime LastSeenAt,
     string State,
     int TableCount,
-    string TotalSize);
+    string TotalSize,
+    bool IncludeAnalyze,
+    bool IncludeVacuum,
+    bool IncludeReindex);
