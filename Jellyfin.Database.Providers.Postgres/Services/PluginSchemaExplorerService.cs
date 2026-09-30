@@ -97,14 +97,14 @@ public sealed class PluginSchemaExplorerService
     /// <returns>Column metadata ordered as stored.</returns>
     public async Task<IReadOnlyList<PluginSchemaColumnInfo>> ListColumnsAsync(string connectionString, string schemaName, string tableName, CancellationToken cancellationToken)
     {
-        await EnsureTableAsync(connectionString, schemaName, tableName, cancellationToken).ConfigureAwait(false);
+        var table = await ResolveTableAsync(connectionString, schemaName, tableName, cancellationToken).ConfigureAwait(false);
         const string sql = "SELECT column_name, data_type, is_nullable = 'YES', ordinal_position FROM information_schema.columns WHERE table_schema = @schema AND table_name = @table ORDER BY ordinal_position";
         var result = new List<PluginSchemaColumnInfo>();
         using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = new NpgsqlCommand(sql, connection);
-        command.Parameters.AddWithValue("schema", schemaName);
-        command.Parameters.AddWithValue("table", tableName);
+        command.Parameters.AddWithValue("schema", table.SchemaName);
+        command.Parameters.AddWithValue("table", table.TableName);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -121,12 +121,14 @@ public sealed class PluginSchemaExplorerService
     /// <param name="limit">Requested number of rows, capped to a safe bound.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Columns and at most <paramref name="limit"/> rows.</returns>
-    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Both identifiers are read from PostgreSQL catalog queries after verifying that the schema is registered and the table belongs to it. Values are not interpolated into this command.")]
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The command text contains only identifiers re-read from PostgreSQL catalog rows after a parameterized membership check; request values are never interpolated.")]
     public async Task<PluginSchemaRows> PreviewRowsAsync(string connectionString, string schemaName, string tableName, int limit, CancellationToken cancellationToken)
     {
-        await EnsureTableAsync(connectionString, schemaName, tableName, cancellationToken).ConfigureAwait(false);
+        // The route values only participate in this parameterized lookup. The identifiers used in the
+        // command below are read back from PostgreSQL's catalog after it confirms their relationship.
+        var table = await ResolveTableAsync(connectionString, schemaName, tableName, cancellationToken).ConfigureAwait(false);
         var boundedLimit = Math.Clamp(limit, 1, MaximumPreviewRows);
-        var sql = string.Concat("SELECT * FROM ", QuoteIdentifier(schemaName), ".", QuoteIdentifier(tableName), " LIMIT @limit");
+        var sql = string.Concat("SELECT * FROM ", QuoteIdentifier(table.SchemaName), ".", QuoteIdentifier(table.TableName), " LIMIT @limit");
         var columns = new List<string>();
         var rows = new List<IReadOnlyList<string?>>();
         using var connection = new NpgsqlConnection(connectionString);
@@ -174,20 +176,23 @@ public sealed class PluginSchemaExplorerService
         }
     }
 
-    private static async Task EnsureTableAsync(string connectionString, string schemaName, string tableName, CancellationToken cancellationToken)
+    private static async Task<(string SchemaName, string TableName)> ResolveTableAsync(string connectionString, string schemaName, string tableName, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
         await EnsureRegisteredAsync(connectionString, schemaName, cancellationToken).ConfigureAwait(false);
-        const string sql = "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = @schema AND table_name = @table AND table_type = 'BASE TABLE')";
+        const string sql = "SELECT table_schema, table_name FROM information_schema.tables WHERE table_schema = @schema AND table_name = @table AND table_type = 'BASE TABLE'";
         using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = new NpgsqlCommand(sql, connection);
         command.Parameters.AddWithValue("schema", schemaName);
         command.Parameters.AddWithValue("table", tableName);
-        if (!(bool)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!)
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             throw new ArgumentException("La tabla solicitada no pertenece al esquema registrado.", nameof(tableName));
         }
+
+        return (reader.GetString(0), reader.GetString(1));
     }
 
     private static string QuoteIdentifier(string identifier) => string.Concat("\"", identifier.Replace("\"", "\"\"", StringComparison.Ordinal), "\"");

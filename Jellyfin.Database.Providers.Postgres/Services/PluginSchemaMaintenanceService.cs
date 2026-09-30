@@ -167,27 +167,27 @@ ORDER BY pg_total_relation_size(c.oid) DESC, c.relname";
         string statement,
         CancellationToken cancellationToken)
     {
-        await EnsureRegisteredAsync(connectionString, schemaName, cancellationToken).ConfigureAwait(false);
-        var tableNames = await ListTablesAsync(connectionString, schemaName, cancellationToken).ConfigureAwait(false);
+        var registeredSchema = await ResolveRegisteredSchemaAsync(connectionString, schemaName, cancellationToken).ConfigureAwait(false);
+        var tableNames = await ListTablesAsync(connectionString, registeredSchema, cancellationToken).ConfigureAwait(false);
         var stopwatch = Stopwatch.StartNew();
         using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        await AcquireSchemaLockAsync(connection, schemaName, cancellationToken).ConfigureAwait(false);
+        await AcquireSchemaLockAsync(connection, registeredSchema, cancellationToken).ConfigureAwait(false);
         try
         {
             foreach (var tableName in tableNames)
             {
-                await ExecuteMaintenanceAsync(connection, statement, schemaName, tableName, cancellationToken).ConfigureAwait(false);
+                await ExecuteMaintenanceAsync(connection, statement, registeredSchema, tableName, cancellationToken).ConfigureAwait(false);
             }
         }
         finally
         {
-            await ReleaseSchemaLockAsync(connection, schemaName).ConfigureAwait(false);
+            await ReleaseSchemaLockAsync(connection, registeredSchema).ConfigureAwait(false);
         }
 
         stopwatch.Stop();
-        PostgresLog.Info($"[PluginSchemas] {operation} completado: esquema={schemaName}, tablas={tableNames.Count}, duracion={stopwatch.Elapsed.TotalSeconds.ToString("F1", CultureInfo.InvariantCulture)}s.");
-        return new PluginSchemaMaintenanceResult(operation, schemaName, null, tableNames.Count, stopwatch.ElapsedMilliseconds);
+        PostgresLog.Info($"[PluginSchemas] {operation} completado: esquema={registeredSchema}, tablas={tableNames.Count}, duracion={stopwatch.Elapsed.TotalSeconds.ToString("F1", CultureInfo.InvariantCulture)}s.");
+        return new PluginSchemaMaintenanceResult(operation, registeredSchema, null, tableNames.Count, stopwatch.ElapsedMilliseconds);
     }
 
     private static async Task<PluginSchemaMaintenanceResult> RunTableOperationAsync(
@@ -198,26 +198,26 @@ ORDER BY pg_total_relation_size(c.oid) DESC, c.relname";
         string statement,
         CancellationToken cancellationToken)
     {
-        await EnsureTableAsync(connectionString, schemaName, tableName, cancellationToken).ConfigureAwait(false);
+        var table = await ResolveTableAsync(connectionString, schemaName, tableName, cancellationToken).ConfigureAwait(false);
         var stopwatch = Stopwatch.StartNew();
         using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        await AcquireSchemaLockAsync(connection, schemaName, cancellationToken).ConfigureAwait(false);
+        await AcquireSchemaLockAsync(connection, table.SchemaName, cancellationToken).ConfigureAwait(false);
         try
         {
-            await ExecuteMaintenanceAsync(connection, statement, schemaName, tableName, cancellationToken).ConfigureAwait(false);
+            await ExecuteMaintenanceAsync(connection, statement, table.SchemaName, table.TableName, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
-            await ReleaseSchemaLockAsync(connection, schemaName).ConfigureAwait(false);
+            await ReleaseSchemaLockAsync(connection, table.SchemaName).ConfigureAwait(false);
         }
 
         stopwatch.Stop();
-        PostgresLog.Info($"[PluginSchemas] {operation} completado: esquema={schemaName}, tabla={tableName}, duracion={stopwatch.Elapsed.TotalSeconds.ToString("F1", CultureInfo.InvariantCulture)}s.");
-        return new PluginSchemaMaintenanceResult(operation, schemaName, tableName, 1, stopwatch.ElapsedMilliseconds);
+        PostgresLog.Info($"[PluginSchemas] {operation} completado: esquema={table.SchemaName}, tabla={table.TableName}, duracion={stopwatch.Elapsed.TotalSeconds.ToString("F1", CultureInfo.InvariantCulture)}s.");
+        return new PluginSchemaMaintenanceResult(operation, table.SchemaName, table.TableName, 1, stopwatch.ElapsedMilliseconds);
     }
 
-    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The schema and table were verified against the provider registry and PostgreSQL catalog immediately before execution, then safely quoted.")]
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The statement is an internal constant and both identifiers are re-read from PostgreSQL catalog rows after parameterized registry and table membership checks.")]
     private static async Task ExecuteMaintenanceAsync(NpgsqlConnection connection, string statement, string schemaName, string tableName, CancellationToken cancellationToken)
     {
         var target = string.Concat(MaintenanceService.QuoteIdentifier(schemaName), ".", MaintenanceService.QuoteIdentifier(tableName));
@@ -243,17 +243,23 @@ ORDER BY pg_total_relation_size(c.oid) DESC, c.relname";
     }
 
     private static async Task EnsureRegisteredAsync(string connectionString, string schemaName, CancellationToken cancellationToken)
+        => _ = await ResolveRegisteredSchemaAsync(connectionString, schemaName, cancellationToken).ConfigureAwait(false);
+
+    private static async Task<string> ResolveRegisteredSchemaAsync(string connectionString, string schemaName, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(schemaName);
-        const string sql = "SELECT EXISTS (SELECT 1 FROM jellyfin_provider.plugin_schemas WHERE schema_name = @schema)";
+        const string sql = "SELECT schema_name FROM jellyfin_provider.plugin_schemas WHERE schema_name = @schema";
         using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = new NpgsqlCommand(sql, connection);
         command.Parameters.AddWithValue("schema", schemaName);
-        if (!(bool)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!)
+        var registeredSchema = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
+        if (string.IsNullOrWhiteSpace(registeredSchema))
         {
             throw new ArgumentException("El esquema solicitado no está registrado por PG Provider.", nameof(schemaName));
         }
+
+        return registeredSchema;
     }
 
     private static async Task<PluginSchemaMaintenancePolicy> ReadPolicyAsync(string connectionString, string schemaName, CancellationToken cancellationToken)
@@ -272,20 +278,23 @@ ORDER BY pg_total_relation_size(c.oid) DESC, c.relname";
         return new PluginSchemaMaintenancePolicy(reader.GetBoolean(0), reader.GetBoolean(1), reader.GetBoolean(2));
     }
 
-    private static async Task EnsureTableAsync(string connectionString, string schemaName, string tableName, CancellationToken cancellationToken)
+    private static async Task<(string SchemaName, string TableName)> ResolveTableAsync(string connectionString, string schemaName, string tableName, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
-        await EnsureRegisteredAsync(connectionString, schemaName, cancellationToken).ConfigureAwait(false);
-        const string sql = "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = @schema AND table_name = @table AND table_type = 'BASE TABLE')";
+        var registeredSchema = await ResolveRegisteredSchemaAsync(connectionString, schemaName, cancellationToken).ConfigureAwait(false);
+        const string sql = "SELECT table_schema, table_name FROM information_schema.tables WHERE table_schema = @schema AND table_name = @table AND table_type = 'BASE TABLE'";
         using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = new NpgsqlCommand(sql, connection);
-        command.Parameters.AddWithValue("schema", schemaName);
+        command.Parameters.AddWithValue("schema", registeredSchema);
         command.Parameters.AddWithValue("table", tableName);
-        if (!(bool)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!)
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             throw new ArgumentException("La tabla solicitada no pertenece al esquema registrado.", nameof(tableName));
         }
+
+        return (reader.GetString(0), reader.GetString(1));
     }
 
     private static async Task AcquireSchemaLockAsync(NpgsqlConnection connection, string schemaName, CancellationToken cancellationToken)
