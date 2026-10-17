@@ -28,7 +28,7 @@ namespace Jellyfin.Database.Providers.Postgres;
 public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 {
     // ── Fields: readonly first (SA1214), then mutable (SA1201: fields before constructor) ───
-    // 9 GIN trigram indexes for sub-15ms instant search (pg_trgm required)
+    // 10 GIN trigram indexes for sub-15ms instant search (pg_trgm required)
     // All use partial indexes (WHERE col IS NOT NULL) to avoid indexing NULL rows.
     private static readonly (string Name, string Sql)[] GinIndexDefinitions =
     {
@@ -36,6 +36,8 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
          """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_Name_gin_trgm" ON "BaseItems" USING gin ("Name" gin_trgm_ops) WHERE "Name" IS NOT NULL;"""),
         ("IX_BaseItems_OriginalTitle_gin_trgm",
          """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_OriginalTitle_gin_trgm" ON "BaseItems" USING gin ("OriginalTitle" gin_trgm_ops) WHERE "OriginalTitle" IS NOT NULL;"""),
+        ("IX_BaseItems_SortName_gin_trgm",
+         """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_SortName_gin_trgm" ON "BaseItems" USING gin ("SortName" gin_trgm_ops) WHERE "SortName" IS NOT NULL;"""),
         ("IX_BaseItems_Album_gin_trgm",
          """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_Album_gin_trgm" ON "BaseItems" USING gin ("Album" gin_trgm_ops) WHERE "Album" IS NOT NULL;"""),
         ("IX_BaseItems_Artists_gin_trgm",
@@ -192,6 +194,7 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
                 // This must precede HomeQueryCacheInterceptor: the cache buffers a miss by executing
                 // the command itself, before subsequent command interceptors get a chance to run.
                 new DateTimeKindNormalizingInterceptor(),
+                new PostgresCaseInsensitiveSearchInterceptor(),
                 new HomeQueryCacheInterceptor(_logger),
                 new UpsertConflictInterceptor(),
                 new ItemValueReuseInterceptor(),

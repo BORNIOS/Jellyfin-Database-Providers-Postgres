@@ -45,10 +45,10 @@ automatic health check, scheduled maintenance and optional JellyTrend integratio
 ## ✨ Features
 
 - 🐘 **PostgreSQL as native backend** — EF Core + Npgsql, no Jellyfin core changes required.
-- 🔍 **Near-instant search** (< 15 ms typical) with GIN trigram index (`pg_trgm`); automatic fallback to `ILIKE`.
+- 🔍 **Case-insensitive search** across display, original and sort titles; fast search uses a GIN trigram index (`pg_trgm`).
 - 🔄 **Bidirectional migration** — SQLite → PostgreSQL and PostgreSQL → SQLite without external tools.
 - 🩺 **Automatic health check** at startup: diagnoses bloat, invalid indexes, drifted sequences and slow queries.
-- 🛡️ **Error prevention** — EF Core interceptors for upserts, DB error logging and `DateTime.Kind` normalization.
+- 🛡️ **Error prevention** — EF Core interceptors for upserts, logging, Android TV-safe UTC dates and invalid-sentinel repair.
 - 🔧 **Automatic optimization** — GIN indexes CONCURRENTLY, autovacuum tuning on critical tables.
 - 💾 **Scheduled backups** with `pg_dump`, optional ZIP compression and restore from the UI.
 - 🔐 **Private-schema host** — a reusable contract through which other plugins persist only their own data, without credentials or access to Jellyfin's `public` schema.
@@ -274,6 +274,7 @@ When GIN indexes are active, the plugin exposes its own search endpoint that byp
 
 - Typical latency **< 15 ms** on medium and large libraries (depends on hardware and client).
 - Searches by item name, path and type.
+- Matches display, original and sort titles without case sensitivity.
 - **Automatic fallback** to `ILIKE` if GIN indexes don't exist yet.
 - Activated from **Maintenance → Apply optimizations**.
 

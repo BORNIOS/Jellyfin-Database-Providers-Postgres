@@ -39,15 +39,31 @@ public sealed class DateTimeKindNormalizingInterceptorTests
         Assert.Equal(local.ToUniversalTime(), values[0]);
     }
 
-    /// <summary>Missing-date sentinels must remain representable after a client timezone conversion.</summary>
+    /// <summary>Extreme date sentinels must remain representable after a client timezone conversion.</summary>
     [Fact]
-    public void DateTimeMinimumIsReplacedWithClientSafeUtcSentinel()
+    public void DateTimeExtremesAreReplacedWithClientSafeUtcSentinel()
     {
-        var command = new NpgsqlCommand("SELECT @date");
-        command.Parameters.AddWithValue("date", DateTime.MinValue);
+        var command = new NpgsqlCommand("SELECT @minimum, @maximum");
+        command.Parameters.AddWithValue("minimum", DateTime.MinValue);
+        command.Parameters.AddWithValue("maximum", DateTime.MaxValue);
 
         new DateTimeKindNormalizingInterceptor().ReaderExecuting(command, null!, default);
 
-        Assert.Equal(DateTime.UnixEpoch, Assert.IsType<DateTime>(command.Parameters["date"].Value));
+        Assert.Equal(DateTime.UnixEpoch, Assert.IsType<DateTime>(command.Parameters["minimum"].Value));
+        Assert.Equal(DateTime.UnixEpoch, Assert.IsType<DateTime>(command.Parameters["maximum"].Value));
+    }
+
+    /// <summary>Extreme offset sentinels must also be converted before reaching Npgsql.</summary>
+    [Fact]
+    public void DateTimeOffsetExtremesAreReplacedWithClientSafeUtcSentinel()
+    {
+        var command = new NpgsqlCommand("SELECT @minimum, @maximum");
+        command.Parameters.AddWithValue("minimum", DateTimeOffset.MinValue);
+        command.Parameters.AddWithValue("maximum", DateTimeOffset.MaxValue);
+
+        new DateTimeKindNormalizingInterceptor().ReaderExecuting(command, null!, default);
+
+        Assert.Equal(DateTimeOffset.UnixEpoch, Assert.IsType<DateTimeOffset>(command.Parameters["minimum"].Value));
+        Assert.Equal(DateTimeOffset.UnixEpoch, Assert.IsType<DateTimeOffset>(command.Parameters["maximum"].Value));
     }
 }
