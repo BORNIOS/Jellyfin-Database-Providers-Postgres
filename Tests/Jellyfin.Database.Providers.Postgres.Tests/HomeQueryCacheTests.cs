@@ -20,6 +20,10 @@ public sealed class HomeQueryCacheTests
 {
     private const string SkipReason = "POSTGRES_TEST_CONNECTION is not set; skipping PostgreSQL integration tests.";
 
+    // The next-page prefetch is best effort and shares one slot across the process, so it can be dropped
+    // legitimately. Repeating the scenario keeps the assertion strict without depending on timing.
+    private const int PrefetchAttempts = 5;
+
     /// <summary>
     /// A batch that inserts an item value inside a transaction and reads it back used to leave that read in
     /// the cache. When the batch was rolled back (for example because another statement failed), the next
@@ -154,15 +158,26 @@ public sealed class HomeQueryCacheTests
         using var context = CreateContext(scratch.Database.ConnectionString, interceptor);
         const string Sql = "SELECT \"Id\" AS \"Value\" FROM \"BaseItems\" ORDER BY \"Name\" LIMIT @limit OFFSET @offset";
 
-        var firstPage = await context.Database.SqlQueryRaw<Guid>(Sql, new NpgsqlParameter { ParameterName = "limit", Value = 100 }, new NpgsqlParameter { ParameterName = "offset", Value = 0 }).ToListAsync();
-        Assert.Equal(100, firstPage.Count);
-
-        for (var attempt = 0; attempt < 50 && HomeQueryCacheInterceptor.PrefetchCompletedCount == 0; attempt++)
+        var prefetched = false;
+        for (var attempt = 0; attempt < PrefetchAttempts && !prefetched; attempt++)
         {
-            await Task.Delay(50);
+            HomeQueryCacheInterceptor.Purge();
+
+            var firstPage = await context.Database.SqlQueryRaw<Guid>(Sql, new NpgsqlParameter { ParameterName = "limit", Value = 100 }, new NpgsqlParameter { ParameterName = "offset", Value = 0 }).ToListAsync();
+            Assert.Equal(100, firstPage.Count);
+
+            // The prefetch gives up after its own budget, so poll a little longer than that.
+            for (var waited = 0; waited < 60 && HomeQueryCacheInterceptor.PrefetchCompletedCount == 0; waited++)
+            {
+                await Task.Delay(50);
+            }
+
+            prefetched = HomeQueryCacheInterceptor.PrefetchCompletedCount == 1;
         }
 
-        Assert.Equal(1, HomeQueryCacheInterceptor.PrefetchCompletedCount);
+        Assert.True(
+            prefetched,
+            $"The next-page prefetch never completed in {PrefetchAttempts} attempts; it is skipped when the shared slot is busy.");
 
         var secondPage = await context.Database.SqlQueryRaw<Guid>(Sql, new NpgsqlParameter { ParameterName = "limit", Value = 100 }, new NpgsqlParameter { ParameterName = "offset", Value = 100 }).ToListAsync();
         Assert.Equal(100, secondPage.Count);

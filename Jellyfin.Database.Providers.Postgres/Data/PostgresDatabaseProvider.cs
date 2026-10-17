@@ -18,6 +18,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
+using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
 
 namespace Jellyfin.Database.Providers.Postgres;
 
@@ -28,7 +29,7 @@ namespace Jellyfin.Database.Providers.Postgres;
 public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 {
     // ── Fields: readonly first (SA1214), then mutable (SA1201: fields before constructor) ───
-    // 9 GIN trigram indexes for sub-15ms instant search (pg_trgm required)
+    // 10 GIN trigram indexes for sub-15ms instant search (pg_trgm required)
     // All use partial indexes (WHERE col IS NOT NULL) to avoid indexing NULL rows.
     private static readonly (string Name, string Sql)[] GinIndexDefinitions =
     {
@@ -36,6 +37,8 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
          """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_Name_gin_trgm" ON "BaseItems" USING gin ("Name" gin_trgm_ops) WHERE "Name" IS NOT NULL;"""),
         ("IX_BaseItems_OriginalTitle_gin_trgm",
          """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_OriginalTitle_gin_trgm" ON "BaseItems" USING gin ("OriginalTitle" gin_trgm_ops) WHERE "OriginalTitle" IS NOT NULL;"""),
+        ("IX_BaseItems_SortName_gin_trgm",
+         """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_SortName_gin_trgm" ON "BaseItems" USING gin ("SortName" gin_trgm_ops) WHERE "SortName" IS NOT NULL;"""),
         ("IX_BaseItems_Album_gin_trgm",
          """CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_BaseItems_Album_gin_trgm" ON "BaseItems" USING gin ("Album" gin_trgm_ops) WHERE "Album" IS NOT NULL;"""),
         ("IX_BaseItems_Artists_gin_trgm",
@@ -169,17 +172,7 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         options
             .UseNpgsql(
                 tunedConnStr,
-                npgsql =>
-                {
-                    npgsql.MigrationsAssembly(MigrationAssemblyResolver.EnsureRegistered());
-
-                    // Set the timeout on the provider as well, so it does not depend solely on the
-                    // connection string (Jellyfin's startup code migrations need a long one).
-                    if (commandTimeout > 0)
-                    {
-                        npgsql.CommandTimeout(commandTimeout);
-                    }
-                })
+                npgsql => ConfigureNpgsql(npgsql, commandTimeout))
             // Direct EF Core diagnostics are reliable even though Jellyfin's ILoggerFactory is constructed
             // before plugins. Command lifecycle messages are intentionally excluded: the interceptor records
             // slow commands and failures with richer, redacted SQL context in Postgres-*.log.
@@ -192,6 +185,7 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
                 // This must precede HomeQueryCacheInterceptor: the cache buffers a miss by executing
                 // the command itself, before subsequent command interceptors get a chance to run.
                 new DateTimeKindNormalizingInterceptor(),
+                new PostgresCaseInsensitiveSearchInterceptor(),
                 new HomeQueryCacheInterceptor(_logger),
                 new UpsertConflictInterceptor(),
                 new ItemValueReuseInterceptor(),
@@ -850,5 +844,31 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         {
             logger.LogDebug(ex, "Could not activate pg_stat_statements — skipping.");
         }
+    }
+
+    /// <summary>
+    /// Applies the provider options that do not depend on the connection string.
+    /// </summary>
+    /// <param name="npgsql">The provider options builder.</param>
+    /// <param name="commandTimeout">Command timeout in seconds; ignored when not positive.</param>
+    internal static void ConfigureNpgsql(NpgsqlDbContextOptionsBuilder npgsql, int commandTimeout)
+    {
+        ArgumentNullException.ThrowIfNull(npgsql);
+
+        npgsql.MigrationsAssembly(MigrationAssemblyResolver.EnsureRegistered());
+
+        // Set the timeout on the provider as well, so it does not depend solely on the
+        // connection string (Jellyfin's startup code migrations need a long one).
+        if (commandTimeout > 0)
+        {
+            npgsql.CommandTimeout(commandTimeout);
+        }
+
+        // Jellyfin's item queries project several collection navigations (providers, images, user data,
+        // links). While QuerySplittingBehavior is left unset, EF Core logs MultipleCollectionIncludeWarning
+        // for every compiled shape, which floods the server log. Pinning the behaviour keeps the current
+        // SingleQuery execution — the one Jellyfin's own SQLite provider ends up using — and removes the
+        // warning at its source.
+        npgsql.UseQuerySplittingBehavior(QuerySplittingBehavior.SingleQuery);
     }
 }

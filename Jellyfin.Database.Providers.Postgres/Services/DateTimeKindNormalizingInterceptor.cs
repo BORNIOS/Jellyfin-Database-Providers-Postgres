@@ -33,9 +33,8 @@ namespace Jellyfin.Database.Providers.Postgres.Services;
 /// </remarks>
 public sealed class DateTimeKindNormalizingInterceptor : DbCommandInterceptor
 {
-    // Android's java.time cannot represent DateTime.MinValue after a timezone conversion. Npgsql also
-    // maps this sentinel to PostgreSQL -infinity by default, which can later reach clients as an invalid
-    // ISO date. Preserve a valid, explicit sentinel instead.
+    // Android's java.time cannot represent the extreme DateTime sentinels after timezone conversion.
+    // Npgsql can map them to PostgreSQL infinities, which can reach clients as invalid ISO dates.
     private static readonly DateTime ClientSafeSentinelUtc = DateTime.UnixEpoch;
 
     /// <inheritdoc />
@@ -113,7 +112,7 @@ public sealed class DateTimeKindNormalizingInterceptor : DbCommandInterceptor
             }
             else if (param.Value is DateTimeOffset offset)
             {
-                param.Value = offset.ToUniversalTime();
+                param.Value = NormalizeDateTimeOffset(offset);
             }
             else if (param.Value is DateTime[] dateTimes)
             {
@@ -123,14 +122,14 @@ public sealed class DateTimeKindNormalizingInterceptor : DbCommandInterceptor
             }
             else if (param.Value is DateTimeOffset[] offsets)
             {
-                param.Value = Array.ConvertAll(offsets, static offset => offset.ToUniversalTime());
+                param.Value = Array.ConvertAll(offsets, NormalizeDateTimeOffset);
             }
         }
     }
 
     private static DateTime NormalizeDateTime(DateTime value)
     {
-        if (value == DateTime.MinValue)
+        if (value == DateTime.MinValue || value == DateTime.MaxValue)
         {
             return ClientSafeSentinelUtc;
         }
@@ -142,4 +141,9 @@ public sealed class DateTimeKindNormalizingInterceptor : DbCommandInterceptor
             _ => DateTime.SpecifyKind(value, DateTimeKind.Utc),
         };
     }
+
+    private static DateTimeOffset NormalizeDateTimeOffset(DateTimeOffset value)
+        => value == DateTimeOffset.MinValue || value == DateTimeOffset.MaxValue
+            ? DateTimeOffset.UnixEpoch
+            : value.ToUniversalTime();
 }

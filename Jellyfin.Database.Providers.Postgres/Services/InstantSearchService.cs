@@ -109,6 +109,7 @@ public sealed class InstantSearchService
                 GREATEST(
                     word_similarity(@term, coalesce("Name",         '')),
                     word_similarity(@term, coalesce("OriginalTitle",'')),
+                    word_similarity(@term, coalesce("SortName",     '')),
                     word_similarity(@term, coalesce("Album",        '')),
                     word_similarity(@term, coalesce("Artists",      '')),
                     word_similarity(@term, coalesce("SeriesName",   ''))
@@ -118,6 +119,7 @@ public sealed class InstantSearchService
               AND (
                     "Name"          ILIKE @like
                  OR "OriginalTitle" ILIKE @like
+                 OR "SortName"      ILIKE @like
                  OR "Album"         ILIKE @like
                  OR "Artists"       ILIKE @like
                  OR "SeriesName"    ILIKE @like
@@ -157,6 +159,7 @@ public sealed class InstantSearchService
               AND (
                     "Name"          ILIKE @like
                  OR "OriginalTitle" ILIKE @like
+                 OR "SortName"      ILIKE @like
                  OR "Album"         ILIKE @like
                  OR "Artists"       ILIKE @like
                  OR "SeriesName"    ILIKE @like

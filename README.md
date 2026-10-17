@@ -45,10 +45,10 @@ health check automático, mantenimiento programado e integración opcional con J
 ## ✨ Características
 
 - 🐘 **PostgreSQL como backend nativo** — EF Core + Npgsql, sin tocar el core de Jellyfin.
-- 🔍 **Búsqueda casi instantánea** (< 15 ms típico) con índice GIN trigram (`pg_trgm`); fallback automático a `ILIKE`.
+- 🔍 **Búsqueda sin distinguir mayúsculas** por título visible, original y de orden; búsqueda rápida con índice GIN trigram (`pg_trgm`).
 - 🔄 **Migración bidireccional** — SQLite → PostgreSQL y PostgreSQL → SQLite sin herramientas externas.
 - 🩺 **Health Check automático** al arrancar: diagnostica bloat, índices inválidos, secuencias desfasadas y queries lentas.
-- 🛡️ **Prevención de errores** — interceptores EF Core para upserts, logging de errores DB y normalización de `DateTime.Kind`.
+- 🛡️ **Prevención de errores** — interceptores EF Core para upserts, logging, fechas UTC compatibles con Android TV y reparación de sentinels inválidos.
 - 🔧 **Optimización automática** — índices GIN CONCURRENTLY, tuning de autovacuum en tablas críticas.
 - 💾 **Backups programados** con `pg_dump`, compresión ZIP opcional y restore desde la UI.
 - 🔐 **Host de esquemas privados** — contrato reutilizable para que otros plugins persistan únicamente sus propios datos, sin credenciales ni acceso al esquema `public` de Jellyfin.
@@ -277,6 +277,7 @@ Cuando los índices GIN están activos, el plugin expone un endpoint propio que 
 
 - Latencia típica **< 15 ms** en bibliotecas medianas y grandes (depende del hardware y del cliente).
 - Búsqueda por nombre, path y tipo de ítem.
+- Coincidencias sin distinguir mayúsculas/minúsculas en título visible, título original y título para ordenar.
 - **Fallback automático** a `ILIKE` si los índices GIN aún no existen.
 - Se activa en **Mantenimiento → Aplicar optimizaciones**.
 
@@ -387,6 +388,18 @@ No. Es un endpoint de servidor. La UI del plugin lo usa internamente cuando Post
 <summary><b>¿Por qué los timestamps muestran UTC en lugar de mi zona horaria o una fecha mínima?</b></summary>
 
 Las versiones anteriores usaban el switch global `Npgsql.EnableLegacyTimestampBehavior`, que forzaba UTC en todas las lecturas. El interceptor actual normaliza parámetros de escritura sin zona horaria sin alterar las lecturas y convierte `DateTime.MinValue` a un valor UTC seguro para clientes antes de que Npgsql lo represente como `-infinity`.
+</details>
+
+<details>
+<summary><b>¿Por qué Android TV se cerraba al abrir algunas bibliotecas?</b></summary>
+
+El caché de consultas bufferizaba los resultados en un `DataTable` cuyas columnas de fecha descartaban `DateTimeKind.Utc` (el modo por defecto es `UnspecifiedLocal`). Jellyfin serializa entonces la fecha sin offset (`2026-04-18T18:49:38.113835`) y el cliente Android no puede leerla: la sustituye por `LocalDateTime.MIN` y falla al convertirla. Las columnas se crean ahora con `DateTimeMode = Utc` y el lector restaura el `Kind` como segunda barrera. Solo afectaba a fechas con milisegundos distintos de cero, por eso unas bibliotecas abrían y otras no.
+</details>
+
+<details>
+<summary><b>¿Por qué fallaba con 500 al abrir la ficha de un artista o persona?</b></summary>
+
+La actualización de metadatos vuelve a insertar las filas hijas del ítem (proveedores, imágenes, campos bloqueados) aunque ya existan. El plugin las convertía en `ON CONFLICT DO NOTHING`, que evita el error de clave duplicada pero informa **0 filas afectadas**, y EF Core interpreta eso como `DbUpdateConcurrencyException`. Ahora el conflicto se resuelve con una actualización sin cambios sobre la clave primaria: la fila guardada se conserva y la operación cuenta como una fila, así que el guardado termina bien.
 </details>
 
 ---
