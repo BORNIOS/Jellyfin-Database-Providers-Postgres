@@ -390,6 +390,18 @@ No. Es un endpoint de servidor. La UI del plugin lo usa internamente cuando Post
 Las versiones anteriores usaban el switch global `Npgsql.EnableLegacyTimestampBehavior`, que forzaba UTC en todas las lecturas. El interceptor actual normaliza parámetros de escritura sin zona horaria sin alterar las lecturas y convierte `DateTime.MinValue` a un valor UTC seguro para clientes antes de que Npgsql lo represente como `-infinity`.
 </details>
 
+<details>
+<summary><b>¿Por qué Android TV se cerraba al abrir algunas bibliotecas?</b></summary>
+
+El caché de consultas bufferizaba los resultados en un `DataTable` cuyas columnas de fecha descartaban `DateTimeKind.Utc` (el modo por defecto es `UnspecifiedLocal`). Jellyfin serializa entonces la fecha sin offset (`2026-04-18T18:49:38.113835`) y el cliente Android no puede leerla: la sustituye por `LocalDateTime.MIN` y falla al convertirla. Las columnas se crean ahora con `DateTimeMode = Utc` y el lector restaura el `Kind` como segunda barrera. Solo afectaba a fechas con milisegundos distintos de cero, por eso unas bibliotecas abrían y otras no.
+</details>
+
+<details>
+<summary><b>¿Por qué fallaba con 500 al abrir la ficha de un artista o persona?</b></summary>
+
+La actualización de metadatos vuelve a insertar las filas hijas del ítem (proveedores, imágenes, campos bloqueados) aunque ya existan. El plugin las convertía en `ON CONFLICT DO NOTHING`, que evita el error de clave duplicada pero informa **0 filas afectadas**, y EF Core interpreta eso como `DbUpdateConcurrencyException`. Ahora el conflicto se resuelve con una actualización sin cambios sobre la clave primaria: la fila guardada se conserva y la operación cuenta como una fila, así que el guardado termina bien.
+</details>
+
 ---
 
 ## 🤝 Comunidad

@@ -83,11 +83,14 @@ public sealed class SqlRewriteTests
     /// imagenes a medio crear). Ignorarlo es lo que hace SQLite y deja la fila que ya existia.
     /// </summary>
     [Fact]
-    public void DuplicateBaseItemInsertIsIgnored()
+    public void DuplicateBaseItemInsertKeepsTheStoredRowAndReportsOneRow()
     {
         var command = RewriteUpsert("""INSERT INTO "BaseItems" ("Id", "Name") VALUES (@p0, @p1);""");
 
-        Assert.Contains("ON CONFLICT DO NOTHING", command.CommandText, StringComparison.Ordinal);
+        // DO NOTHING would report zero affected rows and EF Core reports that as a concurrency failure,
+        // so the stored row is kept through a no-op update instead.
+        Assert.Contains("ON CONFLICT (\"Id\") DO UPDATE SET \"Id\" = EXCLUDED.\"Id\"", command.CommandText, StringComparison.Ordinal);
+        Assert.DoesNotContain("DO NOTHING", command.CommandText, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -150,7 +153,7 @@ public sealed class SqlRewriteTests
     {
         var command = RewriteUpsert("""INSERT INTO "ItemValues" ("ItemValueId", "CleanValue", "Type", "Value") VALUES (@p0, @p1, @p2, @p3);""");
 
-        Assert.Contains("""ON CONFLICT ("Type", "Value") DO NOTHING""", command.CommandText, StringComparison.Ordinal);
+        Assert.Contains("ON CONFLICT (\"Type\", \"Value\") DO UPDATE SET \"Type\" = EXCLUDED.\"Type\"", command.CommandText, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -170,10 +173,13 @@ public sealed class SqlRewriteTests
             """);
 
         Assert.Contains(
-            """SELECT @p4, @p0 WHERE EXISTS (SELECT 1 FROM "ItemValues" WHERE "ItemValueId" = @p0)""",
+            """SELECT @p4, @p0 WHERE EXISTS (SELECT 1 FROM "ItemValues" AS iv WHERE iv."ItemValueId" = @p0)""",
             command.CommandText,
             StringComparison.Ordinal);
-        Assert.Contains("ON CONFLICT DO NOTHING", command.CommandText, StringComparison.Ordinal);
+        Assert.Contains(
+            """ON CONFLICT ("ItemValueId", "ItemId") DO UPDATE SET""",
+            command.CommandText,
+            StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -186,7 +192,7 @@ public sealed class SqlRewriteTests
         var command = RewriteUpsert("""INSERT INTO "ItemValuesMap" ("ItemId", "ItemValueId") VALUES (@p0, @p1);""");
 
         Assert.DoesNotContain("EXISTS", command.CommandText, StringComparison.Ordinal);
-        Assert.Contains("ON CONFLICT DO NOTHING", command.CommandText, StringComparison.Ordinal);
+        Assert.Contains("""ON CONFLICT ("ItemValueId", "ItemId") DO UPDATE SET""", command.CommandText, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -195,19 +201,18 @@ public sealed class SqlRewriteTests
     /// The parent is present for ordinary inserts, so this leaves the normal path unchanged.
     /// </summary>
     [Theory]
-    [InlineData("BaseItemImageInfos")]
-    [InlineData("BaseItemProviders")]
-    public void DependentBaseItemInsertIsConditionalOnTheParentStillExisting(string table)
+    [InlineData("""INSERT INTO "BaseItemImageInfos" ("Id", "ItemId", "Path") VALUES (@p0, @p1, @p2);""", "BaseItemImageInfos", "@p1")]
+    [InlineData("""INSERT INTO "BaseItemProviders" ("ItemId", "ProviderId", "ProviderValue") VALUES (@p0, @p1, @p2);""", "BaseItemProviders", "@p0")]
+    public void DependentBaseItemInsertIsConditionalOnTheParentStillExisting(string sql, string table, string itemIdParameter)
     {
-        var command = RewriteUpsert(
-            $"INSERT INTO \"{table}\" (\"Id\", \"ItemId\", \"Value\") VALUES (@p0, @p1, @p2);");
+        var command = RewriteUpsert(sql);
 
         Assert.Contains($"INSERT INTO \"{table}\"", command.CommandText, StringComparison.Ordinal);
         Assert.Contains(
-            "WHERE EXISTS (SELECT 1 FROM \"BaseItems\" WHERE \"Id\" = @p1)",
+            $"WHERE EXISTS (SELECT 1 FROM \"BaseItems\" WHERE \"Id\" = {itemIdParameter})",
             command.CommandText,
             StringComparison.Ordinal);
-        Assert.Contains("ON CONFLICT DO NOTHING", command.CommandText, StringComparison.Ordinal);
+        Assert.Contains("ON CONFLICT (", command.CommandText, StringComparison.Ordinal);
     }
 
     /// <summary>Reescribir dos veces no puede cambiar la sentencia: un comando reintentado fallaria.</summary>

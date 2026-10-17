@@ -387,6 +387,18 @@ No. It is a server-side endpoint. The plugin UI uses it internally when PostgreS
 Earlier versions used the global `Npgsql.EnableLegacyTimestampBehavior` switch, which forced UTC on all reads. The current interceptor normalizes timezone-less write parameters without changing reads and replaces `DateTime.MinValue` with a client-safe UTC value before Npgsql represents it as `-infinity`.
 </details>
 
+<details>
+<summary><b>Why did Android TV crash when opening some libraries?</b></summary>
+
+The query cache buffered result sets in a `DataTable` whose date columns dropped `DateTimeKind.Utc` (the default mode is `UnspecifiedLocal`). Jellyfin then serialized the date without a zone offset (`2026-04-18T18:49:38.113835`) and the Android client could not parse it: it substituted `LocalDateTime.MIN` and failed converting it. Columns are now created with `DateTimeMode = Utc` and the reader restores the `Kind` as a second safeguard. Only dates with non-zero milliseconds were affected, which is why some libraries opened and others did not.
+</details>
+
+<details>
+<summary><b>Why did opening an artist or person page return 500?</b></summary>
+
+A metadata refresh inserts the item's dependent rows again (providers, images, locked fields) even when they already exist. The plugin rewrote those inserts as `ON CONFLICT DO NOTHING`, which avoids the duplicate key error but reports **zero affected rows**, and EF Core turns that into `DbUpdateConcurrencyException`. The conflict is now resolved with a no-op update on the primary key: the stored row is kept and the statement counts as one row, so the save completes.
+</details>
+
 ---
 
 ## 🤝 Community

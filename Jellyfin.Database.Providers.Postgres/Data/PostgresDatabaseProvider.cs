@@ -18,6 +18,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
+using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
 
 namespace Jellyfin.Database.Providers.Postgres;
 
@@ -171,17 +172,7 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         options
             .UseNpgsql(
                 tunedConnStr,
-                npgsql =>
-                {
-                    npgsql.MigrationsAssembly(MigrationAssemblyResolver.EnsureRegistered());
-
-                    // Set the timeout on the provider as well, so it does not depend solely on the
-                    // connection string (Jellyfin's startup code migrations need a long one).
-                    if (commandTimeout > 0)
-                    {
-                        npgsql.CommandTimeout(commandTimeout);
-                    }
-                })
+                npgsql => ConfigureNpgsql(npgsql, commandTimeout))
             // Direct EF Core diagnostics are reliable even though Jellyfin's ILoggerFactory is constructed
             // before plugins. Command lifecycle messages are intentionally excluded: the interceptor records
             // slow commands and failures with richer, redacted SQL context in Postgres-*.log.
@@ -853,5 +844,31 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         {
             logger.LogDebug(ex, "Could not activate pg_stat_statements — skipping.");
         }
+    }
+
+    /// <summary>
+    /// Applies the provider options that do not depend on the connection string.
+    /// </summary>
+    /// <param name="npgsql">The provider options builder.</param>
+    /// <param name="commandTimeout">Command timeout in seconds; ignored when not positive.</param>
+    internal static void ConfigureNpgsql(NpgsqlDbContextOptionsBuilder npgsql, int commandTimeout)
+    {
+        ArgumentNullException.ThrowIfNull(npgsql);
+
+        npgsql.MigrationsAssembly(MigrationAssemblyResolver.EnsureRegistered());
+
+        // Set the timeout on the provider as well, so it does not depend solely on the
+        // connection string (Jellyfin's startup code migrations need a long one).
+        if (commandTimeout > 0)
+        {
+            npgsql.CommandTimeout(commandTimeout);
+        }
+
+        // Jellyfin's item queries project several collection navigations (providers, images, user data,
+        // links). While QuerySplittingBehavior is left unset, EF Core logs MultipleCollectionIncludeWarning
+        // for every compiled shape, which floods the server log. Pinning the behaviour keeps the current
+        // SingleQuery execution — the one Jellyfin's own SQLite provider ends up using — and removes the
+        // warning at its source.
+        npgsql.UseQuerySplittingBehavior(QuerySplittingBehavior.SingleQuery);
     }
 }

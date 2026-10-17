@@ -71,6 +71,23 @@ public sealed partial class UpsertConflictInterceptor : DbCommandInterceptor
         "BaseItemMetadataFields",
     ];
 
+    // Primary key of every table rewritten here. The conflict clause has to name it: an INSERT that is
+    // skipped reports zero affected rows, and EF Core turns a row count below the expected one into a
+    // DbUpdateConcurrencyException. A no-op DO UPDATE reports one row for both outcomes, so a duplicate
+    // still behaves like the SQLite write path (keep the row that was already there) without failing.
+    private static readonly Dictionary<string, string[]> PrimaryKeys = new(StringComparer.Ordinal)
+    {
+        [ItemValuesTable] = ["Type", "Value"],
+        ["\"BaseItems\""] = ["Id"],
+        ["\"BaseItemProviders\""] = ["ItemId", "ProviderId"],
+        ["\"BaseItemImageInfos\""] = ["Id"],
+        ["\"BaseItemMetadataFields\""] = ["Id", "ItemId"],
+        ["\"BaseItemTrailerTypes\""] = ["Id", "ItemId"],
+        ["\"AncestorIds\""] = ["ItemId", "ParentItemId"],
+        ["\"ItemValuesMap\""] = ["ItemValueId", "ItemId"],
+        ["\"PeopleBaseItemMap\""] = ["ItemId", "PeopleId", "Role"],
+    };
+
     /// <inheritdoc />
     public override InterceptionResult<int> NonQueryExecuting(
         DbCommand command,
@@ -221,13 +238,8 @@ public sealed partial class UpsertConflictInterceptor : DbCommandInterceptor
                 return match.Value;
             }
 
-            // ItemValues needs the column pair named: the fresh random ItemValueId never collides, so a
-            // clause without a target would never fire and the duplicate (Type, Value) would still fail.
-            var clause = isItemValue
-                ? "\nON CONFLICT (\"Type\", \"Value\") DO NOTHING"
-                : "\nON CONFLICT DO NOTHING";
-
             var stmt = match.Value.TrimEnd();
+            var clause = ConflictClause(tableName);
             return stmt.EndsWith(';')
                 ? stmt[..^1] + clause + ";"
                 : stmt + clause;
@@ -255,7 +267,7 @@ public sealed partial class UpsertConflictInterceptor : DbCommandInterceptor
                 return match.Value;
             }
 
-            var suffix = match.Groups["conflict"].Success ? "\nON CONFLICT DO NOTHING" : string.Empty;
+            var suffix = match.Groups["conflict"].Success ? ConflictClause($"\"{table}\"") : string.Empty;
             return string.Concat(
                 "INSERT INTO \"",
                 table,
@@ -291,13 +303,32 @@ public sealed partial class UpsertConflictInterceptor : DbCommandInterceptor
                     itemId,
                     ", ",
                     itemValueId,
-                    " WHERE EXISTS (SELECT 1 FROM \"ItemValues\" WHERE \"ItemValueId\" = ",
+                    " WHERE EXISTS (SELECT 1 FROM \"ItemValues\" AS iv WHERE iv.\"ItemValueId\" = ",
                     itemValueId,
                     ")");
             });
         }
 
         command.CommandText = rewritten;
+    }
+
+    /// <summary>
+    /// Builds the conflict clause appended to a rewritten INSERT.
+    /// </summary>
+    /// <param name="tableName">Quoted table name that was inserted into.</param>
+    /// <returns>The <c>ON CONFLICT</c> clause, ending before the statement terminator.</returns>
+    private static string ConflictClause(string tableName)
+    {
+        if (!PrimaryKeys.TryGetValue(tableName, out var columns))
+        {
+            return "\nON CONFLICT DO NOTHING";
+        }
+
+        // The update assigns each key column to its own incoming value, so the row is left exactly as it
+        // was while PostgreSQL still reports one affected row.
+        var target = string.Join(", ", columns.Select(static column => $"\"{column}\""));
+        var assignments = string.Join(", ", columns.Select(static column => $"\"{column}\" = EXCLUDED.\"{column}\""));
+        return string.Concat("\nON CONFLICT (", target, ") DO UPDATE SET ", assignments);
     }
 
     /// <summary>
@@ -334,7 +365,7 @@ public sealed partial class UpsertConflictInterceptor : DbCommandInterceptor
     /// EF parameters rather than parsed as SQL expressions.
     /// </summary>
     [GeneratedRegex(
-        @"INSERT\s+INTO\s+""(?<table>[^""]+)""\s*\((?<columns>[^)]*)\)\s*VALUES\s*\((?<values>[^;]*)\)\s*(?<conflict>ON\s+CONFLICT\s+DO\s+NOTHING)?\s*;",
+        @"INSERT\s+INTO\s+""(?<table>[^""]+)""\s*\((?<columns>[^)]*)\)\s*VALUES\s*\((?<values>[^;]*)\)\s*(?<conflict>ON\s+CONFLICT[^;]*)?\s*;",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex BaseItemDependentInsertRegex();
 

@@ -696,7 +696,12 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
         return table;
     }
 
-    private static DataTable MaterializeTyped(DbDataReader reader)
+    /// <summary>
+    /// Copies every row of <paramref name="reader"/> into a typed table that can be replayed later.
+    /// </summary>
+    /// <param name="reader">The command reader to drain.</param>
+    /// <returns>The buffered table.</returns>
+    internal static DataTable MaterializeTyped(DbDataReader reader)
     {
         var table = CreateTypedTable(reader);
         var values = new object[reader.FieldCount];
@@ -716,10 +721,17 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
     /// safely read an integer projection as a <see cref="float"/>. Jellyfin's search
     /// query relies on that provider conversion.
     /// </summary>
-    private static NpgsqlCompatibleDataTableReader CreateBufferedReader(DataTable table)
+    /// <param name="table">The buffered table to replay.</param>
+    /// <returns>A reader over the buffered rows.</returns>
+    internal static DbDataReader CreateBufferedReader(DataTable table)
         => new NpgsqlCompatibleDataTableReader(table.CreateDataReader());
 
-    private static DataTable CreateTypedTable(DbDataReader reader)
+    /// <summary>
+    /// Creates an empty table whose columns use the CLR types the command returns.
+    /// </summary>
+    /// <param name="reader">The command reader that defines the schema.</param>
+    /// <returns>The empty, typed table.</returns>
+    internal static DataTable CreateTypedTable(DbDataReader reader)
     {
         var table = new DataTable();
         var names = new HashSet<string>(StringComparer.Ordinal);
@@ -732,7 +744,16 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
                 names.Add(name);
             }
 
-            table.Columns.Add(name, reader.GetFieldType(ordinal));
+            var column = table.Columns.Add(name, reader.GetFieldType(ordinal));
+
+            // A DataColumn defaults to DataSetDateTime.UnspecifiedLocal, which discards DateTimeKind.Utc
+            // while copying the row. Jellyfin writes such a value without a timezone offset (its converter
+            // only appends 'Z' when the milliseconds are zero) and the Android client cannot parse that,
+            // replacing the date with LocalDateTime.MIN and crashing on the next navigation.
+            if (column.DataType == typeof(DateTime))
+            {
+                column.DateTimeMode = DataSetDateTime.Utc;
+            }
         }
 
         return table;
@@ -975,9 +996,18 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
 
         public override string GetString(int ordinal) => GetFieldValue<string>(ordinal);
 
-        public override object GetValue(int ordinal) => _inner.GetValue(ordinal);
+        public override object GetValue(int ordinal) => RestoreUtcKind(_inner.GetValue(ordinal));
 
-        public override int GetValues(object[] values) => _inner.GetValues(values);
+        public override int GetValues(object[] values)
+        {
+            var count = _inner.GetValues(values);
+            for (var i = 0; i < count; i++)
+            {
+                values[i] = RestoreUtcKind(values[i]);
+            }
+
+            return count;
+        }
 
         public override bool IsDBNull(int ordinal) => _inner.IsDBNull(ordinal);
 
@@ -995,7 +1025,7 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
 
         public override T GetFieldValue<T>(int ordinal)
         {
-            var value = _inner.GetValue(ordinal);
+            var value = RestoreUtcKind(_inner.GetValue(ordinal));
             if (value is T typed)
             {
                 return typed;
@@ -1022,6 +1052,17 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
 
         public override Task<T> GetFieldValueAsync<T>(int ordinal, CancellationToken cancellationToken)
             => Task.FromResult(GetFieldValue<T>(ordinal));
+
+        /// <summary>
+        /// Last line of defence for timestamps read from PostgreSQL: every Jellyfin date column is
+        /// <c>timestamp with time zone</c>, which Npgsql hands back with <see cref="DateTimeKind.Utc"/>.
+        /// A value that arrives here without a kind lost it while being buffered, and passing it on
+        /// makes Jellyfin emit an offset-less date that the Android client cannot parse.
+        /// </summary>
+        private static object RestoreUtcKind(object value)
+            => value is DateTime { Kind: DateTimeKind.Unspecified } dateTime
+                ? DateTime.SpecifyKind(dateTime, DateTimeKind.Utc)
+                : value;
 
         protected override void Dispose(bool disposing)
         {
