@@ -86,12 +86,16 @@ internal static class SqliteCompatibilityBootstrap
     {
         ArgumentNullException.ThrowIfNull(conn);
 
-        if (!ShouldEnsure(conn.Host, conn.Port, conn.Database))
+        var target = string.Create(CultureInfo.InvariantCulture, $"{conn.Host}:{conn.Port}/{conn.Database}");
+        if (IsEnsured(target))
         {
             return;
         }
 
-        Create(conn);
+        if (Create(conn))
+        {
+            MarkEnsured(target);
+        }
     }
 
     /// <summary>
@@ -101,7 +105,8 @@ internal static class SqliteCompatibilityBootstrap
     internal static void Ensure(string connectionString)
     {
         var builder = new NpgsqlConnectionStringBuilder(connectionString);
-        if (!ShouldEnsure(builder.Host, builder.Port, builder.Database))
+        var target = string.Create(CultureInfo.InvariantCulture, $"{builder.Host}:{builder.Port}/{builder.Database}");
+        if (IsEnsured(target))
         {
             return;
         }
@@ -110,7 +115,13 @@ internal static class SqliteCompatibilityBootstrap
         {
             using var conn = new NpgsqlConnection(connectionString);
             conn.Open();
-            Create(conn);
+
+            // Only a successful run is remembered: if PostgreSQL was not reachable yet (host reboot, service
+            // still starting) the next call has to try again instead of leaving min/max(uuid) missing.
+            if (Create(conn))
+            {
+                MarkEnsured(target);
+            }
         }
         catch (Exception ex)
         {
@@ -120,22 +131,23 @@ internal static class SqliteCompatibilityBootstrap
         }
     }
 
-    private static bool ShouldEnsure(string? host, int port, string? database)
+    private static bool IsEnsured(string target)
     {
-        var target = string.Create(CultureInfo.InvariantCulture, $"{host}:{port}/{database}");
         lock (EnsureLock)
         {
-            if (string.Equals(_ensuredFor, target, StringComparison.Ordinal))
-            {
-                return false;
-            }
-
-            _ensuredFor = target;
-            return true;
+            return string.Equals(_ensuredFor, target, StringComparison.Ordinal);
         }
     }
 
-    private static void Create(NpgsqlConnection conn)
+    private static void MarkEnsured(string target)
+    {
+        lock (EnsureLock)
+        {
+            _ensuredFor = target;
+        }
+    }
+
+    private static bool Create(NpgsqlConnection conn)
     {
         try
         {
@@ -146,10 +158,12 @@ internal static class SqliteCompatibilityBootstrap
             }
 
             PostgresLog.Info("[Compatibility] Agregados min/max sobre uuid disponibles (compatibilidad SQLite).");
+            return true;
         }
         catch (Exception ex)
         {
             PostgresLog.Error("[Compatibility] No se pudieron crear los agregados min/max(uuid)", ex);
+            return false;
         }
     }
 

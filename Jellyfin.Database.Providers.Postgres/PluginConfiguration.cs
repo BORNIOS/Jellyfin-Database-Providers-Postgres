@@ -62,6 +62,17 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool BackupCompression { get; set; } = true;
 
     /// <summary>
+    /// Gets or sets how many days a backup is kept. Older backups are deleted after each backup and by the
+    /// retention task. 0 disables retention (nothing is ever deleted).
+    /// </summary>
+    public int BackupRetentionDays { get; set; }
+
+    /// <summary>
+    /// Gets or sets how many of the newest backups are never deleted, whatever their age.
+    /// </summary>
+    public int BackupRetentionMinKeep { get; set; } = 5;
+
+    /// <summary>
     /// Gets or sets the directory that contains the PostgreSQL client binaries
     /// (pg_dump, psql, pg_restore, etc.).
     /// Example on Windows: C:\Program Files\PostgreSQL\17\bin

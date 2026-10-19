@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Providers.Postgres.Logging;
@@ -30,6 +31,8 @@ public sealed class QueryConsoleService
     internal const int DefaultTimeoutSeconds = 30;
 
     // Only read-only entry points are allowed.
+    private static readonly Regex DollarQuote = new(@"\$[A-Za-z_]*\$", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+
     private static readonly string[] AllowedStarters = ["SELECT", "WITH", "TABLE", "VALUES", "EXPLAIN", "SHOW"];
 
     // Statements that would modify data, structure or server state. Checked as whole words.
@@ -62,6 +65,13 @@ public sealed class QueryConsoleService
         if (statement.Length == 0)
         {
             throw new ArgumentException("La consulta no contiene ninguna sentencia.", nameof(sql));
+        }
+
+        // Dollar quoting ($$ ... $$ / $tag$ ... $tag$) is not understood by the masker below, so a literal could hide a
+        // second statement from the checks. Nothing the console is meant for needs it: reject it outright.
+        if (DollarQuote.IsMatch(statement))
+        {
+            throw new ArgumentException("Las comillas de dólar ($$) no están permitidas en la consola.", nameof(sql));
         }
 
         var analysis = masked.Trim();
@@ -142,7 +152,21 @@ public sealed class QueryConsoleService
         // and this keeps CA2007 (ConfigureAwait on every awaited operation) satisfied.
         using var connection = new NpgsqlConnection(builder.ConnectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        using var command = new NpgsqlCommand(statement, connection);
+
+        // The server enforces read-only no matter what the text checks let through: any write, DDL or
+        // sequence advance fails inside a READ ONLY transaction, and the timeouts bound a runaway query.
+        using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        using (var guard = new NpgsqlCommand(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"SET TRANSACTION READ ONLY; SET LOCAL statement_timeout = {DefaultTimeoutSeconds * 1000}; SET LOCAL lock_timeout = 5000;"),
+            connection,
+            transaction))
+        {
+            await guard.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        using var command = new NpgsqlCommand(statement, connection, transaction);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
         for (var field = 0; field < reader.FieldCount; field++)

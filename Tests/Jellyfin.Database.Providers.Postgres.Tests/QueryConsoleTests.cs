@@ -43,6 +43,8 @@ public sealed class QueryConsoleTests
     [InlineData("SELECT * INTO copia FROM \"BaseItems\"")]
     [InlineData("-- despista\nUPDATE \"BaseItems\" SET \"Name\" = 'x'")]
     [InlineData("/* despista */ DELETE FROM \"UserData\"")]
+    [InlineData("SELECT $$'$$; DROP TABLE \"BaseItems\"; SELECT $$'$$")]
+    [InlineData("SELECT $tag$x$tag$")]
     public void MutatingOrMultiStatementSqlIsRejected(string sql)
     {
         var exception = Assert.Throws<ArgumentException>(() => QueryConsoleService.Validate(sql));

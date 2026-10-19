@@ -32,6 +32,7 @@ public class PostgresServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<PluginSchemaExplorerService>();
         serviceCollection.AddSingleton<PluginSchemaMaintenanceService>();
         serviceCollection.AddSingleton<IScheduledTask, BackupTask>();
+        serviceCollection.AddSingleton<IScheduledTask, BackupRetentionTask>();
         serviceCollection.AddSingleton<IScheduledTask, VacuumAnalyzeTask>();
         serviceCollection.AddSingleton<IScheduledTask, ReindexTask>();
         serviceCollection.AddSingleton<IScheduledTask, OptimizeIndexesTask>();

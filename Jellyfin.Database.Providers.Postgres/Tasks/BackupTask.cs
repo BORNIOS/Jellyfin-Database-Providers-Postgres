@@ -70,6 +70,15 @@ public class BackupTask : IScheduledTask
             config.BackupCompression,
             config.PgBinPath,
             cancellationToken).ConfigureAwait(false);
+        progress.Report(90);
+
+        // Prune right after a good backup, so the folder never grows past the retention even if the separate
+        // retention task is disabled.
+        if (config.BackupRetentionDays > 0)
+        {
+            BackupRetentionService.Apply(backupDir, config.BackupRetentionDays, config.BackupRetentionMinKeep, dryRun: false);
+        }
+
         progress.Report(100);
     }
 }
