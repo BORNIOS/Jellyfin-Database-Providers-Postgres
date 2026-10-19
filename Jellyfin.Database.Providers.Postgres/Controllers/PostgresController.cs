@@ -19,6 +19,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Npgsql;
 
 #pragma warning disable SA1611, SA1615
 
@@ -35,6 +36,7 @@ namespace Jellyfin.Database.Providers.Postgres.Controllers;
 public class PostgresController : ControllerBase
 {
     private const string DefaultSchema = "public";
+    private const string PasswordMask = "*****";
 
     private readonly IApplicationPaths _appPaths;
     private readonly ISystemManager _systemManager;
@@ -101,13 +103,15 @@ public class PostgresController : ControllerBase
         return Ok(new
         {
             IsPostgresActive = isActive,
+            PluginVersion = typeof(PostgresPlugin).Assembly.GetName().Version?.ToString(),
+            InstallWarnings = PostgresPlugin.Instance?.InstallWarnings ?? Array.Empty<string>(),
             ActiveConnectionString = isActive ? MaskPassword(activeConn) : null,
             SqliteDefaultPath = sqliteDefault,
             SqliteExists = sqliteExists,
             SqliteSize = sqliteExists
                 ? FormatBytes(new FileInfo(sqliteDefault).Length)
                 : null,
-            SavedConnectionString = config?.ConnectionString,
+            SavedConnectionString = MaskPassword(config?.ConnectionString),
             SavedSchema = config?.Schema ?? DefaultSchema,
             SavedCommandTimeout = config?.CommandTimeout ?? 60,
             SavedMinPoolSize = config?.MinPoolSize ?? 4,
@@ -117,6 +121,8 @@ public class PostgresController : ControllerBase
                 ? defaultBackupDir
                 : config?.BackupDirectory ?? defaultBackupDir,
             SavedBackupCompression = config?.BackupCompression ?? true,
+            SavedBackupRetentionDays = config?.BackupRetentionDays ?? 0,
+            SavedBackupRetentionMinKeep = config?.BackupRetentionMinKeep ?? BackupRetentionService.DefaultMinKeep,
             SavedPgBinPath = config?.PgBinPath ?? string.Empty,
             DefaultBackupDirectory = defaultBackupDir,
             MigrationState = config?.MigrationState.ToString() ?? "NotStarted",
@@ -163,6 +169,8 @@ public class PostgresController : ControllerBase
             return BadRequest(new { Success = false, Error = "Connection string is required." });
         }
 
+        request.ConnectionString = RestoreMaskedPassword(request.ConnectionString);
+
         var error = await MaintenanceService.TestConnectionAsync(request.ConnectionString, cancellationToken)
             .ConfigureAwait(false);
         if (error is not null)
@@ -188,15 +196,49 @@ public class PostgresController : ControllerBase
 
     /// <summary>Saves the connection string and options to the plugin configuration.</summary>
     /// <param name="request">Request body containing connection string and plugin options.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Object confirming the configuration was saved.</returns>
     [HttpPost("SaveConfig")]
     [ProducesResponseType(StatusCodes.Status200OK)]
-    public ActionResult<object> SaveConfig([FromBody] SaveConfigRequest request)
+    public async Task<ActionResult<object>> SaveConfig([FromBody] SaveConfigRequest request, CancellationToken cancellationToken)
     {
         var plugin = PostgresPlugin.Instance;
         if (plugin is null)
         {
             return StatusCode(StatusCodes.Status503ServiceUnavailable, new { Error = "Plugin not loaded." });
+        }
+
+        if (string.IsNullOrWhiteSpace(request.ConnectionString))
+        {
+            return BadRequest(new { Success = false, Error = "La cadena de conexión es obligatoria." });
+        }
+
+        // The panel shows the password masked; a masked value means "keep the one already stored".
+        request.ConnectionString = RestoreMaskedPassword(request.ConnectionString);
+
+        try
+        {
+            _ = new NpgsqlConnectionStringBuilder(request.ConnectionString);
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { Success = false, Error = "La cadena de conexión no es válida: " + ex.Message });
+        }
+
+        // When PostgreSQL is the running engine the next restart reads this connection string from database.xml,
+        // so a typo here would leave Jellyfin unable to start. Prove it opens before anything is persisted.
+        var isActiveEngine = PostgresPlugin.IsPostgresActive(_appPaths);
+        if (isActiveEngine)
+        {
+            var tunedForTest = PostgresDatabaseProvider.BuildTunedConnectionString(
+                request.ConnectionString,
+                plugin.Configuration,
+                request.CommandTimeout).ToString();
+            var testError = await MaintenanceService.TestConnectionAsync(tunedForTest, cancellationToken).ConfigureAwait(false);
+            if (testError is not null)
+            {
+                return BadRequest(new { Success = false, Error = "No se guardó: la conexión falló y Jellyfin no podría arrancar con ella. " + testError });
+            }
         }
 
         if (request.MaxPoolSize > 0 && request.MinPoolSize > request.MaxPoolSize)
@@ -231,6 +273,16 @@ public class PostgresController : ControllerBase
 
         plugin.Configuration.BackupCompression = request.BackupCompression;
 
+        if (request.BackupRetentionDays is >= 0)
+        {
+            plugin.Configuration.BackupRetentionDays = request.BackupRetentionDays.Value;
+        }
+
+        if (request.BackupRetentionMinKeep is >= 1)
+        {
+            plugin.Configuration.BackupRetentionMinKeep = request.BackupRetentionMinKeep.Value;
+        }
+
         if (request.PgBinPath is not null)
         {
             plugin.Configuration.PgBinPath = request.PgBinPath;
@@ -242,7 +294,7 @@ public class PostgresController : ControllerBase
         // database.xml instead of the plugin configuration. Refresh that file so an edit in the
         // advanced options reaches the provider on the next restart and does not stay as a value
         // the panel shows but the runtime ignores.
-        if (PostgresPlugin.IsPostgresActive(_appPaths))
+        if (isActiveEngine)
         {
             var tuned = PostgresDatabaseProvider.BuildTunedConnectionString(
                 plugin.Configuration.ConnectionString,
@@ -288,6 +340,8 @@ public class PostgresController : ControllerBase
         {
             return BadRequest(new { Error = "ConnectionString is required." });
         }
+
+        request.ConnectionString = RestoreMaskedPassword(request.ConnectionString);
 
         var started = _migrationService.StartMigration(
             sqlitePath: request.SqlitePath,
@@ -376,6 +430,8 @@ public class PostgresController : ControllerBase
         {
             return BadRequest(new { Error = "ConnectionString is required." });
         }
+
+        request.ConnectionString = RestoreMaskedPassword(request.ConnectionString);
 
         var plugin = PostgresPlugin.Instance;
 
@@ -766,9 +822,14 @@ public class PostgresController : ControllerBase
                 .ConfigureAwait(false);
 
             var backupSize = GetFileSizeBytes(backupPath);
+            var pruned = config is { BackupRetentionDays: > 0 }
+                ? BackupRetentionService.Apply(outputDir, config.BackupRetentionDays, config.BackupRetentionMinKeep, dryRun: false)
+                : null;
             return Ok(new
             {
                 Success = true,
+                PrunedBackups = pruned?.Count ?? 0,
+                PrunedBytesFormatted = pruned?.BytesFormatted,
                 BackupPath = backupPath,
                 Compressed = compress,
                 SizeBytes = backupSize,
@@ -815,6 +876,30 @@ public class PostgresController : ControllerBase
             Directory = dir,
             Files = files
         });
+    }
+
+    /// <summary>
+    /// Applies the backup retention policy to the backup folder, or previews it.
+    /// </summary>
+    /// <param name="request">Optional overrides and the dry-run flag.</param>
+    /// <returns>The backups removed (or that would be removed).</returns>
+    [HttpPost("BackupRetention")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult<object> BackupRetention([FromBody] BackupRetentionRequest? request)
+    {
+        var config = PostgresPlugin.Instance?.Configuration;
+        var days = request?.Days ?? config?.BackupRetentionDays ?? 0;
+        var minKeep = request?.MinKeep ?? config?.BackupRetentionMinKeep ?? BackupRetentionService.DefaultMinKeep;
+        if (days <= 0)
+        {
+            return BadRequest(new { Success = false, Error = "Define primero cuántos días se conservan los respaldos (mayor que 0)." });
+        }
+
+        var dir = string.IsNullOrWhiteSpace(config?.BackupDirectory)
+            ? Path.Combine(_appPaths.DataPath, "postgres-backups")
+            : config.BackupDirectory;
+        var result = BackupRetentionService.Apply(dir, days, minKeep, request?.DryRun ?? true);
+        return Ok(new { Success = true, result.DryRun, result.Count, result.Bytes, result.BytesFormatted, result.Names, result.Failures, Days = days, MinKeep = minKeep });
     }
 
     /// <summary>Restores a PostgreSQL backup file (.sql or .zip) using psql.</summary>
@@ -1016,7 +1101,7 @@ public class PostgresController : ControllerBase
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Array of ranked search result objects.</returns>
     [HttpGet("Search/Instant")]
-    [AllowAnonymous] // Search must work without re-auth; access is scoped to the DB user's data
+    [Authorize] // Needs a signed-in Jellyfin user: the query reads the whole BaseItems table, so it must never be anonymous.
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
     public async Task<ActionResult<object>> InstantSearch(
@@ -1383,6 +1468,54 @@ public class PostgresController : ControllerBase
             StatusCodes.Status409Conflict,
             new { Error = "PostgreSQL is not active. Activate it first or provide a connection string." });
 
+    /// <summary>
+    /// The panel never receives a real password, so what it sends back may carry the mask. Swaps the mask for
+    /// the password already stored (plugin configuration first, then the active database.xml).
+    /// </summary>
+    /// <param name="connectionString">Connection string received from the panel.</param>
+    /// <returns>The connection string with the real password, or the original when there is nothing to restore.</returns>
+    private string RestoreMaskedPassword(string connectionString)
+    {
+        NpgsqlConnectionStringBuilder builder;
+        try
+        {
+            builder = new NpgsqlConnectionStringBuilder(connectionString);
+        }
+        catch (ArgumentException)
+        {
+            return connectionString;
+        }
+
+        if (!string.Equals(builder.Password, PasswordMask, StringComparison.Ordinal))
+        {
+            return connectionString;
+        }
+
+        foreach (var stored in new[] { PostgresPlugin.Instance?.Configuration.ConnectionString, PostgresPlugin.ReadActivePgConnectionString(_appPaths) })
+        {
+            if (string.IsNullOrWhiteSpace(stored))
+            {
+                continue;
+            }
+
+            try
+            {
+                var password = new NpgsqlConnectionStringBuilder(stored).Password;
+                if (!string.IsNullOrEmpty(password) && !string.Equals(password, PasswordMask, StringComparison.Ordinal))
+                {
+                    builder.Password = password;
+                    return builder.ConnectionString;
+                }
+            }
+            catch (ArgumentException)
+            {
+                // Unreadable stored value: try the next source.
+            }
+        }
+
+        return connectionString;
+    }
+
     /// <summary>Masks the password in a connection string so it's safe to return to the UI.</summary>
     private static string? MaskPassword(string? connectionString)
     {
@@ -1395,7 +1528,7 @@ public class PostgresController : ControllerBase
         return System.Text.RegularExpressions.Regex.Replace(
             connectionString,
             @"(?i)(Password\s*=)[^;]+",
-            "$1*****");
+            "$1" + PasswordMask);
     }
 
     // backupPath is built internally from a trusted output directory + timestamp — not user input (CA3003).

@@ -38,6 +38,13 @@ public class PostgresPlugin : BasePlugin<PluginConfiguration>, IHasWebPages
         PostgresLog.SetLogDirectory(applicationPaths.LogDirectoryPath);
         PostgresLog.Info($"PostgreSQL Database Provider v{Version} loaded. Log directory: {applicationPaths.LogDirectoryPath}");
 
+        // Leftover copies of this plugin (older versions, folders marked Deleted) can be the ones Jellyfin loads.
+        InstallWarnings = PluginInstallInspector.Inspect(typeof(PostgresPlugin).Assembly.Location, typeof(PostgresPlugin).Assembly.GetName().Version ?? new Version(0, 0));
+        foreach (var warning in InstallWarnings)
+        {
+            PostgresLog.Warn("[Instalación] " + warning);
+        }
+
         // Log the active database engine so the plugin log always shows which mode Jellyfin is in
         var isPostgresActive = IsPostgresActive(applicationPaths);
         if (isPostgresActive)
@@ -61,6 +68,9 @@ public class PostgresPlugin : BasePlugin<PluginConfiguration>, IHasWebPages
             PostgresLog.Info($"[ENGINE] Modo activo: SQLite. Archivo: {sqlitePath} ({sqliteSize})");
         }
     }
+
+    /// <summary>Gets the warnings about other copies of this plugin found next to the running one.</summary>
+    public IReadOnlyList<string> InstallWarnings { get; private set; } = Array.Empty<string>();
 
     /// <summary>Gets the singleton instance of the plugin.</summary>
     public static PostgresPlugin? Instance => _instance;
@@ -139,7 +149,18 @@ public class PostgresPlugin : BasePlugin<PluginConfiguration>, IHasWebPages
         xml.AppendLine("  </CustomProviderOptions>");
         xml.AppendLine("</DatabaseConfigurationOptions>");
 
-        File.WriteAllText(filePath, xml.ToString(), Encoding.UTF8);
+        // Write to a temporary file and swap it in: a crash or power cut in the middle of a plain WriteAllText
+        // leaves a truncated database.xml and Jellyfin cannot start. The previous file is kept as database.xml.bak.
+        var temporaryPath = filePath + ".tmp";
+        File.WriteAllText(temporaryPath, xml.ToString(), Encoding.UTF8);
+        if (File.Exists(filePath))
+        {
+            File.Replace(temporaryPath, filePath, filePath + ".bak");
+        }
+        else
+        {
+            File.Move(temporaryPath, filePath);
+        }
     }
 
     /// <summary>

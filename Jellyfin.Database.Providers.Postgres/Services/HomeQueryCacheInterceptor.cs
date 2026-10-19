@@ -135,6 +135,42 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
         Interlocked.Exchange(ref _prefetchedPageHitCount, 0);
     }
 
+    /// <summary>Gets the current generation of a cached table (test hook).</summary>
+    /// <param name="table">Table name as it appears in the cacheable list.</param>
+    /// <returns>The generation counter, 0 if the table was never invalidated.</returns>
+    internal static int GenerationOf(string table)
+        => Generations.TryGetValue(table, out var generation) ? generation : 0;
+
+    /// <summary>
+    /// Makes every cached entry unreachable. Used when a transaction commits: its writes only become visible
+    /// to other connections then, so a read that ran between the write and the commit may have stored the old
+    /// rows under the already raised generation.
+    /// </summary>
+    internal static void InvalidateAll()
+    {
+        foreach (var table in CacheableTables)
+        {
+            Generations.AddOrUpdate(table, 1, static (_, value) => value + 1);
+        }
+    }
+
+    /// <summary>
+    /// Reports whether the statement writes. EF Core sends the INSERT/UPDATE/DELETE of <c>SaveChanges</c>
+    /// through a data reader (to read generated values back), so these never reach the non-query hooks.
+    /// </summary>
+    /// <param name="command">Command about to run.</param>
+    /// <returns><c>true</c> for INSERT, UPDATE, DELETE and MERGE.</returns>
+    internal static bool IsMutation(DbCommand command)
+    {
+        var first = FirstToken(command.CommandText);
+        return first is not null
+            && (first.Equals("INSERT", StringComparison.OrdinalIgnoreCase)
+                || first.Equals("UPDATE", StringComparison.OrdinalIgnoreCase)
+                || first.Equals("DELETE", StringComparison.OrdinalIgnoreCase)
+                || first.Equals("MERGE", StringComparison.OrdinalIgnoreCase)
+                || (first.Equals("WITH", StringComparison.OrdinalIgnoreCase) && Regex.IsMatch(command.CommandText, @"\b(INSERT\s+INTO|UPDATE\s|DELETE\s+FROM)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50))));
+    }
+
     /// <summary>
     /// Rises the generation of every cached table the statement mentions, which makes all entries stored for
     /// those tables unreachable. Over-invalidating only costs a cache miss; a missing invalidation would
@@ -170,6 +206,12 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
         InterceptionResult<DbDataReader> result,
         CancellationToken cancellationToken = default)
     {
+        if (IsMutation(command))
+        {
+            InvalidateFor(command);
+            return result;
+        }
+
         if (!IsCacheable(command))
         {
             return result;
@@ -227,6 +269,32 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
     }
 
     /// <inheritdoc />
+    public override DbDataReader ReaderExecuted(DbCommand command, CommandExecutedEventData eventData, DbDataReader result)
+    {
+        if (IsMutation(command))
+        {
+            InvalidateFor(command);
+        }
+
+        return result;
+    }
+
+    /// <inheritdoc />
+    public override ValueTask<DbDataReader> ReaderExecutedAsync(
+        DbCommand command,
+        CommandExecutedEventData eventData,
+        DbDataReader result,
+        CancellationToken cancellationToken = default)
+    {
+        if (IsMutation(command))
+        {
+            InvalidateFor(command);
+        }
+
+        return ValueTask.FromResult(result);
+    }
+
+    /// <inheritdoc />
     /// <remarks>
     /// Buffering matters for correctness, not only for caching: several Jellyfin routines
     /// (for example <c>MigrateRatingLevels</c>) enumerate a synchronously streamed query and
@@ -239,6 +307,12 @@ public sealed class HomeQueryCacheInterceptor : DbCommandInterceptor
         CommandEventData eventData,
         InterceptionResult<DbDataReader> result)
     {
+        if (IsMutation(command))
+        {
+            InvalidateFor(command);
+            return result;
+        }
+
         if (!IsCacheable(command))
         {
             return result;

@@ -95,12 +95,14 @@ public sealed class MaintenanceBackupService
 
         var stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
         var stderrTask = process.StandardError.ReadToEndAsync(ct);
-        await process.WaitForExitAsync(ct).ConfigureAwait(false);
+        await WaitForExitOrKillAsync(process, ct).ConfigureAwait(false);
         var stdOut = await stdoutTask.ConfigureAwait(false);
         var stdErr = await stderrTask.ConfigureAwait(false);
 
         if (process.ExitCode != 0)
         {
+            // A failed dump leaves a partial .sql that looks like a valid backup in the restore list.
+            TryDeletePartial(sqlFilePath);
             var detail = string.IsNullOrWhiteSpace(stdErr) ? stdOut : stdErr;
             throw new InvalidOperationException(
                 $"pg_dump failed (exit {process.ExitCode}). {detail}".Trim());
@@ -225,7 +227,7 @@ public sealed class MaintenanceBackupService
 
             var stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
             var stderrTask = process.StandardError.ReadToEndAsync(ct);
-            await process.WaitForExitAsync(ct).ConfigureAwait(false);
+            await WaitForExitOrKillAsync(process, ct).ConfigureAwait(false);
             var stdOut = await stdoutTask.ConfigureAwait(false);
             var stdErr = await stderrTask.ConfigureAwait(false);
 
@@ -511,6 +513,56 @@ public sealed class MaintenanceBackupService
     // ── Isolated file I/O helpers (CA3003) ────────────────────────────────────
     // All paths reaching here have been canonicalized with Path.GetFullPath or
     // constructed programmatically (safeOutputDirectory + timestamp filename).
+
+    /// <summary>
+    /// Waits for a child process and, if the wait is cancelled (request aborted, Jellyfin shutting down), kills
+    /// it with its children. Without this a cancelled pg_dump or psql keeps running and writing on its own.
+    /// </summary>
+    /// <param name="process">Process to wait for.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>A task that completes when the process exits.</returns>
+    private static async Task WaitForExitOrKillAsync(System.Diagnostics.Process process, CancellationToken ct)
+    {
+        try
+        {
+            await process.WaitForExitAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            try
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                // Already gone.
+            }
+
+            throw;
+        }
+    }
+
+    private static void TryDeletePartial(string path)
+    {
+        try
+        {
+            if (SafeFileExists(path))
+            {
+                SafeFileDelete(path);
+            }
+        }
+        catch (IOException)
+        {
+            // Best effort: the caller is already reporting the real failure.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Same.
+        }
+    }
 
     [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "Paths are canonicalized via Path.GetFullPath or built from trusted internal values before reaching this method.")]
     private static bool SafeFileExists(string path)

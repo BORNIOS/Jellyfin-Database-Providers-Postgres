@@ -163,7 +163,10 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         // cadena de conexion por tercera vez.
         if (Interlocked.CompareExchange(ref _pipelineLogged, 1, 0) == 0)
         {
-            Logging.PostgresLog.Info("[Provider] Inicializado: pipeline de EF Core en marcha.");
+            var assembly = typeof(PostgresDatabaseProvider).Assembly;
+            Logging.PostgresLog.Info(
+                $"[Provider] Inicializado: pipeline de EF Core en marcha. Ensamblado {assembly.GetName().Version} " +
+                $"mvid={assembly.ManifestModule.ModuleVersionId:N} ruta={assembly.Location}");
             Logging.PostgresLog.Info(
                 $"[Provider] Pool: min={csb.MinPoolSize} max={csb.MaxPoolSize} " +
                 $"maxAutoPrepare={csb.MaxAutoPrepare} cmdTimeout={csb.CommandTimeout}s");
@@ -180,16 +183,7 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
                 EfCoreDatabaseDiagnostics.Write,
                 (eventId, level) => level >= LogLevel.Information
                     && !(eventId.Name?.Contains("Command", StringComparison.Ordinal) ?? false))
-            .AddInterceptors(
-                new Jellyfin121MigrationInterceptor(),
-                // This must precede HomeQueryCacheInterceptor: the cache buffers a miss by executing
-                // the command itself, before subsequent command interceptors get a chance to run.
-                new DateTimeKindNormalizingInterceptor(),
-                new PostgresCaseInsensitiveSearchInterceptor(),
-                new HomeQueryCacheInterceptor(_logger),
-                new UpsertConflictInterceptor(),
-                new ItemValueReuseInterceptor(),
-                new DbErrorLoggingInterceptor());
+            .AddInterceptors(BuildInterceptors());
 
         // SQLite-compatibility objects (min/max over uuid) have to exist before Jellyfin runs its
         // first query, otherwise home-page queries fail with 'no existe la función min(uuid)'.
@@ -428,6 +422,35 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         }
     }
 
+    private IInterceptor[] BuildInterceptors()
+    {
+        var interceptors = new List<IInterceptor>
+        {
+            new Jellyfin121MigrationInterceptor(),
+
+            // This must precede HomeQueryCacheInterceptor: the cache buffers a miss by executing
+            // the command itself, before subsequent command interceptors get a chance to run.
+            new DateTimeKindNormalizingInterceptor(),
+            new PostgresCaseInsensitiveSearchInterceptor(),
+        };
+
+        // Diagnostic switch: lets an operator rule the query cache out when chasing a data problem.
+        if (string.Equals(Environment.GetEnvironmentVariable("JELLYFIN_PG_DISABLE_QUERY_CACHE"), "1", StringComparison.Ordinal))
+        {
+            Logging.PostgresLog.Warn("[Provider] JELLYFIN_PG_DISABLE_QUERY_CACHE=1: la caché de consultas está desactivada.");
+        }
+        else
+        {
+            interceptors.Add(new HomeQueryCacheInterceptor(_logger));
+            interceptors.Add(new HomeQueryCacheCommitInterceptor());
+        }
+
+        interceptors.Add(new UpsertConflictInterceptor());
+        interceptors.Add(new ItemValueReuseInterceptor());
+        interceptors.Add(new DbErrorLoggingInterceptor());
+        return interceptors.ToArray();
+    }
+
     /// <inheritdoc/>
     public void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -436,6 +459,9 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
     /// <inheritdoc/>
     public void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
     {
+        // Todas las columnas de fecha son timestamptz: se lee siempre como UTC para que Jellyfin escriba la 'Z'.
+        configurationBuilder.Properties<DateTime>().HaveConversion<UtcDateTimeConverter>();
+        configurationBuilder.Properties<DateTime?>().HaveConversion<UtcDateTimeConverter>();
     }
 
     /// <inheritdoc/>
