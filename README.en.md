@@ -308,6 +308,7 @@ In **Configuration**:
 - **PgBin path** — path to `pg_dump`/`psql`/`pg_restore`. Leave empty to use system PATH.
 - **Backup directory** — destination folder.
 - **Backup compression** — enable ZIP of the `.sql`.
+- **Retention** — days each backup is kept (`0` = keep forever, the default) and how many of the newest backups are always kept (5 by default). Only files named the way the plugin names them (`<database>_yyyyMMdd_HHmmss.sql[.zip]`) are deleted; any other file in the folder is left alone. It runs after every backup and through the **PostgreSQL Backup Retention** task. **Prune backups now** shows a preview first and asks for confirmation. It behaves the same on Windows, Linux and macOS.
 
 ### Manual
 
@@ -320,6 +321,7 @@ In **Maintenance**: **Create backup now** / **Restore backup** (accepts `.sql` o
 | Task | Default | Description |
 |---|---|---|
 | **PostgreSQL Backup** | Daily 02:00 | Backup with `pg_dump` |
+| **PostgreSQL Backup Retention** | Daily 03:00 | Deletes backups older than the configured retention (off by default) |
 | **PostgreSQL VACUUM ANALYZE (managed schemas)** | Sunday 03:00 | Maintains `public` and only private schemas enabled in **Integrations** |
 | **PostgreSQL REINDEX (managed schemas)** | Sunday 04:00 | Rebuilds indexes in `public` and only opted-in private schemas |
 | **Optimize GIN Indexes** | Sunday 05:00 | Keep GIN trigram indexes fresh |
