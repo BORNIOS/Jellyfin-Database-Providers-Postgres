@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -551,6 +552,19 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
                 }
             }
 
+            // A table of the model can be missing (schema drift reported but not applied): one missing relation would
+            // fail the whole ANALYZE statement after every library scan, so only existing tables are analyzed.
+            var requested = tables.ToArray();
+            var existing = await context.Database
+                .SqlQuery<string>($"SELECT t AS \"Value\" FROM unnest({requested}) AS t WHERE to_regclass(t) IS NOT NULL")
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (existing.Count < requested.Length)
+            {
+                Logging.PostgresLog.Warn($"[Analyze] Tablas del modelo que no existen en la base (deriva del esquema sin aplicar): {string.Join(", ", requested.Except(existing, StringComparer.Ordinal))}");
+            }
+
+            tables = new SortedSet<string>(existing, StringComparer.Ordinal);
             if (tables.Count == 0)
             {
                 return;

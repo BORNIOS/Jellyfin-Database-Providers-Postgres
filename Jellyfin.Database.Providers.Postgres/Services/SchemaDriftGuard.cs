@@ -37,10 +37,13 @@ namespace Jellyfin.Database.Providers.Postgres.Services;
 /// <para>
 /// The guard compares the provider's model snapshot with Jellyfin's runtime model, exactly like
 /// <c>HasPendingModelChanges()</c>, and classifies every operation. When all of them are additive (indexes, new tables,
-/// new nullable or defaulted columns) it applies them in one transaction and records them in
-/// <c>__PostgresSchemaDrift</c>. Anything that drops, rewrites or renames data is never applied: the report says the
-/// provider must be updated. Once the provider ships the real migration, <see cref="IdempotentMigrationsSqlGenerator"/>
-/// lets it run over the objects the guard already created.
+/// new nullable or constant-default columns) it applies them in one transaction and logs them in
+/// <c>__PostgresSchemaDrift</c>. Anything that drops, rewrites or renames data, or a unique index, is never applied:
+/// the report says the provider must be updated. Whether a change is in place is always read from the catalog
+/// (<see cref="SchemaFacts"/>), and every index of the model is checked against its definition in the database, so an
+/// object left with another definition (for example by an idempotent provider migration) is found and rebuilt.
+/// Once the provider ships the real migration, <see cref="IdempotentMigrationsSqlGenerator"/> lets it run over the
+/// objects the guard already created.
 /// </para>
 /// </remarks>
 internal static class SchemaDriftGuard
@@ -61,6 +64,18 @@ internal static class SchemaDriftGuard
     /// <summary>The EF Core provider name of an active PostgreSQL context.</summary>
     internal const string NpgsqlProviderName = "Npgsql.EntityFrameworkCore.PostgreSQL";
 
+    private enum OperationState
+    {
+        /// <summary>The database already reflects the operation.</summary>
+        Satisfied,
+
+        /// <summary>Not applied yet.</summary>
+        Pending,
+
+        /// <summary>Applied once for this Jellyfin and provider version, yet the database still differs.</summary>
+        Retried,
+    }
+
     /// <summary>Gets the report of the last check run in this process, or <see langword="null"/> if none ran.</summary>
     internal static SchemaDriftReport? LastReport
         => AppDomain.CurrentDomain.GetData(ReportSlot) is string json
@@ -74,6 +89,10 @@ internal static class SchemaDriftGuard
         => typeof(SchemaDriftGuard).Assembly.GetName().Version?.ToString() ?? "?";
 
     /// <summary>Resolves the effective mode: the environment variable wins over the plugin configuration.</summary>
+    /// <remarks>
+    /// An unrecognised value never turns on automatic changes: it falls back to the configured mode, or to
+    /// <see cref="SchemaDriftMode.ReportOnly"/> when nothing is configured, and logs a warning.
+    /// </remarks>
     /// <param name="configured">Mode from the plugin configuration, if it is loaded.</param>
     /// <returns>The mode to run with.</returns>
     internal static SchemaDriftMode ResolveMode(SchemaDriftMode? configured)
@@ -84,12 +103,19 @@ internal static class SchemaDriftGuard
             return configured ?? SchemaDriftMode.Heal;
         }
 
-        return value.ToUpperInvariant() switch
+        switch (value.ToUpperInvariant().Replace("-", string.Empty, StringComparison.Ordinal).Replace("_", string.Empty, StringComparison.Ordinal))
         {
-            "OFF" or "0" or "FALSE" or "DISABLED" => SchemaDriftMode.Off,
-            "REPORT" or "REPORTONLY" or "REPORT_ONLY" => SchemaDriftMode.ReportOnly,
-            _ => SchemaDriftMode.Heal,
-        };
+            case "HEAL" or "ON" or "1" or "TRUE" or "YES":
+                return SchemaDriftMode.Heal;
+            case "REPORT" or "REPORTONLY":
+                return SchemaDriftMode.ReportOnly;
+            case "OFF" or "0" or "FALSE" or "NO" or "NONE" or "DISABLE" or "DISABLED":
+                return SchemaDriftMode.Off;
+            default:
+                var fallback = configured ?? SchemaDriftMode.ReportOnly;
+                PostgresLog.Warn($"[SchemaDrift] Valor no reconocido en {ModeVariable}='{value}'; se usa {fallback}.");
+                return fallback;
+        }
     }
 
     /// <summary>
@@ -164,59 +190,80 @@ internal static class SchemaDriftGuard
             }
 
             var differences = ComputeDifferences(context, baseline);
-            if (differences.Count == 0)
+            var facts = await SchemaFacts.LoadAsync(context, cancellationToken).ConfigureAwait(false);
+            var plan = Plan(context, differences, facts);
+            if (plan.Count == 0)
             {
                 return Publish(logger, mode, SchemaDriftOutcome.InSync, [], "El esquema coincide con el modelo de Jellyfin.");
             }
 
-            var planned = Plan(context, differences);
-            var applied = await ReadAppliedAsync(context, cancellationToken).ConfigureAwait(false);
-            var operations = planned
-                .Select(p => p.Operation with { Applied = applied.Contains(p.Hash) })
-                .ToList();
+            var recorded = await ReadRecordedAsync(context, cancellationToken).ConfigureAwait(false);
+            var states = Evaluate(plan, facts, recorded);
 
-            var unsafeOps = operations.Where(o => !o.Safe).ToList();
+            var unsafeOps = plan.Where(p => !p.Operation.Safe).ToList();
             if (unsafeOps.Count > 0)
             {
                 return Publish(
                     logger,
                     mode,
                     SchemaDriftOutcome.Blocked,
-                    operations,
-                    $"Jellyfin {JellyfinVersion} tiene {operations.Count} cambio(s) de esquema sin migración en el proveedor {ProviderVersion}, "
-                    + $"{unsafeOps.Count} de ellos no se pueden aplicar automáticamente ({string.Join("; ", unsafeOps.Select(o => o.Description))}). "
+                    Report(plan, states),
+                    $"Jellyfin {JellyfinVersion} tiene {plan.Count} diferencia(s) de esquema sin migración en el proveedor {ProviderVersion}, "
+                    + $"{unsafeOps.Count} de ellas no se pueden aplicar automáticamente ({string.Join("; ", unsafeOps.Select(o => o.Operation.Description))}). "
                     + "Actualiza el proveedor a la versión para esta versión de Jellyfin.");
             }
 
-            if (operations.All(o => o.Applied))
-            {
-                return Publish(
-                    logger,
-                    mode,
-                    SchemaDriftOutcome.AlreadyHealed,
-                    operations,
-                    $"{operations.Count} cambio(s) de esquema de Jellyfin {JellyfinVersion} ya aplicados por el proveedor; desaparecen del informe al actualizar el proveedor.");
-            }
-
-            if (mode == SchemaDriftMode.ReportOnly)
+            var pendingOps = plan.Where(p => states[p] == OperationState.Pending).ToList();
+            if (pendingOps.Count > 0 && mode == SchemaDriftMode.ReportOnly)
             {
                 return Publish(
                     logger,
                     mode,
                     SchemaDriftOutcome.Detected,
-                    operations,
-                    $"Jellyfin {JellyfinVersion} tiene {operations.Count(o => !o.Applied)} cambio(s) de esquema sin aplicar. Modo ReportOnly: no se aplican.");
+                    Report(plan, states),
+                    $"Jellyfin {JellyfinVersion} tiene {pendingOps.Count} cambio(s) de esquema sin aplicar. Modo ReportOnly: no se aplican.");
             }
 
-            var newlyApplied = await ApplyAsync(context, planned, cancellationToken).ConfigureAwait(false);
-            var final = planned.Select(p => p.Operation with { Applied = true }).ToList();
+            var applied = 0;
+            if (pendingOps.Count > 0)
+            {
+                applied = await ApplyAsync(context, pendingOps, facts, cancellationToken).ConfigureAwait(false);
+                facts = await SchemaFacts.LoadAsync(context, cancellationToken).ConfigureAwait(false);
+                recorded = await ReadRecordedAsync(context, cancellationToken).ConfigureAwait(false);
+                states = Evaluate(plan, facts, recorded);
+            }
+
+            var unresolved = plan.Where(p => states[p] != OperationState.Satisfied).ToList();
+            if (unresolved.Count > 0)
+            {
+                // Applied once for this Jellyfin and provider version, and the database still differs: retrying on
+                // every start would rebuild the same index forever, so it is reported instead.
+                return Publish(
+                    logger,
+                    mode,
+                    SchemaDriftOutcome.Detected,
+                    Report(plan, states),
+                    $"{unresolved.Count} cambio(s) de esquema de Jellyfin {JellyfinVersion} ya se aplicaron en esta versión, pero la base sigue sin coincidir con el modelo "
+                    + $"({string.Join("; ", unresolved.Select(o => o.Operation.Description))}). No se reintentan hasta la próxima versión de Jellyfin o del proveedor.");
+            }
+
+            if (applied == 0)
+            {
+                return Publish(
+                    logger,
+                    mode,
+                    SchemaDriftOutcome.AlreadyHealed,
+                    Report(plan, states),
+                    $"{plan.Count} cambio(s) de esquema de Jellyfin {JellyfinVersion} ya están en la base; desaparecen del informe al actualizar el proveedor.");
+            }
+
             return Publish(
                 logger,
                 mode,
                 SchemaDriftOutcome.Healed,
-                final,
-                $"Aplicados {newlyApplied} cambio(s) de esquema de Jellyfin {JellyfinVersion} que el proveedor {ProviderVersion} aún no incluye: "
-                + string.Join("; ", final.Select(o => o.Description)) + ".");
+                Report(plan, states),
+                $"Aplicados {applied} cambio(s) de esquema de Jellyfin {JellyfinVersion} que el proveedor {ProviderVersion} aún no incluye: "
+                + string.Join("; ", pendingOps.Select(o => o.Operation.Description)) + ".");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -272,13 +319,22 @@ internal static class SchemaDriftGuard
         };
 
     /// <summary>Whether an operation can be applied without losing or rewriting data.</summary>
+    /// <remarks>
+    /// Unique indexes are excluded: existing duplicates make them fail, and Jellyfin's own migrations clean those up
+    /// with SQL the model diff does not contain. Columns are only safe when PostgreSQL adds them without rewriting the
+    /// table: nullable without a default, or with a constant default. A computed column or a SQL default (which may be
+    /// volatile, such as <c>now()</c>) rewrites the table under an exclusive lock.
+    /// </remarks>
     /// <param name="operation">Operation.</param>
     /// <returns><see langword="true"/> for additive operations.</returns>
     internal static bool IsSafe(MigrationOperation operation)
         => operation switch
         {
-            CreateIndexOperation or DropIndexOperation or CreateTableOperation or EnsureSchemaOperation => true,
-            AddColumnOperation a => a.IsNullable || a.DefaultValue is not null || a.DefaultValueSql is not null || a.ComputedColumnSql is not null,
+            CreateIndexOperation c => !c.IsUnique,
+            DropIndexOperation or CreateTableOperation or EnsureSchemaOperation => true,
+            AddColumnOperation a => a.ComputedColumnSql is null
+                && a.DefaultValueSql is null
+                && (a.IsNullable || a.DefaultValue is not null),
             _ => false,
         };
 
@@ -303,28 +359,136 @@ internal static class SchemaDriftGuard
             .GetDifferences(source?.GetRelationalModel(), target.GetRelationalModel());
     }
 
-    private static List<PlannedOperation> Plan(DbContext context, IReadOnlyList<MigrationOperation> differences)
+    /// <summary>
+    /// The operations to bring the database to Jellyfin's model: the model diff, plus every index of the model whose
+    /// definition in the database differs (or is missing) and every missing table or column the diff does not explain.
+    /// </summary>
+    /// <remarks>
+    /// The second part checks the database itself. A provider migration made idempotent can run over an object created
+    /// earlier with another definition; comparing snapshot and model would never notice, the catalog does.
+    /// </remarks>
+    private static List<PlannedOperation> Plan(DbContext context, IReadOnlyList<MigrationOperation> differences, SchemaFacts facts)
     {
         var generator = context.GetService<IMigrationsSqlGenerator>();
         var model = context.GetService<IDesignTimeModel>().Model;
         var plan = new List<PlannedOperation>(differences.Count);
-        foreach (var operation in differences)
+
+        void Add(MigrationOperation operation, string? note = null)
         {
             var commands = generator.Generate([operation], model);
-
-            // Rewritten here as well, so the recorded SQL and its hash do not depend on which generator the context has.
             var sql = string.Concat(commands.Select(c => IdempotentMigrationsSqlGenerator.MakeIdempotent(c.CommandText)));
             var safe = IsSafe(operation) && commands.All(c => !c.TransactionSuppressed);
-            plan.Add(new PlannedOperation(new SchemaDriftOperation(Describe(operation), sql, safe, Applied: false), Hash(sql)));
+            var description = note is null ? Describe(operation) : $"{Describe(operation)} ({note})";
+            plan.Add(new PlannedOperation(new SchemaDriftOperation(description, sql, safe, Applied: false), operation, Key(sql)));
+        }
+
+        void AddUnsafe(string description)
+            => plan.Add(new PlannedOperation(new SchemaDriftOperation(description, string.Empty, Safe: false, Applied: false), null, Key(description)));
+
+        var coveredIndexes = new HashSet<string>(StringComparer.Ordinal);
+        var coveredTables = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var operation in differences)
+        {
+            Add(operation);
+            switch (operation)
+            {
+                case CreateIndexOperation c: coveredIndexes.Add(c.Name); break;
+                case DropIndexOperation d: coveredIndexes.Add(d.Name); break;
+                case RenameIndexOperation r: coveredIndexes.Add(r.Name); coveredIndexes.Add(r.NewName); break;
+                case CreateTableOperation t: coveredTables.Add(t.Name); break;
+                case ITableMigrationOperation t: coveredTables.Add(t.Table); break;
+            }
+        }
+
+        foreach (var table in model.GetRelationalModel().Tables)
+        {
+            if (coveredTables.Contains(table.Name))
+            {
+                continue;
+            }
+
+            if (!facts.Tables.Contains(table.Name))
+            {
+                AddUnsafe($"MissingTable {table.Name} (falta en la base y ninguna migración la crea)");
+                continue;
+            }
+
+            foreach (var column in table.Columns)
+            {
+                if (!facts.Columns.Contains(string.Concat(table.Name, ".", column.Name)))
+                {
+                    AddUnsafe($"MissingColumn {table.Name}.{column.Name} (falta en la base y ninguna migración la crea)");
+                }
+            }
+
+            foreach (var index in table.Indexes)
+            {
+                if (coveredIndexes.Contains(index.Name))
+                {
+                    continue;
+                }
+
+                var create = CreateIndexOperation.CreateFrom(index);
+                if (facts.Matches(create))
+                {
+                    continue;
+                }
+
+                var exists = facts.TryGetIndex(index.Name, out _);
+                if (exists)
+                {
+                    Add(new DropIndexOperation { Name = index.Name, Table = table.Name, Schema = table.Schema }, "definición distinta del modelo");
+                }
+
+                Add(create, exists ? "definición distinta del modelo" : "falta en la base");
+            }
         }
 
         return plan;
     }
 
-    private static string Hash(string sql)
-        => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sql)))[..32];
+    /// <summary>Whether each planned operation is already reflected in the database.</summary>
+    private static Dictionary<PlannedOperation, OperationState> Evaluate(List<PlannedOperation> plan, SchemaFacts facts, HashSet<string> recorded)
+    {
+        var states = new Dictionary<PlannedOperation, OperationState>();
+        foreach (var step in plan)
+        {
+            var satisfied = step.Migration switch
+            {
+                CreateIndexOperation c => facts.Matches(c),
 
-    private static async Task<HashSet<string>> ReadAppliedAsync(DbContext context, CancellationToken cancellationToken)
+                // A drop that precedes a create of the same name is done once that create is in place.
+                DropIndexOperation d => plan.Any(p => p.Migration is CreateIndexOperation c && c.Name == d.Name)
+                    ? facts.Matches(plan.Select(p => p.Migration).OfType<CreateIndexOperation>().First(c => c.Name == d.Name))
+                    : !facts.TryGetIndex(d.Name, out _),
+                CreateTableOperation t => facts.Tables.Contains(t.Name),
+                AddColumnOperation a => facts.Columns.Contains(string.Concat(a.Table, ".", a.Name)),
+                EnsureSchemaOperation => true,
+                _ => false,
+            };
+
+            states[step] = satisfied
+                ? OperationState.Satisfied
+                : step.Operation.Safe && recorded.Contains(step.Key) ? OperationState.Retried : OperationState.Pending;
+        }
+
+        return states;
+    }
+
+    private static List<SchemaDriftOperation> Report(List<PlannedOperation> plan, Dictionary<PlannedOperation, OperationState> states)
+        => plan.Select(p => states[p] switch
+        {
+            OperationState.Satisfied => p.Operation with { Applied = true },
+            OperationState.Retried => p.Operation with { Description = p.Operation.Description + " [ya aplicado en esta versión; la base sigue sin coincidir]" },
+            _ => p.Operation,
+        }).ToList();
+
+    // Keyed on the Jellyfin and provider versions as well: the same SQL in a later version is a new change, not one
+    // that is already done (a DROP INDEX IF EXISTS hashes the same whatever definition it replaces).
+    private static string Key(string sql)
+        => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\n', JellyfinVersion, ProviderVersion, sql))))[..32];
+
+    private static async Task<HashSet<string>> ReadRecordedAsync(DbContext context, CancellationToken cancellationToken)
     {
         var result = new HashSet<string>(StringComparer.Ordinal);
         var connection = context.Database.GetDbConnection();
@@ -359,7 +523,7 @@ internal static class SchemaDriftGuard
     }
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The SQL is generated by EF Core from Jellyfin's own model, never from user input.")]
-    private static async Task<int> ApplyAsync(DbContext context, List<PlannedOperation> plan, CancellationToken cancellationToken)
+    private static async Task<int> ApplyAsync(DbContext context, List<PlannedOperation> pending, SchemaFacts facts, CancellationToken cancellationToken)
     {
         var connection = context.Database.GetDbConnection();
         var opened = await OpenAsync(context, connection, cancellationToken).ConfigureAwait(false);
@@ -367,7 +531,7 @@ internal static class SchemaDriftGuard
         {
             using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
-            // One server at a time: a second instance waits here and then finds the operations recorded.
+            // One server at a time: a second instance waits here and then finds the changes in place.
             await ExecuteAsync(connection, transaction, $"SELECT pg_advisory_xact_lock({AdvisoryLockKey.ToString(CultureInfo.InvariantCulture)});", cancellationToken).ConfigureAwait(false);
             await ExecuteAsync(
                 connection,
@@ -383,22 +547,16 @@ internal static class SchemaDriftGuard
                 """,
                 cancellationToken).ConfigureAwait(false);
 
-            var applied = new HashSet<string>(StringComparer.Ordinal);
-            using (var read = connection.CreateCommand())
-            {
-                read.Transaction = transaction;
-                read.CommandText = $"SELECT \"OperationHash\" FROM \"{RecordTable}\";";
-                using var reader = await read.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-                {
-                    applied.Add(reader.GetString(0));
-                }
-            }
-
-            var count = 0;
-            foreach (var step in plan.Where(p => !applied.Contains(p.Hash)))
+            foreach (var step in pending)
             {
                 PostgresLog.Info($"[SchemaDrift] Aplicando {step.Operation.Description}");
+
+                // CREATE INDEX IF NOT EXISTS keeps an index of the same name with another definition: drop it first.
+                if (step.Migration is CreateIndexOperation create && facts.TryGetIndex(create.Name, out _))
+                {
+                    await ExecuteAsync(connection, transaction, $"DROP INDEX IF EXISTS {Quote(SchemaFacts.StoredName(create.Name))};", cancellationToken).ConfigureAwait(false);
+                }
+
                 await ExecuteAsync(connection, transaction, step.Operation.Sql, cancellationToken).ConfigureAwait(false);
 
                 using var record = connection.CreateCommand();
@@ -407,17 +565,16 @@ internal static class SchemaDriftGuard
                     INSERT INTO "{RecordTable}" ("OperationHash", "Description", "Sql", "JellyfinVersion", "ProviderVersion")
                     VALUES (@hash, @description, @sql, @jellyfin, @provider) ON CONFLICT DO NOTHING;
                     """;
-                AddParameter(record, "hash", step.Hash);
+                AddParameter(record, "hash", step.Key);
                 AddParameter(record, "description", step.Operation.Description);
                 AddParameter(record, "sql", step.Operation.Sql);
                 AddParameter(record, "jellyfin", JellyfinVersion);
                 AddParameter(record, "provider", ProviderVersion);
                 await record.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                count++;
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            return count;
+            return pending.Count;
         }
         finally
         {
@@ -492,5 +649,5 @@ internal static class SchemaDriftGuard
         return report;
     }
 
-    private sealed record PlannedOperation(SchemaDriftOperation Operation, string Hash);
+    private sealed record PlannedOperation(SchemaDriftOperation Operation, MigrationOperation? Migration, string Key);
 }

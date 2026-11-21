@@ -70,12 +70,65 @@ public sealed class SchemaDriftGuardTests
         Assert.True(SchemaDriftGuard.IsSafe(new AddColumnOperation { Table = "t", Name = "c", ClrType = typeof(string), IsNullable = true }));
         Assert.True(SchemaDriftGuard.IsSafe(new AddColumnOperation { Table = "t", Name = "c", ClrType = typeof(int), DefaultValue = 0 }));
 
+        // Duplicates make a unique index fail; Jellyfin cleans them up with SQL the model diff does not contain.
+        Assert.False(SchemaDriftGuard.IsSafe(new CreateIndexOperation { Name = "i", Table = "t", Columns = ["c"], IsUnique = true }));
+
+        // These rewrite the whole table under an exclusive lock.
+        Assert.False(SchemaDriftGuard.IsSafe(new AddColumnOperation { Table = "t", Name = "c", ClrType = typeof(DateTime), DefaultValueSql = "now()" }));
+        Assert.False(SchemaDriftGuard.IsSafe(new AddColumnOperation { Table = "t", Name = "c", ClrType = typeof(int), IsNullable = true, ComputedColumnSql = "\"a\" + 1", IsStored = true }));
+
         Assert.False(SchemaDriftGuard.IsSafe(new AddColumnOperation { Table = "t", Name = "c", ClrType = typeof(int) }));
         Assert.False(SchemaDriftGuard.IsSafe(new DropColumnOperation { Table = "t", Name = "c" }));
         Assert.False(SchemaDriftGuard.IsSafe(new AlterColumnOperation { Table = "t", Name = "c", ClrType = typeof(Guid) }));
         Assert.False(SchemaDriftGuard.IsSafe(new DropTableOperation { Name = "t" }));
         Assert.False(SchemaDriftGuard.IsSafe(new RenameColumnOperation { Table = "t", Name = "a", NewName = "b" }));
         Assert.False(SchemaDriftGuard.IsSafe(new AddForeignKeyOperation { Table = "t", Name = "fk", Columns = ["c"], PrincipalTable = "u" }));
+    }
+
+    [Theory]
+    [InlineData("heal", null, SchemaDriftMode.Heal)]
+    [InlineData("REPORT", null, SchemaDriftMode.ReportOnly)]
+    [InlineData("report-only", null, SchemaDriftMode.ReportOnly)]
+    [InlineData("none", null, SchemaDriftMode.Off)]
+    [InlineData("disable", SchemaDriftMode.Heal, SchemaDriftMode.Off)]
+    [InlineData("typo", null, SchemaDriftMode.ReportOnly)]
+    [InlineData("typo", SchemaDriftMode.Off, SchemaDriftMode.Off)]
+    [InlineData("", SchemaDriftMode.ReportOnly, SchemaDriftMode.ReportOnly)]
+    public void AnUnknownModeNeverTurnsOnAutomaticChanges(string value, SchemaDriftMode? configured, SchemaDriftMode expected)
+    {
+        var previous = Environment.GetEnvironmentVariable(SchemaDriftGuard.ModeVariable);
+        try
+        {
+            Environment.SetEnvironmentVariable(SchemaDriftGuard.ModeVariable, value);
+            Assert.Equal(expected, SchemaDriftGuard.ResolveMode(configured));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(SchemaDriftGuard.ModeVariable, previous);
+        }
+    }
+
+    [Theory]
+    [InlineData("\"OwnerId\" IS NOT NULL", "(\"OwnerId\" IS NOT NULL)")]
+    [InlineData("\"Type\" = 'Movie'", "((\"Type\")::text = 'Movie'::text)")]
+    [InlineData("\"A\" IS NULL AND \"B\" = 0", "((\"A\" IS NULL) AND (\"B\" = 0))")]
+    [InlineData(null, null)]
+    public void PredicatesMatchTheFormPostgreSqlStores(string? model, string? stored)
+        => Assert.Equal(SchemaFacts.NormalizePredicate(model), SchemaFacts.NormalizePredicate(stored));
+
+    [Fact]
+    public void DifferentPredicatesDoNotMatch()
+        => Assert.NotEqual(SchemaFacts.NormalizePredicate("\"OwnerId\" IS NOT NULL"), SchemaFacts.NormalizePredicate("(\"OwnerId\" IS NULL)"));
+
+    [Fact]
+    public void IndexNamesAreLookedUpAsPostgreSqlTruncatesThem()
+    {
+        var name = "IX_BaseItems_Type_SeriesPresentationUniqueKey_PresentationUniqueKey_SortName";
+        var stored = SchemaFacts.StoredName(name);
+        Assert.Equal(63, stored.Length);
+        var facts = SchemaFacts.Create(["BaseItems"], [], new Dictionary<string, SchemaFacts.IndexFact> { [stored] = new("BaseItems", false, ["Type"], null) });
+        Assert.True(facts.Matches(new CreateIndexOperation { Name = name, Table = "BaseItems", Columns = ["Type"] }));
+        Assert.False(facts.Matches(new CreateIndexOperation { Name = name, Table = "BaseItems", Columns = ["Type"], Filter = "\"Type\" IS NOT NULL" }));
     }
 
     [Fact]
@@ -211,9 +264,73 @@ public sealed class SchemaDriftGuardTests
 
         Assert.Equal(SchemaDriftOutcome.Blocked, report.Outcome);
         Assert.Contains(report.Operations, o => !o.Safe);
-        Assert.All(report.Operations, o => Assert.False(o.Applied));
+
+        // "Applied" reports what the catalog shows; what matters is that the guard changed nothing.
         Assert.Equal(0, await PartialOwnerIndexesAsync(connectionString));
         Assert.Equal(0, await ScalarAsync(connectionString, $"SELECT COUNT(*) FROM pg_class WHERE relname = '{SchemaDriftGuard.RecordTable}';"));
+    }
+
+    /// <summary>
+    /// An index left with an older definition (for example by an idempotent provider migration that found it already
+    /// there) is invisible to the snapshot/model comparison; the guard finds it in the catalog and rebuilds it.
+    /// </summary>
+    [SkippableFact]
+    public async Task AnIndexWithAnotherDefinitionIsFoundInTheCatalogAndRebuilt()
+    {
+        RequirePostgres();
+        await using var scratch = await TestEnvironment.ScratchDatabaseScope.CreateAsync();
+        var connectionString = scratch.Database.ConnectionString;
+        using var context = await MigratedContextAsync(connectionString);
+        await RecreateJellyfin121IndexesAsync(connectionString);
+
+        var report = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal);
+
+        Assert.True(report.Outcome == SchemaDriftOutcome.Healed, report.Message);
+        Assert.Contains(report.Operations, o => o.Description.StartsWith("CreateIndex IX_BaseItems_OwnerId", StringComparison.Ordinal));
+        Assert.Equal(2, await PartialOwnerIndexesAsync(connectionString));
+        var again = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal);
+        Assert.True(again.Outcome == SchemaDriftOutcome.InSync, again.Message);
+    }
+
+    /// <summary>
+    /// What is in place is read from the catalog, not from the guard's records: a recorded change that the database
+    /// no longer reflects is not reported as healed (and is not rebuilt again in the same version).
+    /// </summary>
+    [SkippableFact]
+    public async Task ARecordedChangeIsNotReportedAsHealedWhenTheDatabaseDiffers()
+    {
+        RequirePostgres();
+        await using var scratch = await TestEnvironment.ScratchDatabaseScope.CreateAsync();
+        var connectionString = scratch.Database.ConnectionString;
+        using var context = await MigratedContextAsync(connectionString);
+        await RecreateJellyfin121IndexesAsync(connectionString);
+        var baseline = TargetModelOf(context, BeforeJellyfin124);
+        Assert.Equal(SchemaDriftOutcome.Healed, (await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal, baseline)).Outcome);
+
+        await RecreateJellyfin121IndexesAsync(connectionString);
+        var report = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal, baseline);
+
+        Assert.True(report.Outcome == SchemaDriftOutcome.Detected, report.Message);
+        Assert.Contains(report.Operations, o => !o.Applied && o.Description.Contains("ya aplicado en esta versión", StringComparison.Ordinal));
+        Assert.Equal(0, await PartialOwnerIndexesAsync(connectionString));
+    }
+
+    [SkippableFact]
+    public async Task StatisticsRefreshSkipsTablesTheDatabaseDoesNotHave()
+    {
+        RequirePostgres();
+        await using var scratch = await TestEnvironment.ScratchDatabaseScope.CreateAsync();
+        var connectionString = scratch.Database.ConnectionString;
+        using (await MigratedContextAsync(connectionString))
+        {
+        }
+
+        await ExecuteAsync(connectionString, "DROP TABLE \"TrickplayInfos\";");
+        var provider = new PostgresDatabaseProvider(null, null) { DbContextFactory = new Factory(() => CreateContext(connectionString)) };
+
+        await provider.RefreshStatistics(CancellationToken.None);
+
+        Assert.Equal(0, await ScalarAsync(connectionString, "SELECT COUNT(*) FROM pg_stat_user_tables WHERE relname IN ('BaseItems', 'UserData') AND last_analyze IS NULL;"));
     }
 
     private static void RequirePostgres()
@@ -279,5 +396,10 @@ public sealed class SchemaDriftGuardTests
         await connection.OpenAsync();
         await using var command = new NpgsqlCommand(sql, connection);
         return Convert.ToInt64(await command.ExecuteScalarAsync(), CultureInfo.InvariantCulture);
+    }
+
+    private sealed class Factory(Func<JellyfinDbContext> create) : IDbContextFactory<JellyfinDbContext>
+    {
+        public JellyfinDbContext CreateDbContext() => create();
     }
 }

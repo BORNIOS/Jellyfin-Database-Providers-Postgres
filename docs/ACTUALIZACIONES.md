@@ -16,14 +16,25 @@ misma comparación que hace `HasPendingModelChanges()`, pero devuelve las operac
 
 | Operación que falta | Qué hace el proveedor |
 | --- | --- |
-| Crear o eliminar un índice, crear una tabla, añadir una columna nulable o con valor por defecto | La aplica |
+| Crear o eliminar un índice no único, crear una tabla, añadir una columna nulable sin valor por defecto o con un valor por defecto constante | La aplica |
+| Índice único (falla si hay duplicados, que Jellyfin limpia con SQL que el diff del modelo no incluye) | No la aplica |
+| Columna calculada o con valor por defecto SQL (`now()`, etc.): PostgreSQL reescribe toda la tabla con bloqueo exclusivo | No la aplica |
 | Eliminar o renombrar columnas o tablas, cambiar tipos, claves foráneas, cambios de datos | No la aplica: error en el log y en Health, hay que actualizar el proveedor |
 
 Detalles de la aplicación:
 - Las operaciones aditivas solo se aplican si **todas** las que faltan lo son.
 - Se aplican en una transacción con bloqueo consultivo (`pg_advisory_xact_lock`).
-- Cada una queda registrada en `__PostgresSchemaDrift`, con su SQL y las versiones de Jellyfin y del proveedor. En
-  los arranques siguientes el informe dice `AlreadyHealed` y no se repite nada.
+- **Qué está hecho se lee siempre del catálogo** (`pg_index`, `pg_attribute`), nunca de un registro propio: un
+  índice cuenta como aplicado solo si existe con el mismo nombre, tabla, unicidad, columnas y filtro. En los
+  arranques siguientes el informe dice `AlreadyHealed` y no se repite nada.
+- Además de la diferencia snapshot/modelo, **cada índice del modelo se compara con su definición en la base**. Así
+  se detecta un índice que quedó con otra definición, por ejemplo porque una migración idempotente lo encontró ya
+  creado. Se reconstruye (`DROP` + `CREATE`). Una tabla o columna del modelo que falta sin que ninguna migración la
+  explique se informa como error.
+- Cada operación aplicada queda anotada en `__PostgresSchemaDrift`, con su SQL y las versiones de Jellyfin y del
+  proveedor. Es un registro de auditoría. También evita reconstruir en bucle: si una operación ya se aplicó en esta
+  misma versión de Jellyfin y del proveedor y la base sigue sin coincidir, se informa (`Detected`) en lugar de
+  repetirse en cada arranque.
 
 **Cuándo se ejecuta:**
 1. **En `Initialise`, antes de las migraciones de Jellyfin.** Una migración de código nueva de Jellyfin puede
@@ -50,7 +61,8 @@ En una base sin esos objetos el resultado es idéntico al de siempre.
 | `Off` | No comprueba nada |
 
 La variable de entorno `JELLYFIN_PG_SCHEMA_DRIFT` (`heal`, `report` u `off`) tiene prioridad sobre la
-configuración, lo que es útil en Docker.
+configuración, lo que es útil en Docker. Un valor no reconocido nunca activa cambios automáticos: se usa el modo
+configurado, o `ReportOnly` si no hay ninguno, y se avisa en el log.
 
 ### Dónde se ve
 
