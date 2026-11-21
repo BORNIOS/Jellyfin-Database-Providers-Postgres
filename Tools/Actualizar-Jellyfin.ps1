@@ -113,6 +113,8 @@ function Invoke-Dotnet([string[]]$Arguments, [switch]$AllowFailure) {
 $pluginXml = Read-Text $pluginProject
 $current = [version]([regex]::Match($pluginXml, '<JellyfinVersion>([^<]+)</JellyfinVersion>').Groups[1].Value)
 $target = if ($JellyfinVersion) { [version]$JellyfinVersion } else { Get-StableVersions 'Jellyfin.Controller' | Select-Object -Last 1 }
+# NuGet URLs and the csproj need three parts: "12.5" is published as 12.5.0.
+if ($target.Build -lt 0) { $target = [version]::new($target.Major, $target.Minor, 0) }
 Write-Host "Jellyfin actual: $current  objetivo: $target"
 
 if ($target -le $current) {
@@ -145,12 +147,16 @@ $npgsqlCandidates = @(Get-StableVersions 'Npgsql.EntityFrameworkCore.PostgreSQL'
     Sort-Object -Descending |
     Where-Object { (Get-EfLowerBound $_) -le $efVersion })
 $manual = [System.Collections.Generic.List[string]]::new()
+$npgsqlIncompatible = $false
 if ($npgsqlCandidates.Count -gt 0) {
     $npgsqlVersion = $npgsqlCandidates[0]
-    if ($npgsqlVersion -lt $currentNpgsql) { $npgsqlVersion = $currentNpgsql }
+} elseif ((Get-EfLowerBound $currentNpgsql) -le $efVersion) {
+    $npgsqlVersion = $currentNpgsql
 } else {
     $npgsqlVersion = $currentNpgsql
-    $manual.Add("No hay Npgsql.EntityFrameworkCore.PostgreSQL estable compatible con EF Core $efVersion; se mantiene $currentNpgsql. Revisar compatibilidad antes de publicar.")
+    $npgsqlVersion = $currentNpgsql
+    $npgsqlIncompatible = $true
+    $manual.Add("No hay Npgsql.EntityFrameworkCore.PostgreSQL estable compatible con EF Core $efVersion (el actual, $currentNpgsql, exige una EF Core más nueva que la del servidor). Hay que resolverlo antes de publicar.")
 }
 
 $currentAbi = [regex]::Match((Read-Text $buildYaml), '(?m)^targetAbi:\s*"?([0-9.]+)').Groups[1].Value
@@ -242,6 +248,7 @@ $buildErrors = @($build.Output | Where-Object { $_ -match ': error ' } | ForEach
 
 $testSummary = 'no ejecutadas'
 $failedTests = @()
+$test = $null
 if ($build.ExitCode -eq 0 -and -not $SkipTests) {
     if ($ConnectionString) { $env:POSTGRES_TEST_CONNECTION = $ConnectionString }
     $resultsDir = Join-Path $repoRoot 'artifacts/test-results'
@@ -250,6 +257,9 @@ if ($build.ExitCode -eq 0 -and -not $SkipTests) {
     if (-not $testSummary) { $testSummary = "código de salida $($test.ExitCode)" }
     $failedTests = @($test.Output | Where-Object { $_ -match '^\s+Failed\s+\S' } | ForEach-Object { $_.Trim() -replace '^Failed\s+', '' -replace '\s+\[.*$', '' })
     if (-not $ConnectionString) { $manual.Add('Las pruebas de integración se omitieron: no había POSTGRES_TEST_CONNECTION.') }
+    if ($test.ExitCode -ne 0 -and $failedTests.Count -eq 0) {
+        $manual.Insert(0, "dotnet test terminó con código $($test.ExitCode) sin pruebas fallidas concretas (fallo del host de pruebas, del descubrimiento o de carga de ensamblados): revisar el registro del job.")
+    }
 }
 
 # ── 5. What changed in Jellyfin for a provider ───────────────────────────────────────────────────
@@ -297,7 +307,7 @@ if ($build.ExitCode -ne 0) { $manual.Insert(0, 'La compilación en Release falla
 if ($failedTests.Count -gt 0) { $manual.Insert(0, "$($failedTests.Count) prueba(s) fallan.") }
 
 # ── 6. Summary ────────────────────────────────────────────────────────────────────────────────────
-$ok = $build.ExitCode -eq 0 -and $failedTests.Count -eq 0 -and $testSummary -ne 'no ejecutadas'
+$ok = $build.ExitCode -eq 0 -and $null -ne $test -and $test.ExitCode -eq 0 -and $failedTests.Count -eq 0 -and -not $npgsqlIncompatible
 $lines = [System.Collections.Generic.List[string]]::new()
 $lines.Add("## Soporte para Jellyfin $target ($newPlugin)")
 $lines.Add('')
