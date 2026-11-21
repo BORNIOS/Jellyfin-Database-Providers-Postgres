@@ -1,0 +1,142 @@
+name: Seguimiento de Jellyfin
+
+# Cada semana comprueba si NuGet tiene una versión nueva de Jellyfin.Controller. Si la hay, adapta el proveedor
+# con Tools/Actualizar-Jellyfin.ps1 (paquetes, ABI, versión, migración EF, schema.sql), ejecuta la suite contra
+# PostgreSQL y abre un PR con el resumen. El PR queda en borrador si algo no compila o alguna prueba falla.
+#
+# Requisitos del repositorio:
+#   - Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests".
+#   - Opcional: secreto JELLYFIN_BUMP_TOKEN (PAT con contents y pull-requests). Con GITHUB_TOKEN el PR se crea,
+#     pero GitHub no lanza otros workflows (Verificación) sobre él; la suite ya se ejecuta en este job.
+on:
+  schedule:
+    - cron: '23 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      jellyfin_version:
+        description: 'Versión de los paquetes Jellyfin.* (vacío = la última estable de NuGet)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: jellyfin-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: Adaptar a la versión nueva de Jellyfin
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.JELLYFIN_BUMP_TOKEN || github.token }}
+
+      - name: Detectar la versión objetivo
+        id: detect
+        env:
+          REQUESTED: ${{ inputs.jellyfin_version }}
+        run: |
+          set -euo pipefail
+          current=$(sed -nE 's#.*<JellyfinVersion>([^<]+)</JellyfinVersion>.*#\1#p' Jellyfin.Database.Providers.Postgres/Jellyfin.Database.Providers.Postgres.csproj)
+          if [ -n "${REQUESTED:-}" ]; then
+            target="$REQUESTED"
+          else
+            target=$(curl -fsSL https://api.nuget.org/v3-flatcontainer/jellyfin.controller/index.json \
+              | jq -r '.versions[] | select(test("-") | not)' | sort -V | tail -n1)
+          fi
+          if ! [[ "$target" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]]; then
+            echo "Versión no válida: '$target'"; exit 1
+          fi
+          branch="auto/jellyfin-$target"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+          newest=$(printf '%s\n%s\n' "$current" "$target" | sort -V | tail -n1)
+          if [ "$target" = "$current" ] || [ "$newest" != "$target" ]; then
+            echo "El proveedor ya compila contra Jellyfin $current (objetivo $target)." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          elif git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            echo "Ya existe la rama $branch: no se repite el trabajo." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Jellyfin $current → $target" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configurar .NET
+        if: steps.detect.outputs.run == 'true'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Adaptar el proveedor y ejecutar la suite
+        if: steps.detect.outputs.run == 'true'
+        id: bump
+        shell: pwsh
+        env:
+          POSTGRES_TEST_CONNECTION: Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=postgres
+          GITHUB_TOKEN: ${{ github.token }}
+          TARGET_VERSION: ${{ steps.detect.outputs.target }}
+        run: ./Tools/Actualizar-Jellyfin.ps1 -JellyfinVersion $env:TARGET_VERSION
+
+      - name: Publicar el resumen en el job
+        if: always() && steps.bump.outputs.summary_path != ''
+        env:
+          SUMMARY: ${{ steps.bump.outputs.summary_path }}
+        run: cat "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Abrir el PR
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.JELLYFIN_BUMP_TOKEN || github.token }}
+          BRANCH: ${{ steps.detect.outputs.branch }}
+          BASE: ${{ github.ref_name }}
+          VERSION: ${{ steps.bump.outputs.jellyfin_version }}
+          PLUGIN: ${{ steps.bump.outputs.plugin_version }}
+          OK: ${{ steps.bump.outputs.ok }}
+          SUMMARY: ${{ steps.bump.outputs.summary_path }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$BRANCH"
+          git add -A -- . ':!artifacts' ':!.tools'
+          git commit -q -m "feat(jellyfin-$VERSION): adaptar el proveedor a Jellyfin $VERSION ($PLUGIN)" \
+            -m "Generado por Tools/Actualizar-Jellyfin.ps1 desde el workflow Seguimiento de Jellyfin."
+          git push -u origin "$BRANCH"
+          draft=()
+          if [ "$OK" != "true" ]; then draft=(--draft); fi
+          gh pr create --base "$BASE" --head "$BRANCH" \
+            --title "feat: soporte para Jellyfin $VERSION ($PLUGIN)" \
+            --body-file "$SUMMARY" "${draft[@]}"
+
+      - name: Subir artefactos
+        if: always() && steps.detect.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: actualizacion-jellyfin
+          path: |
+            artifacts/actualizacion-jellyfin.md
+            artifacts/test-results/*.trx
+          if-no-files-found: warn

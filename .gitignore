@@ -57,3 +57,6 @@ secrets.json
 .tmp/
 cleanup*.sql
 diag.sql
+
+# Tools/Actualizar-Jellyfin.ps1 (dotnet-ef local y resumen del PR)
+.tools/
