@@ -756,6 +756,49 @@ public class PostgresController : ControllerBase
     }
 
     /// <summary>
+    /// Returns the last schema drift report: whether the running Jellyfin has schema changes the provider has no
+    /// migration for, and what was done about them.
+    /// </summary>
+    /// <returns>The report, or <c>{ "Outcome": "NotRun" }</c> when no check ran in this process.</returns>
+    [HttpGet("SchemaDrift")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult<object> GetSchemaDrift()
+        => Ok(SchemaDriftGuard.LastReport ?? (object)new { Outcome = "NotRun" });
+
+    /// <summary>
+    /// Runs the schema drift check now, against the active database.
+    /// </summary>
+    /// <param name="contextFactory">Jellyfin's context factory.</param>
+    /// <param name="apply">Whether safe drift is applied (<c>Heal</c>) or only reported (<c>ReportOnly</c>, the default).</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The new report.</returns>
+    [HttpPost("SchemaDrift/Check")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<object>> CheckSchemaDrift(
+        [FromServices] IDbContextFactory<JellyfinDbContext> contextFactory,
+        [FromQuery] bool apply,
+        CancellationToken cancellationToken)
+    {
+        var context = await contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (context.ConfigureAwait(false))
+        {
+            // By provider name, not by type: the provider instance comes from another load context.
+            if (!string.Equals(context.Database.ProviderName, SchemaDriftGuard.NpgsqlProviderName, StringComparison.Ordinal))
+            {
+                return NoActiveConnection();
+            }
+
+            var report = await SchemaDriftGuard.RunAsync(
+                context,
+                apply ? SchemaDriftMode.Heal : SchemaDriftMode.ReportOnly,
+                logger: _logger,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            return Ok(report);
+        }
+    }
+
+    /// <summary>
     /// Auto-repairs the issues detected by <see cref="GetHealthCheck"/>:
     /// rebuilds invalid indexes (REINDEX CONCURRENTLY), vacuums bloated tables
     /// and fixes out-of-sync sequences. Idempotent and safe to call repeatedly.

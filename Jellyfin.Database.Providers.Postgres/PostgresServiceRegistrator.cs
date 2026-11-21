@@ -36,5 +36,6 @@ public class PostgresServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<IScheduledTask, VacuumAnalyzeTask>();
         serviceCollection.AddSingleton<IScheduledTask, ReindexTask>();
         serviceCollection.AddSingleton<IScheduledTask, OptimizeIndexesTask>();
+        serviceCollection.AddHostedService<SchemaDriftStartupService>();
     }
 }

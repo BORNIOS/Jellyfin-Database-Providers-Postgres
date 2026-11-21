@@ -11,7 +11,7 @@ namespace Jellyfin.Database.Providers.Postgres.Tests;
 public sealed partial class SchemaAuditTests
 {
     // Objects the plugin uses that are not part of Jellyfin's EF model (EF Core bookkeeping).
-    private static readonly string[] BookkeepingTables = ["__EFMigrationsHistory", "__EFMigrationsLock"];
+    private static readonly string[] BookkeepingTables = ["__EFMigrationsHistory", "__EFMigrationsLock", "__PostgresSchemaDrift"];
 
     // Directories of the plugin whose raw SQL does not target the live schema. Paths use forward
     // slashes and the file path is normalised before comparing, so Windows and Linux behave the same.
