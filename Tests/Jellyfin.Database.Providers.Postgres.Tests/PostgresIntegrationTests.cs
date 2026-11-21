@@ -388,6 +388,50 @@ public sealed class PostgresIntegrationTests
             CancellationToken.None));
     }
 
+    /// <summary>
+    /// Jellyfin 12.4 makes the <c>OwnerId</c> indexes of <c>BaseItems</c> partial and, after every library
+    /// scan, asks the provider to refresh the planner statistics.
+    /// </summary>
+    [SkippableFact]
+    public async Task Jellyfin124PartialIndexesAndStatisticsRefresh()
+    {
+        RequirePostgres();
+        await using var scratch = await Scratch.CreateAsync();
+
+        using (var context = CreateContext(scratch.Database.ConnectionString, new Jellyfin121MigrationInterceptor()))
+        {
+            await context.Database.MigrateAsync();
+        }
+
+        await using var pg = new NpgsqlConnection(scratch.Database.ConnectionString);
+        await pg.OpenAsync();
+        Assert.Equal(
+            2,
+            await ScalarAsync(
+                pg,
+                """
+                SELECT COUNT(*) FROM pg_indexes
+                WHERE tablename = 'BaseItems'
+                  AND indexname IN ('IX_BaseItems_OwnerId', 'IX_BaseItems_ExtraType_OwnerId')
+                  AND indexdef LIKE '% WHERE %IS NOT NULL%';
+                """));
+
+        var provider = new PostgresDatabaseProvider(null, null)
+        {
+            DbContextFactory = new ContextFactory(() => CreateContext(scratch.Database.ConnectionString)),
+        };
+        await provider.RefreshStatistics(CancellationToken.None);
+
+        Assert.Equal(
+            0,
+            await ScalarAsync(
+                pg,
+                """
+                SELECT COUNT(*) FROM pg_stat_user_tables
+                WHERE relname IN ('BaseItems', 'UserData', 'ItemValues', 'Users') AND last_analyze IS NULL;
+                """));
+    }
+
     private static void RequirePostgres()
         => Skip.IfNot(TestEnvironment.PostgresAvailable, $"{TestEnvironment.ConnectionVariable} is not set; skipping PostgreSQL integration tests.");
 
@@ -467,5 +511,11 @@ public sealed class PostgresIntegrationTests
             await using var drop = new NpgsqlCommand($"DROP DATABASE IF EXISTS \"{Database.Name}\" WITH (FORCE)", admin);
             await drop.ExecuteNonQueryAsync();
         }
+    }
+
+    /// <summary>Hands out a fresh context per call, the way Jellyfin's pooled factory does.</summary>
+    private sealed class ContextFactory(Func<JellyfinDbContext> create) : IDbContextFactory<JellyfinDbContext>
+    {
+        public JellyfinDbContext CreateDbContext() => create();
     }
 }

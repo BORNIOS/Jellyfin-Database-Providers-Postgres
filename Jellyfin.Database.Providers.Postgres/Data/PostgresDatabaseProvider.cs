@@ -478,6 +478,56 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
     }
 
     /// <inheritdoc/>
+    /// <remarks>
+    /// Jellyfin 12.4 calls this after every library scan. <c>ANALYZE</c> only samples the tables and
+    /// reclaims nothing, so it stays cheap next to <see cref="RunScheduledOptimisation"/>. Only Jellyfin's
+    /// own tables are listed: other plugins sharing the database keep their own schedule. PostgreSQL
+    /// scales stale row estimates by the current table size, so analyzing a still-empty library does not
+    /// mislead the planner the way it does on SQLite, and no empty-library guard is needed.
+    /// </remarks>
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Table names come from Jellyfin's own EF model and every identifier is validated and quoted by QuoteQualifiedTableName. No user input.")]
+    public async Task RefreshStatistics(CancellationToken cancellationToken)
+    {
+        if (DbContextFactory is null)
+        {
+            return;
+        }
+
+        var context = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (context.ConfigureAwait(false))
+        {
+            var tables = new SortedSet<string>(StringComparer.Ordinal);
+            foreach (var entityType in context.Model.GetEntityTypes())
+            {
+                var tableName = entityType.GetSchemaQualifiedTableName();
+                if (!string.IsNullOrWhiteSpace(tableName))
+                {
+                    tables.Add(QuoteQualifiedTableName(tableName));
+                }
+            }
+
+            if (tables.Count == 0)
+            {
+                return;
+            }
+
+            var stopwatch = Stopwatch.StartNew();
+            await context.Database
+                .ExecuteSqlRawAsync(string.Concat("ANALYZE ", string.Join(", ", tables), ";"), cancellationToken)
+                .ConfigureAwait(false);
+            // Jellyfin's own log as well: the server calls this instance from its own code paths, where
+            // the plugin log file is not always the one configured at plugin start.
+            var seconds = stopwatch.Elapsed.TotalSeconds;
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Refreshed PostgreSQL planner statistics for {Count} tables in {Elapsed:F1}s", tables.Count, seconds);
+            }
+
+            Logging.PostgresLog.Info($"[Analyze] Estadísticas del planificador actualizadas: {tables.Count} tablas en {seconds:F1}s.");
+        }
+    }
+
+    /// <inheritdoc/>
     public Task RunShutdownTask(CancellationToken cancellationToken) => Task.CompletedTask;
 
     /// <inheritdoc/>

@@ -94,6 +94,37 @@ public sealed class ProviderContractTests
         Assert.Equal($"{referenced.Major}.{referenced.Minor}.{referenced.Build}", declared);
     }
 
+    /// <summary>
+    /// The ABI in the catalog decides which servers install the package, so it has to name the release the
+    /// plugin is compiled against: a stale value offers the build to servers it was not made for.
+    /// </summary>
+    [Fact]
+    public void CatalogAbiMatchesTheReferencedSdk()
+    {
+        var buildFile = Path.Combine(TestEnvironment.RepositoryRoot, "build.yaml");
+        var targetAbi = Regex.Match(File.ReadAllText(buildFile), "targetAbi:\\s*\"([^\"]+)\"").Groups[1].Value;
+        var referenced = typeof(IJellyfinDatabaseProvider).Assembly.GetName().Version ?? new Version();
+
+        Assert.Equal($"{referenced.Major}.{referenced.Minor}.{referenced.Build}.0", targetAbi);
+    }
+
+    /// <summary>
+    /// Members Jellyfin adds to <see cref="IJellyfinDatabaseProvider"/> with a default body compile without
+    /// any change here and then silently do nothing. <c>RefreshStatistics</c> (12.4) runs after every library
+    /// scan and is the only statistics refresh the server asks for, so the provider has to implement it.
+    /// </summary>
+    [Fact]
+    public void DefaultInterfaceMembersAreImplemented()
+    {
+        var map = typeof(PostgresDatabaseProvider).GetInterfaceMap(typeof(IJellyfinDatabaseProvider));
+        var inherited = map.TargetMethods
+            .Where(m => m.DeclaringType != typeof(PostgresDatabaseProvider))
+            .Select(m => m.Name)
+            .ToArray();
+
+        Assert.Empty(inherited);
+    }
+
     /// <summary>Detects a method body that constructs a <see cref="NotImplementedException"/>.</summary>
     /// <param name="method">Method to inspect.</param>
     /// <returns><see langword="true"/> when the body throws it.</returns>
