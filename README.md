@@ -38,6 +38,7 @@ health check automático, mantenimiento programado e integración opcional con J
 | [Novedades de 3.0.0](docs/novedades-3.0.0.md) · [EN](docs/whats-new-3.0.0.en.md) | Qué cambia en 3.0.0 frente a 2.0.1 |
 | [Adaptación a Jellyfin 12.1](docs/JELLYFIN-12.1.md) | Notas técnicas y cómo ejecutar la suite de pruebas |
 | [Jellyfin 12.4](docs/JELLYFIN-12.4.md) | Qué cambia en 12.4 y cómo actualizar desde 12.1 |
+| [Actualizar Jellyfin sin esperar al proveedor](docs/ACTUALIZACIONES.md) | Deriva del esquema en el servidor y PR automático para cada versión nueva de Jellyfin |
 | [Verificación automatizada](docs/VERIFICACION-RESUMEN.md) | Resumen ejecutivo generado desde la suite real |
 | [Integración para desarrolladores](docs/integracion-desarrolladores.md) · [EN](docs/developer-integration.en.md) | Contrato público, esquemas privados, migraciones y mantenimiento administrado |
 
