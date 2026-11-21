@@ -69,7 +69,7 @@ public sealed partial class SchemaAuditTests
     }
 
     /// <summary>
-    /// The EF snapshot has to describe the model Jellyfin 12.1 ships, otherwise the next migration
+    /// The EF snapshot has to describe the model of the Jellyfin release the plugin targets, otherwise the next migration
     /// generates SQL for a schema the server does not have.
     /// </summary>
     [Fact]
