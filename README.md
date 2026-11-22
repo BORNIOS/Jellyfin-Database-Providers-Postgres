@@ -16,7 +16,7 @@ health check automático, mantenimiento programado e integración opcional con J
 
 [![Last Commit](https://img.shields.io/github/last-commit/BORNIOS/Jellyfin-Database-Providers-Postgres?style=flat-square&color=00A4DC&label=último%20commit)](https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/commits/main)
 [![CI Build](https://img.shields.io/github/actions/workflow/status/BORNIOS/Jellyfin-Database-Providers-Postgres/build.yaml?style=flat-square&color=00A4DC&label=CI)](https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/actions)
-[![Jellyfin](https://img.shields.io/badge/Jellyfin-12.4.x-00A4DC?style=flat-square&logo=jellyfin&logoColor=white)](https://jellyfin.org)
+[![Jellyfin](https://img.shields.io/badge/Jellyfin-12.1--12.4-00A4DC?style=flat-square&logo=jellyfin&logoColor=white)](https://jellyfin.org)
 [![Release](https://img.shields.io/github/v/release/BORNIOS/Jellyfin-Database-Providers-Postgres?style=flat-square&color=00A4DC)](https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/BORNIOS/Jellyfin-Database-Providers-Postgres/total?style=flat-square&color=00A4DC&label=descargas)](https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/releases)
 [![Discord](https://img.shields.io/badge/Discord-Comunidad_Jellyfin-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.jellyfin.org)
@@ -24,7 +24,7 @@ health check automático, mantenimiento programado e integración opcional con J
 
 </div>
 
-> **v3 / Jellyfin 12.x:** requiere .NET 10 y PostgreSQL 16+. **3.2.0** es para Jellyfin 12.4 ([cambios](docs/JELLYFIN-12.4.md)); para Jellyfin 12.1 usa **3.1.0**. Consulta la [guía de actualización y pruebas](docs/JELLYFIN-12.1.md) antes de sustituir el proveedor.
+> **v3 / Jellyfin 12.x:** requiere .NET 10 y PostgreSQL 16+. **3.2.0** funciona en Jellyfin 12.1, 12.2, 12.3 y 12.4 con el mismo paquete ([cambios](docs/JELLYFIN-12.4.md)). Consulta la [guía de actualización y pruebas](docs/JELLYFIN-12.1.md) antes de sustituir el proveedor.
 >
 > **¿Vienes de Jellyfin 10.11.x con PostgreSQL?** Sigue el [manual de migración 10.11.x → 12.x](docs/migracion-10.11-a-12.md): necesitas el plugin **2.0.1** para exportar PostgreSQL a SQLite antes de actualizar el servidor y el plugin **3.0.0** para importar de vuelta a PostgreSQL.
 
@@ -37,8 +37,8 @@ health check automático, mantenimiento programado e integración opcional con J
 | [Migración 10.11.x → 12.x](docs/migracion-10.11-a-12.md) · [EN](docs/migration-10.11-to-12.en.md) | Manual paso a paso, con diagrama y plan de contingencia |
 | [Novedades de 3.0.0](docs/novedades-3.0.0.md) · [EN](docs/whats-new-3.0.0.en.md) | Qué cambia en 3.0.0 frente a 2.0.1 |
 | [Adaptación a Jellyfin 12.1](docs/JELLYFIN-12.1.md) | Notas técnicas y cómo ejecutar la suite de pruebas |
-| [Jellyfin 12.4](docs/JELLYFIN-12.4.md) | Qué cambia en 12.4 y cómo actualizar desde 12.1 |
-| [Actualizar Jellyfin sin esperar al proveedor](docs/ACTUALIZACIONES.md) | Deriva del esquema en el servidor y PR automático para cada versión nueva de Jellyfin |
+| [Jellyfin 12.2 – 12.4](docs/JELLYFIN-12.4.md) | Qué cambia desde 12.1 y cómo un único paquete cubre todas las versiones 12 |
+| [Actualizar Jellyfin sin esperar al proveedor](docs/ACTUALIZACIONES.md) | Deriva del esquema en el servidor y comprobación de cada versión nueva de Jellyfin |
 | [Verificación automatizada](docs/VERIFICACION-RESUMEN.md) | Resumen ejecutivo generado desde la suite real |
 | [Integración para desarrolladores](docs/integracion-desarrolladores.md) · [EN](docs/developer-integration.en.md) | Contrato público, esquemas privados, migraciones y mantenimiento administrado |
 
@@ -72,12 +72,12 @@ Consulta la [guía de integración para desarrolladores](docs/integracion-desarr
 
 | Componente | Versión |
 |---|---|
-| Jellyfin | **12.4.x** — para 12.1.x usa el plugin **3.1.0**; para 10.11.x, **2.0.1** |
+| Jellyfin | **12.1.x – 12.4.x** — para 10.11.x usa el plugin **2.0.1** |
 | PostgreSQL | **16 +** (recomendado 17) |
 | .NET | **10.0** |
 
 > ℹ️ El plugin implementa `IJellyfinDatabaseProvider`, el mismo contrato que usa el proveedor SQLite
-> incluido en Jellyfin 12.4. No requiere modificar el núcleo de Jellyfin.
+> incluido en Jellyfin 12. No requiere modificar el núcleo de Jellyfin.
 
 ---
 

@@ -1,13 +1,20 @@
 # Actualizar Jellyfin sin esperar al proveedor
 
-Jellyfin carga un proveedor compilado para una versión anterior (`appVersion >= targetAbi`) y solo ejecuta
-las migraciones EF que trae el proveedor. Hasta ahora, actualizar Jellyfin antes que el proveedor dejaba la base
-atrás sin ningún aviso:
+El proveedor se compila contra la versión de Jellyfin más antigua que admite (`targetAbi` 12.1.0.0) y un único
+paquete sirve para todas las posteriores. Así nadie está obligado a actualizar Jellyfin para usar el proveedor.
+
+Jellyfin carga un proveedor compilado para una versión anterior (`appVersion >= targetAbi`), pero solo ejecuta
+las migraciones EF que trae el proveedor. Sin más, una versión nueva de Jellyfin que cambia su modelo dejaría la
+base atrás sin ningún aviso:
 - si faltan índices, las consultas se vuelven lentas;
 - si faltan columnas, fallan.
 
-Y cada versión nueva de Jellyfin obligaba a repetir a mano el mismo trabajo en el repositorio. Dos mecanismos
-cubren ahora los dos lados.
+Lo cubren dos mecanismos: en el servidor, la comprobación de deriva del esquema; en el repositorio, un script que
+comprueba cada versión nueva de Jellyfin con el paquete actual.
+
+> **No subir `targetAbi` sin necesidad.** `database.xml` carga la DLL del proveedor directamente, sin la
+> comprobación de ABI de los plugins: un paquete compilado contra una versión más nueva que la del servidor impide
+> que Jellyfin arranque.
 
 ## En el servidor: deriva del esquema
 
@@ -23,7 +30,14 @@ misma comparación que hace `HasPendingModelChanges()`, pero devuelve las operac
 
 Detalles de la aplicación:
 - Las operaciones aditivas solo se aplican si **todas** las que faltan lo son.
-- Se aplican en una transacción con bloqueo consultivo (`pg_advisory_xact_lock`).
+- Los índices se crean y eliminan con **`CONCURRENTLY`**, así que `BaseItems` sigue aceptando escrituras mientras
+  tanto, también en bibliotecas grandes. Como `CONCURRENTLY` no admite transacciones, cada sentencia se confirma
+  por separado; tablas y columnas se aplican cada una en su transacción. Una construcción interrumpida deja un
+  índice inválido (`indisvalid = false`): cuenta como pendiente y se reconstruye en la comprobación siguiente.
+- Un bloqueo consultivo de sesión (`pg_try_advisory_lock`, sondeado cada segundo) deja aplicar cambios a un único
+  servidor a la vez. No se espera con `pg_advisory_lock`: una sesión esperando dentro de una sentencia retiene una
+  instantánea, y `CREATE INDEX CONCURRENTLY` espera a que terminen todas las anteriores. Con el bloqueo tomado se
+  vuelve a leer el catálogo, por si otro servidor ya aplicó parte de los cambios.
 - **Qué está hecho se lee siempre del catálogo** (`pg_index`, `pg_attribute`), nunca de un registro propio: un
   índice cuenta como aplicado solo si existe con el mismo nombre, tabla, unicidad, columnas y filtro. En los
   arranques siguientes el informe dice `AlreadyHealed` y no se repite nada.
@@ -43,8 +57,8 @@ Detalles de la aplicación:
 2. **Al arrancar los servicios** (`SchemaDriftStartupService`), cuando Jellyfin ya aplicó todas las migraciones.
    Solo se ejecuta si la primera se aplazó o falló.
 
-**Cuando llega la versión del proveedor con la migración real:** la migración repite operaciones que ya están
-hechas. Para que no falle con "ya existe", el proveedor genera el SQL de migraciones en forma idempotente
+**Si una versión futura del proveedor trae la migración real** (por ejemplo, al subir la versión base): la
+migración repite operaciones que ya están hechas. Para que no falle con "ya existe", el proveedor genera el SQL de migraciones en forma idempotente
 (`IdempotentMigrationsSqlGenerator`):
 - `CREATE INDEX` y `CREATE TABLE` con `IF NOT EXISTS`;
 - `ADD COLUMN IF NOT EXISTS`;
@@ -68,7 +82,7 @@ configurado, o `ReportOnly` si no hay ninguno, y se avisa en el log.
 
 - **Log de Jellyfin:**
   ```
-  Schema drift check (Healed): Aplicados 4 cambio(s) de esquema de Jellyfin 12.4.0.0 que el proveedor 3.1.99.0 aún no incluye: ...
+  Schema drift check (Healed): Aplicados 4 cambio(s) de esquema de Jellyfin 12.4.0.0 que el proveedor 3.2.0.0 aún no incluye: ...
   ```
 - **Health:** hallazgo `SchemaDrift`. `Error` si hace falta actualizar el proveedor, `Warn` en modo `ReportOnly`,
   `Ok` si se aplicó.
@@ -83,64 +97,59 @@ carga distintos. Por eso:
 
 ### Comprobado
 
-Se probó con el proveedor 3.1.0 más este mecanismo (compilado para 12.1, sin `Jellyfin124`) sobre la imagen
-oficial de Jellyfin 12.4. La base era una copia de una base de producción 12.1 (108 862 elementos).
-1. **Primer arranque:** la deriva se aplicó antes de las migraciones de Jellyfin. Fueron los dos índices `OwnerId`,
-   que pasaron a ser parciales. Arranque en 8 s, sin errores.
-2. **Reinicio:** `AlreadyHealed`, sin cambios.
-3. **Proveedor 3.2:** al cambiar a 3.2 (que trae `Jellyfin124`), la comprobación temprana se aplazó, `Jellyfin124`
-   se aplicó sobre los índices ya creados y la segunda comprobación dio `InSync`.
+- **Suite** contra PostgreSQL 17 y 18, con el runtime de Jellyfin 12.1, 12.2, 12.3 y 12.4 (ver más abajo). Las
+  situaciones de `SchemaDriftGuardTests`: curar la deriva una vez y no repetirla, `ReportOnly`, cambios no seguros
+  bloqueados, un índice con otra definición o inválido reconstruido, y una migración posterior con los mismos
+  cambios aplicada sobre los objetos ya creados.
+- **Jellyfin 12.4** (imagen oficial) con el proveedor compilado para 12.1 sobre una copia de una base de producción
+  12.1 (108 862 elementos):
+  1. **Primer arranque:** la deriva se aplicó antes de las migraciones de Jellyfin. Fueron los dos índices
+     `OwnerId`, que pasaron a ser parciales. Arranque en 8 s, sin errores.
+  2. **Reinicio:** `AlreadyHealed`, sin cambios.
 
-Las mismas situaciones están en `SchemaDriftGuardTests`.
+## En el repositorio: comprobar cada versión nueva de Jellyfin
 
-## En el repositorio: seguimiento de versiones
-
-El workflow **Seguimiento de Jellyfin** (`.github/workflows/jellyfin-bump.yml`) se ejecuta cada lunes. También se
-puede lanzar a mano, con una versión concreta.
-
-Si NuGet tiene un `Jellyfin.Controller` más nuevo, ejecuta `Tools/Actualizar-Jellyfin.ps1`, que hace lo
-siguiente:
-1. **Paquetes:**
-   - `Jellyfin.*` a la versión nueva;
-   - EF Core a la versión que declara `Jellyfin.Database.Implementations`, es decir, la del servidor;
-   - Npgsql EF al más reciente de esa serie cuya dependencia de EF Core no supere la del servidor. Por ejemplo,
-     Npgsql EF 10.0.4 exige EF 10.0.15 y Jellyfin 12.4 trae 10.0.14.
-2. **Versiones:** `targetAbi` y versión del plugin. Si cambia la versión mayor de Jellyfin, sube la mayor del
-   plugin; si cambia la menor, la menor; si es un parche, el parche.
-3. **Migración EF:** si `dotnet ef migrations has-pending-model-changes` detecta cambios, genera la migración
-   `Jellyfin<versión>` (sin BOM y con la supresión de CA1861, como las existentes) y regenera `Resources/schema.sql`.
-4. **Compilación y pruebas:** compila en Release y ejecuta la suite contra PostgreSQL 17.
-5. **Cambios de Jellyfin:** lista los cambios entre las dos etiquetas que afectan a un proveedor: la interfaz
+`Tools/Actualizar-Jellyfin.ps1` responde a una pregunta: **¿funciona el paquete actual en esta versión de
+Jellyfin?** Por defecto no modifica ningún archivo:
+1. **Versiones:** toma la última estable de `Jellyfin.Controller` en NuGet (o `-JellyfinVersion`) y la versión de
+   EF Core que trae ese servidor, y comprueba que el Npgsql EF del paquete funciona con ella. Por ejemplo, Npgsql
+   EF 10.0.4 exige EF 10.0.15 y Jellyfin 12.4 trae 10.0.14.
+2. **Compilación y pruebas con el runtime de esa versión** (`-p:JellyfinTestVersion`). Fallan, entre otras:
+   - `SnapshotMatchesTheJellyfinModel`, si la deriva del modelo incluye cambios que la comprobación de deriva no
+     aplica sola;
+   - `DefaultInterfaceMembersAreImplemented`, si `IJellyfinDatabaseProvider` tiene miembros nuevos sin implementar.
+3. **Cambios de Jellyfin:** lista los cambios entre las dos etiquetas que afectan a un proveedor: la interfaz
    `IJellyfinDatabaseProvider`, el modelo, las migraciones de código y las migraciones SQLite.
-6. **PR:** abre un PR `auto/jellyfin-<versión>` con el resumen y una lista de revisión manual. Queda en borrador
-   si algo falla.
 
-Al ejecutarlo sobre 3.1.0 con `-JellyfinVersion 12.4.0` se obtuvo lo mismo que se hizo a mano para 3.2.0:
-- la misma migración `Jellyfin124` y el mismo snapshot;
-- el mismo `schema.sql`, salvo la marca de tiempo;
-- y avisó del cambio de `IJellyfinDatabaseProvider` (`RefreshStatistics`) y de las migraciones de código nuevas.
-
-**Requisitos:**
-- Settings → Actions → General → *Allow GitHub Actions to create and approve pull requests*.
-- Opcional: el secreto `JELLYFIN_BUMP_TOKEN`, un PAT con `contents` y `pull-requests`. Con `GITHUB_TOKEN`, GitHub no
-  ejecuta otros workflows sobre el PR, aunque la suite ya se ejecuta dentro del propio job.
-
-**En local:**
+El resultado queda en `artifacts/actualizacion-jellyfin.md` y el script termina con código distinto de 0 si el
+paquete no es compatible.
 
 ```powershell
 $env:POSTGRES_TEST_CONNECTION = 'Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=...'
-./Tools/Actualizar-Jellyfin.ps1                 # última estable de NuGet
+./Tools/Actualizar-Jellyfin.ps1                          # última estable de NuGet
 ./Tools/Actualizar-Jellyfin.ps1 -JellyfinVersion 12.5.0
 ```
 
-El script no hace commit ni push. Deja los cambios en el árbol de trabajo y el resumen en
-`artifacts/actualizacion-jellyfin.md`.
+Lo mismo sin el script:
+
+```sh
+dotnet test Tests/Jellyfin.Database.Providers.Postgres.Tests -p:JellyfinTestVersion=12.5.0 -p:EfCoreTestVersion=<EF Core de 12.5>
+```
+
+**`-SubirBase`** sube además la versión base del paquete a esa versión: paquetes `Jellyfin.*`, EF Core y Npgsql
+EF, `targetAbi`, versión del plugin, migración `Jellyfin<versión>` con `dotnet ef` (sin BOM y con la supresión de
+CA1861, como las existentes) y `Resources/schema.sql`. Deja los cambios en el árbol de trabajo, sin commit, y
+avisa de que los servidores anteriores dejan de arrancar con ese paquete. Es para cuando se decida dejar de
+admitir las versiones anteriores, o cuando un cambio de Jellyfin no se pueda cubrir de otra forma.
 
 ## Lo que sigue requiriendo a una persona
 
-- **Miembros nuevos de `IJellyfinDatabaseProvider`:** implementarlos, como `RefreshStatistics` en 12.4. La prueba
-  `DefaultInterfaceMembersAreImplemented` falla mientras alguno use la implementación por defecto.
+- **Miembros nuevos de `IJellyfinDatabaseProvider`:** implementarlos como métodos `public virtual` (no
+  `override`: el paquete se compila contra una versión donde no existen), como `RefreshStatistics` en 12.2. La
+  prueba `DefaultInterfaceMembersAreImplemented`, ejecutada con el runtime nuevo, falla mientras alguno use la
+  implementación por defecto.
 - **Migraciones de código de Jellyfin con SQL exclusivo de SQLite:** adaptarlas, como hace
   `Jellyfin121MigrationInterceptor`.
-- **Cambios de esquema destructivos:** la guardia nunca los aplica.
-- **Validación final:** probar el paquete con una copia de una base real antes de publicar el release.
+- **Cambios de esquema que la comprobación no aplica** (destructivos, índices únicos, columnas que reescriben la
+  tabla): requieren subir la versión base con una migración.
+- **Validación final:** probar el paquete con una copia de una base real antes de anunciarlo como compatible.
