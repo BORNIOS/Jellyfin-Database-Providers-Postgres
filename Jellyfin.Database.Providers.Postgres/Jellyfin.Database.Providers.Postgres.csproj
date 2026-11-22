@@ -13,7 +13,7 @@
       Set this to your Jellyfin server version.
       Check https://www.nuget.org/packages/Jellyfin.Controller/ for available versions.
     -->
-    <JellyfinVersion>12.4.0</JellyfinVersion>
+    <JellyfinVersion>12.1.0</JellyfinVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -36,14 +36,14 @@
   <ItemGroup>
     <!-- EF Core + Npgsql — runtime dependencies bundled with the plugin -->
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.2" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.14">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.11">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
 
     <!-- SQLite — export PG → SQLite in-process + EF Core for schema creation -->
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.14">
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.11">
       <ExcludeAssets Condition="'$(IncludeJellyfinRuntime)' != 'true'">runtime</ExcludeAssets>
     </PackageReference>
   </ItemGroup>

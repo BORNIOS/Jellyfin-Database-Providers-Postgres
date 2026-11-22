@@ -389,11 +389,11 @@ public sealed class PostgresIntegrationTests
     }
 
     /// <summary>
-    /// Jellyfin 12.4 makes the <c>OwnerId</c> indexes of <c>BaseItems</c> partial and, after every library
-    /// scan, asks the provider to refresh the planner statistics.
+    /// From Jellyfin 12.2 on the server asks the provider to refresh the planner statistics after every library scan.
+    /// The method is called directly here, so it is covered whatever Jellyfin release the tests run on.
     /// </summary>
     [SkippableFact]
-    public async Task Jellyfin124PartialIndexesAndStatisticsRefresh()
+    public async Task StatisticsRefreshAnalyzesJellyfinTables()
     {
         RequirePostgres();
         await using var scratch = await Scratch.CreateAsync();
@@ -405,16 +405,6 @@ public sealed class PostgresIntegrationTests
 
         await using var pg = new NpgsqlConnection(scratch.Database.ConnectionString);
         await pg.OpenAsync();
-        Assert.Equal(
-            2,
-            await ScalarAsync(
-                pg,
-                """
-                SELECT COUNT(*) FROM pg_indexes
-                WHERE tablename = 'BaseItems'
-                  AND indexname IN ('IX_BaseItems_OwnerId', 'IX_BaseItems_ExtraType_OwnerId')
-                  AND indexdef LIKE '% WHERE %IS NOT NULL%';
-                """));
 
         var provider = new PostgresDatabaseProvider(null, null)
         {
@@ -437,7 +427,7 @@ public sealed class PostgresIntegrationTests
 
     private static JellyfinDbContext CreateContext(string connectionString, params IInterceptor[] interceptors)
     {
-        var builder = new DbContextOptionsBuilder<JellyfinDbContext>()
+        var builder = PostgresDatabaseProvider.AllowModelOfNewerJellyfin(new DbContextOptionsBuilder<JellyfinDbContext>())
             .UseNpgsql(connectionString, pg => pg.MigrationsAssembly(typeof(PostgresDatabaseProvider).Assembly.FullName));
         if (interceptors.Length > 0)
         {

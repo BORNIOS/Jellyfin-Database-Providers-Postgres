@@ -96,7 +96,7 @@ public sealed class UpsertConflictIntegrationTests
 
     private static JellyfinDbContext CreateContext(string connectionString, params IInterceptor[] interceptors)
     {
-        var builder = new DbContextOptionsBuilder<JellyfinDbContext>()
+        var builder = PostgresDatabaseProvider.AllowModelOfNewerJellyfin(new DbContextOptionsBuilder<JellyfinDbContext>())
             .UseNpgsql(connectionString, pg => pg.MigrationsAssembly(typeof(PostgresDatabaseProvider).Assembly.FullName));
         if (interceptors.Length > 0)
         {

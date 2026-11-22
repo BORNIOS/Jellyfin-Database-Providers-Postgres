@@ -53,13 +53,16 @@ internal static class MigrationSchemaPreparer
 
         var options = new DbContextOptionsBuilder<JellyfinDbContext>();
         options.UseNpgsql(pg, npgsql => npgsql.MigrationsAssembly(MigrationAssemblyResolver.EnsureRegistered()));
+
+        // On Jellyfin 12.2+ the model is ahead of the provider's migrations; the guard closes the gap at the next start.
+        PostgresDatabaseProvider.AllowModelOfNewerJellyfin(options);
         using var context = new JellyfinDbContext(
             options.Options,
             NullLogger<JellyfinDbContext>.Instance,
             new PostgresDatabaseProvider(null, null),
             new NoLockBehavior(
                 NullLogger<NoLockBehavior>.Instance));
-        log("[Schema] Aplicando migraciones PostgreSQL para Jellyfin 12.4...");
+        log("[Schema] Aplicando migraciones PostgreSQL de Jellyfin 12...");
         await context.Database.MigrateAsync(ct).ConfigureAwait(false);
     }
 

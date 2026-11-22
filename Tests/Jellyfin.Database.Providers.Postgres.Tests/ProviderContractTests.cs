@@ -89,29 +89,32 @@ public sealed class ProviderContractTests
             "Jellyfin.Database.Providers.Postgres",
             "Jellyfin.Database.Providers.Postgres.csproj");
         var declared = Regex.Match(File.ReadAllText(projectFile), "<JellyfinVersion>([^<]+)</JellyfinVersion>").Groups[1].Value;
-        var referenced = typeof(IJellyfinDatabaseProvider).Assembly.GetName().Version ?? new Version();
+        var referenced = TestEnvironment.JellyfinBuildVersion;
 
         Assert.Equal($"{referenced.Major}.{referenced.Minor}.{referenced.Build}", declared);
     }
 
     /// <summary>
-    /// The ABI in the catalog decides which servers install the package, so it has to name the release the
-    /// plugin is compiled against: a stale value offers the build to servers it was not made for.
+    /// The ABI in the catalog has to name the release the plugin is compiled against. A lower one offers the package
+    /// to servers that lack the assemblies it references; and since <c>database.xml</c> loads the provider directly,
+    /// without the ABI check plugins get, such a server does not start at all.
     /// </summary>
     [Fact]
     public void CatalogAbiMatchesTheReferencedSdk()
     {
         var buildFile = Path.Combine(TestEnvironment.RepositoryRoot, "build.yaml");
         var targetAbi = Regex.Match(File.ReadAllText(buildFile), "targetAbi:\\s*\"([^\"]+)\"").Groups[1].Value;
-        var referenced = typeof(IJellyfinDatabaseProvider).Assembly.GetName().Version ?? new Version();
+        var referenced = TestEnvironment.JellyfinBuildVersion;
 
         Assert.Equal($"{referenced.Major}.{referenced.Minor}.{referenced.Build}.0", targetAbi);
     }
 
     /// <summary>
     /// Members Jellyfin adds to <see cref="IJellyfinDatabaseProvider"/> with a default body compile without
-    /// any change here and then silently do nothing. <c>RefreshStatistics</c> (12.4) runs after every library
-    /// scan and is the only statistics refresh the server asks for, so the provider has to implement it.
+    /// any change here and then silently do nothing. <c>RefreshStatistics</c> (12.2) runs after every library
+    /// scan and is the only statistics refresh the server asks for, so the provider has to implement it. Run on
+    /// a newer Jellyfin than the build (the default test setup), this checks that the runtime maps each new
+    /// member to the provider's public virtual method of the same signature.
     /// </summary>
     [Fact]
     public void DefaultInterfaceMembersAreImplemented()
@@ -123,6 +126,21 @@ public sealed class ProviderContractTests
             .ToArray();
 
         Assert.Empty(inherited);
+    }
+
+    /// <summary>
+    /// The provider is compiled against 12.1, which has no <c>RefreshStatistics</c> on the interface. The 12.2+
+    /// runtime only binds the new member to a public virtual method, so neither the method may lose
+    /// <see langword="virtual"/> nor the class become sealed (a sealed class cannot declare it virtual).
+    /// </summary>
+    [Fact]
+    public void MembersOfNewerJellyfinReleasesStayBindable()
+    {
+        var method = typeof(PostgresDatabaseProvider).GetMethod("RefreshStatistics", [typeof(CancellationToken)]);
+
+        Assert.NotNull(method);
+        Assert.True(method.IsPublic && method.IsVirtual && !method.IsFinal, "RefreshStatistics has to be public virtual.");
+        Assert.False(typeof(PostgresDatabaseProvider).IsSealed);
     }
 
     /// <summary>Detects a method body that constructs a <see cref="NotImplementedException"/>.</summary>

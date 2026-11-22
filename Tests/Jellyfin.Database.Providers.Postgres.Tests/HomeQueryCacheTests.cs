@@ -281,7 +281,7 @@ public sealed class HomeQueryCacheTests
         {
             PersistSecurityInfo = true,
         }.ConnectionString;
-        var builder = new DbContextOptionsBuilder<JellyfinDbContext>()
+        var builder = PostgresDatabaseProvider.AllowModelOfNewerJellyfin(new DbContextOptionsBuilder<JellyfinDbContext>())
             .UseNpgsql(connectionString, pg => pg.MigrationsAssembly(typeof(PostgresDatabaseProvider).Assembly.FullName));
         if (interceptors.Length > 0)
         {

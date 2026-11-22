@@ -9,6 +9,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Linq;
@@ -37,16 +38,17 @@ namespace Jellyfin.Database.Providers.Postgres.Services;
 /// <para>
 /// The guard compares the provider's model snapshot with Jellyfin's runtime model, exactly like
 /// <c>HasPendingModelChanges()</c>, and classifies every operation. When all of them are additive (indexes, new tables,
-/// new nullable or constant-default columns) it applies them in one transaction and logs them in
-/// <c>__PostgresSchemaDrift</c>. Anything that drops, rewrites or renames data, or a unique index, is never applied:
-/// the report says the provider must be updated. Whether a change is in place is always read from the catalog
-/// (<see cref="SchemaFacts"/>), and every index of the model is checked against its definition in the database, so an
-/// object left with another definition (for example by an idempotent provider migration) is found and rebuilt.
-/// Once the provider ships the real migration, <see cref="IdempotentMigrationsSqlGenerator"/> lets it run over the
-/// objects the guard already created.
+/// new nullable or constant-default columns) it applies them and logs them in <c>__PostgresSchemaDrift</c>. Indexes are
+/// built and dropped with <c>CONCURRENTLY</c>, so a large <c>BaseItems</c> table stays writable meanwhile; an index left
+/// invalid by an interrupted build is found in the catalog and rebuilt on the next check. Anything that drops, rewrites
+/// or renames data, or a unique index, is never applied: the report says the provider must be updated. Whether a
+/// change is in place is always read from the catalog (<see cref="SchemaFacts"/>), and every index of the model is
+/// checked against its definition in the database, so an object left with another definition (for example by an
+/// idempotent provider migration) is found and rebuilt. If a later provider build ships the real migration,
+/// <see cref="IdempotentMigrationsSqlGenerator"/> lets it run over the objects the guard already created.
 /// </para>
 /// </remarks>
-internal static class SchemaDriftGuard
+internal static partial class SchemaDriftGuard
 {
     /// <summary>Table that records the operations applied by the guard.</summary>
     internal const string RecordTable = "__PostgresSchemaDrift";
@@ -63,6 +65,9 @@ internal static class SchemaDriftGuard
 
     /// <summary>The EF Core provider name of an active PostgreSQL context.</summary>
     internal const string NpgsqlProviderName = "Npgsql.EntityFrameworkCore.PostgreSQL";
+
+    // How long a server waits for another one that is applying the same changes.
+    private static readonly TimeSpan LockWait = TimeSpan.FromMinutes(15);
 
     private enum OperationState
     {
@@ -227,7 +232,7 @@ internal static class SchemaDriftGuard
             var applied = 0;
             if (pendingOps.Count > 0)
             {
-                applied = await ApplyAsync(context, pendingOps, facts, cancellationToken).ConfigureAwait(false);
+                applied = await ApplyAsync(context, pendingOps, cancellationToken).ConfigureAwait(false);
                 facts = await SchemaFacts.LoadAsync(context, cancellationToken).ConfigureAwait(false);
                 recorded = await ReadRecordedAsync(context, cancellationToken).ConfigureAwait(false);
                 states = Evaluate(plan, facts, recorded);
@@ -338,13 +343,22 @@ internal static class SchemaDriftGuard
             _ => false,
         };
 
+    /// <summary>Turns an index build or drop into its <c>CONCURRENTLY</c> form, which does not block writes.</summary>
+    /// <param name="sql">One <c>CREATE INDEX</c> or <c>DROP INDEX</c> statement; anything else is returned unchanged.</param>
+    /// <returns>The statement to run outside a transaction.</returns>
+    internal static string Concurrently(string sql) => ConcurrentIndexStatement().Replace(sql, "$1 CONCURRENTLY ");
+
     private static string OperationName(MigrationOperation operation)
     {
         var name = operation.GetType().Name;
         return name.EndsWith("Operation", StringComparison.Ordinal) ? name[..^"Operation".Length] : name;
     }
 
-    private static IReadOnlyList<MigrationOperation> ComputeDifferences(DbContext context, IModel? baseline)
+    /// <summary>The model diff between <paramref name="baseline"/> (default: the provider's snapshot) and Jellyfin's runtime model.</summary>
+    /// <param name="context">A Jellyfin context.</param>
+    /// <param name="baseline">Model the database is assumed to have, or <see langword="null"/> for the snapshot.</param>
+    /// <returns>The operations a migration would contain.</returns>
+    internal static IReadOnlyList<MigrationOperation> ComputeDifferences(DbContext context, IModel? baseline = null)
     {
         // Same comparison as Migrator.HasPendingModelChanges() in EF Core 10, but returning the operations.
         // Snapshot and migration target models are already finalized; Initialize only adds the runtime pieces.
@@ -523,58 +537,66 @@ internal static class SchemaDriftGuard
     }
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The SQL is generated by EF Core from Jellyfin's own model, never from user input.")]
-    private static async Task<int> ApplyAsync(DbContext context, List<PlannedOperation> pending, SchemaFacts facts, CancellationToken cancellationToken)
+    private static async Task<int> ApplyAsync(DbContext context, List<PlannedOperation> pending, CancellationToken cancellationToken)
     {
         var connection = context.Database.GetDbConnection();
         var opened = await OpenAsync(context, connection, cancellationToken).ConfigureAwait(false);
         try
         {
-            using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-
-            // One server at a time: a second instance waits here and then finds the changes in place.
-            await ExecuteAsync(connection, transaction, $"SELECT pg_advisory_xact_lock({AdvisoryLockKey.ToString(CultureInfo.InvariantCulture)});", cancellationToken).ConfigureAwait(false);
-            await ExecuteAsync(
-                connection,
-                transaction,
-                $"""
-                CREATE TABLE IF NOT EXISTS "{RecordTable}" (
-                    "OperationHash" text PRIMARY KEY,
-                    "Description" text NOT NULL,
-                    "Sql" text NOT NULL,
-                    "JellyfinVersion" text NOT NULL,
-                    "ProviderVersion" text NOT NULL,
-                    "AppliedAt" timestamptz NOT NULL DEFAULT now());
-                """,
-                cancellationToken).ConfigureAwait(false);
-
-            foreach (var step in pending)
+            await AcquireLockAsync(connection, cancellationToken).ConfigureAwait(false);
+            try
             {
-                PostgresLog.Info($"[SchemaDrift] Aplicando {step.Operation.Description}");
+                await ExecuteAsync(
+                    connection,
+                    null,
+                    $"""
+                    CREATE TABLE IF NOT EXISTS "{RecordTable}" (
+                        "OperationHash" text PRIMARY KEY,
+                        "Description" text NOT NULL,
+                        "Sql" text NOT NULL,
+                        "JellyfinVersion" text NOT NULL,
+                        "ProviderVersion" text NOT NULL,
+                        "AppliedAt" timestamptz NOT NULL DEFAULT now());
+                    """,
+                    cancellationToken).ConfigureAwait(false);
 
-                // CREATE INDEX IF NOT EXISTS keeps an index of the same name with another definition: drop it first.
-                if (step.Migration is CreateIndexOperation create && facts.TryGetIndex(create.Name, out _))
+                // Another server may have applied some of the changes while this one waited for the lock.
+                var facts = await SchemaFacts.LoadAsync(context, cancellationToken).ConfigureAwait(false);
+                var states = Evaluate(pending, facts, []);
+                var applied = 0;
+                foreach (var step in pending.Where(p => states[p] != OperationState.Satisfied))
                 {
-                    await ExecuteAsync(connection, transaction, $"DROP INDEX IF EXISTS {Quote(SchemaFacts.StoredName(create.Name))};", cancellationToken).ConfigureAwait(false);
+                    PostgresLog.Info($"[SchemaDrift] Aplicando {step.Operation.Description}");
+                    if (step.Migration is CreateIndexOperation or DropIndexOperation)
+                    {
+                        // CONCURRENTLY cannot run in a transaction, so each statement commits on its own. CREATE INDEX IF
+                        // NOT EXISTS would keep an index of the same name with another definition, or an invalid one
+                        // left by an interrupted build: drop it first.
+                        if (step.Migration is CreateIndexOperation create && facts.TryGetIndex(create.Name, out _))
+                        {
+                            await ExecuteAsync(connection, null, $"DROP INDEX CONCURRENTLY IF EXISTS {Quote(SchemaFacts.StoredName(create.Name))};", cancellationToken, noTimeout: true).ConfigureAwait(false);
+                        }
+
+                        await ExecuteAsync(connection, null, Concurrently(step.Operation.Sql), cancellationToken, noTimeout: true).ConfigureAwait(false);
+                        await RecordAsync(connection, null, step, cancellationToken).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+                        await ExecuteAsync(connection, transaction, step.Operation.Sql, cancellationToken).ConfigureAwait(false);
+                        await RecordAsync(connection, transaction, step, cancellationToken).ConfigureAwait(false);
+                        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                    }
+
+                    applied++;
                 }
 
-                await ExecuteAsync(connection, transaction, step.Operation.Sql, cancellationToken).ConfigureAwait(false);
-
-                using var record = connection.CreateCommand();
-                record.Transaction = transaction;
-                record.CommandText = $"""
-                    INSERT INTO "{RecordTable}" ("OperationHash", "Description", "Sql", "JellyfinVersion", "ProviderVersion")
-                    VALUES (@hash, @description, @sql, @jellyfin, @provider) ON CONFLICT DO NOTHING;
-                    """;
-                AddParameter(record, "hash", step.Key);
-                AddParameter(record, "description", step.Operation.Description);
-                AddParameter(record, "sql", step.Operation.Sql);
-                AddParameter(record, "jellyfin", JellyfinVersion);
-                AddParameter(record, "provider", ProviderVersion);
-                await record.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                return applied;
             }
-
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            return pending.Count;
+            finally
+            {
+                await ExecuteAsync(connection, null, $"SELECT pg_advisory_unlock({AdvisoryLockKey.ToString(CultureInfo.InvariantCulture)});", CancellationToken.None).ConfigureAwait(false);
+            }
         }
         finally
         {
@@ -583,6 +605,53 @@ internal static class SchemaDriftGuard
                 await context.Database.CloseConnectionAsync().ConfigureAwait(false);
             }
         }
+    }
+
+    /// <summary>Takes the session lock that lets one server at a time apply changes.</summary>
+    /// <remarks>
+    /// It is a session lock because <c>CREATE INDEX CONCURRENTLY</c> cannot run in a transaction, and it is polled with
+    /// short <c>pg_try_advisory_lock</c> calls instead of a blocking <c>pg_advisory_lock</c>: a session waiting inside a
+    /// statement holds a snapshot, and a concurrent index build waits for every older snapshot to end, so the two
+    /// servers would wait for each other.
+    /// </remarks>
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Constant statement; the key is a compile-time constant.")]
+    private static async Task AcquireLockAsync(DbConnection connection, CancellationToken cancellationToken)
+    {
+        var deadline = DateTime.UtcNow + LockWait;
+        var logged = false;
+        using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT pg_try_advisory_lock({AdvisoryLockKey.ToString(CultureInfo.InvariantCulture)});";
+        while (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not true)
+        {
+            if (DateTime.UtcNow >= deadline)
+            {
+                throw new TimeoutException($"Otro servidor lleva más de {LockWait.TotalMinutes:F0} min aplicando cambios de esquema en esta base.");
+            }
+
+            if (!logged)
+            {
+                PostgresLog.Info("[SchemaDrift] Otro servidor está aplicando cambios de esquema en esta base; se espera a que termine.");
+                logged = true;
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task RecordAsync(DbConnection connection, DbTransaction? transaction, PlannedOperation step, CancellationToken cancellationToken)
+    {
+        using var record = connection.CreateCommand();
+        record.Transaction = transaction;
+        record.CommandText = $"""
+            INSERT INTO "{RecordTable}" ("OperationHash", "Description", "Sql", "JellyfinVersion", "ProviderVersion")
+            VALUES (@hash, @description, @sql, @jellyfin, @provider) ON CONFLICT DO NOTHING;
+            """;
+        AddParameter(record, "hash", step.Key);
+        AddParameter(record, "description", step.Operation.Description);
+        AddParameter(record, "sql", step.Operation.Sql);
+        AddParameter(record, "jellyfin", JellyfinVersion);
+        AddParameter(record, "provider", ProviderVersion);
+        await record.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task<bool> OpenAsync(DbContext context, DbConnection connection, CancellationToken cancellationToken)
@@ -597,11 +666,18 @@ internal static class SchemaDriftGuard
     }
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Callers pass SQL generated from Jellyfin's model or constant statements.")]
-    private static async Task ExecuteAsync(DbConnection connection, DbTransaction transaction, string sql, CancellationToken cancellationToken)
+    private static async Task ExecuteAsync(DbConnection connection, DbTransaction? transaction, string sql, CancellationToken cancellationToken, bool noTimeout = false)
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = sql;
+
+        // An index build on a large table outlasts the command timeout; cancelling it halfway only leaves an invalid index.
+        if (noTimeout)
+        {
+            command.CommandTimeout = 0;
+        }
+
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -648,6 +724,9 @@ internal static class SchemaDriftGuard
 
         return report;
     }
+
+    [GeneratedRegex(@"^(\s*(?:CREATE(?:\s+UNIQUE)?\s+INDEX|DROP\s+INDEX))\s+(?!CONCURRENTLY\b)", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
+    private static partial Regex ConcurrentIndexStatement();
 
     private sealed record PlannedOperation(SchemaDriftOperation Operation, MigrationOperation? Migration, string Key);
 }

@@ -16,13 +16,14 @@ using Xunit;
 namespace Jellyfin.Database.Providers.Postgres.Tests;
 
 /// <summary>
-/// Schema drift: a Jellyfin release whose model is ahead of the provider's migrations. The integration tests rebuild
-/// the 12.1 shape of the two OwnerId indexes on a fully migrated database and compare against the model of the last
-/// migration before <c>Jellyfin124</c>, which is exactly what plugin 3.1.0 saw when running on Jellyfin 12.4.
+/// Schema drift: a Jellyfin release whose model is ahead of the provider's migrations. The provider is built for 12.1
+/// and the tests run by default on a newer release (see the test project), where the two <c>OwnerId</c> indexes of
+/// <c>BaseItems</c> are partial in the model and plain after the provider's migrations: the real drift every 12.2+
+/// server sees. Tests that need it are skipped on a runtime without it; the catalog checks use
+/// <c>IX_BaseItems_ParentId</c>, which every release defines the same way.
 /// </summary>
 public sealed class SchemaDriftGuardTests
 {
-    private const string BeforeJellyfin124 = "_NormalizeInvalidBaseItemDates";
 
     [Theory]
     [InlineData("CREATE INDEX \"IX_A\" ON \"T\" (\"c\");", "CREATE INDEX IF NOT EXISTS \"IX_A\" ON \"T\" (\"c\");")]
@@ -131,6 +132,27 @@ public sealed class SchemaDriftGuardTests
         Assert.False(facts.Matches(new CreateIndexOperation { Name = name, Table = "BaseItems", Columns = ["Type"], Filter = "\"Type\" IS NOT NULL" }));
     }
 
+    [Theory]
+    [InlineData("CREATE INDEX IF NOT EXISTS \"IX_A\" ON \"T\" (\"c\");", "CREATE INDEX CONCURRENTLY IF NOT EXISTS \"IX_A\" ON \"T\" (\"c\");")]
+    [InlineData("CREATE UNIQUE INDEX \"IX_A\" ON \"T\" (\"c\");", "CREATE UNIQUE INDEX CONCURRENTLY \"IX_A\" ON \"T\" (\"c\");")]
+    [InlineData("\nCREATE INDEX \"IX_A\" ON \"T\" (\"c\") WHERE \"c\" IS NOT NULL;", "\nCREATE INDEX CONCURRENTLY \"IX_A\" ON \"T\" (\"c\") WHERE \"c\" IS NOT NULL;")]
+    [InlineData("DROP INDEX IF EXISTS \"public\".\"IX_A\";", "DROP INDEX CONCURRENTLY IF EXISTS \"public\".\"IX_A\";")]
+    [InlineData("CREATE INDEX CONCURRENTLY IF NOT EXISTS \"IX_A\" ON \"T\" (\"c\");", null)]
+    [InlineData("ALTER TABLE \"T\" ADD COLUMN IF NOT EXISTS \"c\" text;", null)]
+    public void IndexStatementsRunConcurrently(string sql, string? expected)
+        => Assert.Equal(expected ?? sql, SchemaDriftGuard.Concurrently(sql));
+
+    [Fact]
+    public void AnInvalidIndexDoesNotMatch()
+    {
+        var operation = new CreateIndexOperation { Name = "IX_T_c", Table = "T", Columns = ["c"] };
+        static SchemaFacts Facts(bool valid)
+            => SchemaFacts.Create(["T"], ["T.c"], new Dictionary<string, SchemaFacts.IndexFact> { ["IX_T_c"] = new("T", false, ["c"], null, valid) });
+
+        Assert.True(Facts(valid: true).Matches(operation));
+        Assert.False(Facts(valid: false).Matches(operation));
+    }
+
     [Fact]
     public void HealthFindingsFollowTheOutcome()
     {
@@ -174,9 +196,10 @@ public sealed class SchemaDriftGuardTests
     }
 
     [SkippableFact]
-    public async Task AFullyMigratedDatabaseIsInSync()
+    public async Task AFullyMigratedDatabaseIsInSyncOnTheReleaseItIsBuiltFor()
     {
         RequirePostgres();
+        Skip.If(TestEnvironment.RuntimeIsNewerThanBuild, $"Jellyfin {TestEnvironment.JellyfinRuntimeVersion} is newer than the build: its drift is covered by the healing tests.");
         await using var scratch = await TestEnvironment.ScratchDatabaseScope.CreateAsync();
         using var context = await MigratedContextAsync(scratch.Database.ConnectionString);
 
@@ -200,50 +223,53 @@ public sealed class SchemaDriftGuardTests
     }
 
     /// <summary>
-    /// Plugin 3.1.0 on Jellyfin 12.4: the guard turns both OwnerId indexes partial, a second start finds them
-    /// recorded, and the provider's own Jellyfin124 migration still applies afterwards.
+    /// The provider on a newer Jellyfin: the guard turns both OwnerId indexes partial (concurrently, so they end up
+    /// valid), a second start finds them in place, and a later provider migration with the same changes still runs.
     /// </summary>
     [SkippableFact]
-    public async Task IndexDriftIsHealedOnceAndTheLaterMigrationStillApplies()
+    public async Task IndexDriftOfANewerJellyfinIsHealedOnceAndALaterMigrationStillApplies()
     {
         RequirePostgres();
+        RequireNewerRuntime();
         await using var scratch = await TestEnvironment.ScratchDatabaseScope.CreateAsync();
         var connectionString = scratch.Database.ConnectionString;
         using var context = await MigratedContextAsync(connectionString);
-        await RecreateJellyfin121IndexesAsync(connectionString);
         Assert.Equal(0, await PartialOwnerIndexesAsync(connectionString));
 
-        var baseline = TargetModelOf(context, BeforeJellyfin124);
-        var healed = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal, baseline);
+        var healed = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal);
 
         Assert.True(healed.Outcome == SchemaDriftOutcome.Healed, healed.Message);
         Assert.Equal(4, healed.Operations.Count);
         Assert.All(healed.Operations, o => Assert.True(o.Safe && o.Applied));
         Assert.Equal(2, await PartialOwnerIndexesAsync(connectionString));
+        Assert.Equal(0, await ScalarAsync(connectionString, "SELECT COUNT(*) FROM pg_index WHERE NOT indisvalid;"));
         Assert.Equal(4, await ScalarAsync(connectionString, $"SELECT COUNT(*) FROM \"{SchemaDriftGuard.RecordTable}\";"));
 
-        var again = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal, baseline);
+        var again = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal);
         Assert.Equal(SchemaDriftOutcome.AlreadyHealed, again.Outcome);
         Assert.Equal(4, await ScalarAsync(connectionString, $"SELECT COUNT(*) FROM \"{SchemaDriftGuard.RecordTable}\";"));
 
-        // The provider update arrives: its migration runs over the objects the guard created.
-        await ExecuteAsync(connectionString, "DELETE FROM \"__EFMigrationsHistory\" WHERE \"MigrationId\" LIKE '%\\_Jellyfin124';");
-        await context.Database.MigrateAsync();
+        // A provider build for this release would ship the same changes as a migration; through the provider's SQL
+        // generator it runs over the objects the guard already created.
+        var model = context.GetService<IDesignTimeModel>().Model;
+        foreach (var command in context.GetService<IMigrationsSqlGenerator>().Generate(SchemaDriftGuard.ComputeDifferences(context), model))
+        {
+            await ExecuteAsync(connectionString, command.CommandText);
+        }
+
         Assert.Equal(2, await PartialOwnerIndexesAsync(connectionString));
-        var final = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal);
-        Assert.True(final.Outcome == SchemaDriftOutcome.InSync, final.Message);
     }
 
     [SkippableFact]
     public async Task ReportOnlyLeavesTheSchemaUntouched()
     {
         RequirePostgres();
+        RequireNewerRuntime();
         await using var scratch = await TestEnvironment.ScratchDatabaseScope.CreateAsync();
         var connectionString = scratch.Database.ConnectionString;
         using var context = await MigratedContextAsync(connectionString);
-        await RecreateJellyfin121IndexesAsync(connectionString);
 
-        var report = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.ReportOnly, TargetModelOf(context, BeforeJellyfin124));
+        var report = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.ReportOnly);
 
         Assert.Equal(SchemaDriftOutcome.Detected, report.Outcome);
         Assert.All(report.Operations, o => Assert.False(o.Applied));
@@ -258,7 +284,6 @@ public sealed class SchemaDriftGuardTests
         await using var scratch = await TestEnvironment.ScratchDatabaseScope.CreateAsync();
         var connectionString = scratch.Database.ConnectionString;
         using var context = await MigratedContextAsync(connectionString);
-        await RecreateJellyfin121IndexesAsync(connectionString);
 
         var report = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal, TargetModelOf(context, "_InitialCreate"));
 
@@ -271,7 +296,7 @@ public sealed class SchemaDriftGuardTests
     }
 
     /// <summary>
-    /// An index left with an older definition (for example by an idempotent provider migration that found it already
+    /// An index left with another definition (for example by an idempotent provider migration that found it already
     /// there) is invisible to the snapshot/model comparison; the guard finds it in the catalog and rebuilds it.
     /// </summary>
     [SkippableFact]
@@ -281,15 +306,32 @@ public sealed class SchemaDriftGuardTests
         await using var scratch = await TestEnvironment.ScratchDatabaseScope.CreateAsync();
         var connectionString = scratch.Database.ConnectionString;
         using var context = await MigratedContextAsync(connectionString);
-        await RecreateJellyfin121IndexesAsync(connectionString);
+        await RedefineParentIdIndexAsync(connectionString);
 
         var report = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal);
 
         Assert.True(report.Outcome == SchemaDriftOutcome.Healed, report.Message);
-        Assert.Contains(report.Operations, o => o.Description.StartsWith("CreateIndex IX_BaseItems_OwnerId", StringComparison.Ordinal));
-        Assert.Equal(2, await PartialOwnerIndexesAsync(connectionString));
+        Assert.Contains(report.Operations, o => o.Description.StartsWith("CreateIndex IX_BaseItems_ParentId", StringComparison.Ordinal));
+        Assert.Equal(1, await PlainValidParentIdIndexAsync(connectionString));
         var again = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal);
-        Assert.True(again.Outcome == SchemaDriftOutcome.InSync, again.Message);
+        Assert.True(again.Outcome is SchemaDriftOutcome.InSync or SchemaDriftOutcome.AlreadyHealed, again.Message);
+    }
+
+    /// <summary>A concurrent build that fails or is interrupted leaves an invalid index; the next check rebuilds it.</summary>
+    [SkippableFact]
+    public async Task AnInvalidIndexLeftByAnInterruptedBuildIsRebuilt()
+    {
+        RequirePostgres();
+        await using var scratch = await TestEnvironment.ScratchDatabaseScope.CreateAsync();
+        var connectionString = scratch.Database.ConnectionString;
+        using var context = await MigratedContextAsync(connectionString);
+        await ExecuteAsync(connectionString, "UPDATE pg_index SET indisvalid = false WHERE indexrelid = '\"IX_BaseItems_ParentId\"'::regclass;");
+        Assert.Equal(0, await PlainValidParentIdIndexAsync(connectionString));
+
+        var report = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal);
+
+        Assert.True(report.Outcome == SchemaDriftOutcome.Healed, report.Message);
+        Assert.Equal(1, await PlainValidParentIdIndexAsync(connectionString));
     }
 
     /// <summary>
@@ -303,16 +345,15 @@ public sealed class SchemaDriftGuardTests
         await using var scratch = await TestEnvironment.ScratchDatabaseScope.CreateAsync();
         var connectionString = scratch.Database.ConnectionString;
         using var context = await MigratedContextAsync(connectionString);
-        await RecreateJellyfin121IndexesAsync(connectionString);
-        var baseline = TargetModelOf(context, BeforeJellyfin124);
-        Assert.Equal(SchemaDriftOutcome.Healed, (await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal, baseline)).Outcome);
+        await RedefineParentIdIndexAsync(connectionString);
+        Assert.Equal(SchemaDriftOutcome.Healed, (await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal)).Outcome);
 
-        await RecreateJellyfin121IndexesAsync(connectionString);
-        var report = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal, baseline);
+        await RedefineParentIdIndexAsync(connectionString);
+        var report = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal);
 
         Assert.True(report.Outcome == SchemaDriftOutcome.Detected, report.Message);
         Assert.Contains(report.Operations, o => !o.Applied && o.Description.Contains("ya aplicado en esta versión", StringComparison.Ordinal));
-        Assert.Equal(0, await PartialOwnerIndexesAsync(connectionString));
+        Assert.Equal(0, await PlainValidParentIdIndexAsync(connectionString));
     }
 
     [SkippableFact]
@@ -336,9 +377,14 @@ public sealed class SchemaDriftGuardTests
     private static void RequirePostgres()
         => Skip.IfNot(TestEnvironment.PostgresAvailable, $"{TestEnvironment.ConnectionVariable} is not set; skipping PostgreSQL integration tests.");
 
+    private static void RequireNewerRuntime()
+        => Skip.IfNot(
+            TestEnvironment.RuntimeIsNewerThanBuild,
+            $"The tests run on Jellyfin {TestEnvironment.JellyfinRuntimeVersion}, the release the provider is built for: no drift to heal.");
+
     private static JellyfinDbContext CreateContext(string connectionString)
         => new(
-            new DbContextOptionsBuilder<JellyfinDbContext>()
+            PostgresDatabaseProvider.AllowModelOfNewerJellyfin(new DbContextOptionsBuilder<JellyfinDbContext>())
                 .UseNpgsql(connectionString, pg => pg.MigrationsAssembly(typeof(PostgresDatabaseProvider).Assembly.FullName))
                 .AddInterceptors(new Jellyfin121MigrationInterceptor())
                 .ReplaceService<IMigrationsSqlGenerator, IdempotentMigrationsSqlGenerator>()
@@ -361,15 +407,21 @@ public sealed class SchemaDriftGuardTests
         return assembly.CreateMigration(assembly.Migrations[id], context.Database.ProviderName!).TargetModel!;
     }
 
-    // The 12.1 definitions, as in Jellyfin124.Down.
-    private static Task RecreateJellyfin121IndexesAsync(string connectionString)
+    // Same name, another definition than every Jellyfin release gives it.
+    private static Task RedefineParentIdIndexAsync(string connectionString)
         => ExecuteAsync(
             connectionString,
             """
-            DROP INDEX "IX_BaseItems_OwnerId";
-            DROP INDEX "IX_BaseItems_ExtraType_OwnerId";
-            CREATE INDEX "IX_BaseItems_OwnerId" ON "BaseItems" ("OwnerId");
-            CREATE INDEX "IX_BaseItems_ExtraType_OwnerId" ON "BaseItems" ("ExtraType", "OwnerId");
+            DROP INDEX "IX_BaseItems_ParentId";
+            CREATE INDEX "IX_BaseItems_ParentId" ON "BaseItems" ("ParentId") WHERE "ParentId" IS NULL;
+            """);
+
+    private static Task<long> PlainValidParentIdIndexAsync(string connectionString)
+        => ScalarAsync(
+            connectionString,
+            """
+            SELECT COUNT(*) FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid
+            WHERE i.relname = 'IX_BaseItems_ParentId' AND x.indisvalid AND x.indpred IS NULL;
             """);
 
     private static Task<long> PartialOwnerIndexesAsync(string connectionString)

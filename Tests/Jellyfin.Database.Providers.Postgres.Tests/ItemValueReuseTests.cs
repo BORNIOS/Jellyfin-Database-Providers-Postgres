@@ -291,7 +291,7 @@ public sealed class ItemValueReuseTests
 
     private static JellyfinDbContext CreateContext(string connectionString)
     {
-        var builder = new DbContextOptionsBuilder<JellyfinDbContext>()
+        var builder = PostgresDatabaseProvider.AllowModelOfNewerJellyfin(new DbContextOptionsBuilder<JellyfinDbContext>())
             .UseNpgsql(connectionString, pg => pg.MigrationsAssembly(typeof(PostgresDatabaseProvider).Assembly.FullName))
             .AddInterceptors(new ItemValueReuseInterceptor(), new UpsertConflictInterceptor());
 

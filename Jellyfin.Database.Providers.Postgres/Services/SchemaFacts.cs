@@ -80,7 +80,7 @@ internal sealed partial class SchemaFacts
             using (var command = connection.CreateCommand())
             {
                 command.CommandText = """
-                    SELECT i.relname, t.relname, x.indisunique, pg_get_expr(x.indpred, x.indrelid),
+                    SELECT i.relname, t.relname, x.indisunique, pg_get_expr(x.indpred, x.indrelid), x.indisvalid,
                            ARRAY(SELECT a.attname
                                  FROM unnest(x.indkey) WITH ORDINALITY AS k(attnum, ord)
                                  JOIN pg_attribute a ON a.attrelid = x.indrelid AND a.attnum = k.attnum
@@ -95,8 +95,8 @@ internal sealed partial class SchemaFacts
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
                     var predicate = await reader.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(3);
-                    var keyColumns = await reader.GetFieldValueAsync<string[]>(4, cancellationToken).ConfigureAwait(false);
-                    indexes[reader.GetString(0)] = new IndexFact(reader.GetString(1), reader.GetBoolean(2), keyColumns, predicate);
+                    var keyColumns = await reader.GetFieldValueAsync<string[]>(5, cancellationToken).ConfigureAwait(false);
+                    indexes[reader.GetString(0)] = new IndexFact(reader.GetString(1), reader.GetBoolean(2), keyColumns, predicate, reader.GetBoolean(4));
                 }
             }
         }
@@ -165,9 +165,10 @@ internal sealed partial class SchemaFacts
 
     /// <summary>Whether the database has an index with exactly this definition.</summary>
     /// <param name="operation">Index as the model defines it.</param>
-    /// <returns><see langword="true"/> when name, table, uniqueness, columns and filter match.</returns>
+    /// <returns><see langword="true"/> when name, table, uniqueness, columns and filter match and the index is valid.</returns>
     internal bool Matches(CreateIndexOperation operation)
         => TryGetIndex(operation.Name, out var index)
+            && index.IsValid
             && string.Equals(index.Table, operation.Table, StringComparison.Ordinal)
             && index.IsUnique == operation.IsUnique
             && index.Columns.SequenceEqual(operation.Columns, StringComparer.Ordinal)
@@ -185,5 +186,9 @@ internal sealed partial class SchemaFacts
     /// <param name="IsUnique">Whether it is unique.</param>
     /// <param name="Columns">Key columns in order (empty for expression indexes).</param>
     /// <param name="Predicate">Partial index predicate, or <see langword="null"/>.</param>
-    internal sealed record IndexFact(string Table, bool IsUnique, IReadOnlyList<string> Columns, string? Predicate);
+    /// <param name="IsValid">
+    /// <see langword="false"/> for an index the planner ignores: what a failed or interrupted
+    /// <c>CREATE INDEX CONCURRENTLY</c> leaves behind.
+    /// </param>
+    internal sealed record IndexFact(string Table, bool IsUnique, IReadOnlyList<string> Columns, string? Predicate, bool IsValid = true);
 }

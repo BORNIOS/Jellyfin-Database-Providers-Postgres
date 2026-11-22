@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Jellyfin.Database.Providers.Postgres.Services;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
 
@@ -69,14 +70,24 @@ public sealed partial class SchemaAuditTests
     }
 
     /// <summary>
-    /// The EF snapshot has to describe the model of the Jellyfin release the plugin targets, otherwise the next migration
-    /// generates SQL for a schema the server does not have.
+    /// The EF snapshot has to describe the model of the Jellyfin release the plugin is built for, otherwise the next
+    /// migration generates SQL for a schema the server does not have. On a newer release the provider has no migration
+    /// for that release's model changes and relies on the schema drift guard, so every difference has to be one the
+    /// guard applies on its own; a failure here means the newer release needs a provider build with a migration.
     /// </summary>
     [Fact]
     public void SnapshotMatchesTheJellyfinModel()
     {
         using var context = TestEnvironment.CreateModelContext();
-        Assert.False(context.Database.HasPendingModelChanges());
+        if (!TestEnvironment.RuntimeIsNewerThanBuild)
+        {
+            Assert.False(context.Database.HasPendingModelChanges());
+            return;
+        }
+
+        Assert.All(
+            SchemaDriftGuard.ComputeDifferences(context),
+            operation => Assert.True(SchemaDriftGuard.IsSafe(operation), $"Jellyfin {TestEnvironment.JellyfinRuntimeVersion}: {SchemaDriftGuard.Describe(operation)}"));
     }
 
     /// <summary>

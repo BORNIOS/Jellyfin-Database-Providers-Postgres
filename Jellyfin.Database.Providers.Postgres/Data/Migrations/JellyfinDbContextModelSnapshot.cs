@@ -17,7 +17,7 @@ namespace Jellyfin.Database.Providers.Postgres.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.14")
+                .HasAnnotation("ProductVersion", "10.0.11")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -366,8 +366,7 @@ namespace Jellyfin.Database.Providers.Postgres.Migrations
 
                     b.HasIndex("Name");
 
-                    b.HasIndex("OwnerId")
-                        .HasFilter("\"OwnerId\" IS NOT NULL");
+                    b.HasIndex("OwnerId");
 
                     b.HasIndex("ParentId");
 
@@ -384,8 +383,7 @@ namespace Jellyfin.Database.Providers.Postgres.Migrations
 
                     b.HasIndex("SeriesName");
 
-                    b.HasIndex("ExtraType", "OwnerId")
-                        .HasFilter("\"ExtraType\" IS NOT NULL");
+                    b.HasIndex("ExtraType", "OwnerId");
 
                     b.HasIndex("TopParentId", "Id");
 

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
@@ -29,7 +29,12 @@ namespace Jellyfin.Database.Providers.Postgres;
 /// Configures Jellyfin to use PostgreSQL through EF Core and provides
 /// static optimization helpers shared across the plugin.
 /// </summary>
-public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
+/// <remarks>
+/// Not sealed on purpose: the provider is compiled against Jellyfin 12.1 so one package runs on every 12.x server, and
+/// members that later releases add to <see cref="IJellyfinDatabaseProvider"/> with a default body (such as
+/// <see cref="RefreshStatistics"/> in 12.2) are bound by the runtime only to a matching public <em>virtual</em> method.
+/// </remarks>
+public class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 {
     // ── Fields: readonly first (SA1214), then mutable (SA1201: fields before constructor) ───
     // 10 GIN trigram indexes for sub-15ms instant search (pg_trgm required)
@@ -523,16 +528,26 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
             .ConfigureAwait(false);
     }
 
-    /// <inheritdoc/>
+    /// <summary>Refreshes the PostgreSQL planner statistics of Jellyfin's tables (<c>ANALYZE</c>).</summary>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task that completes when the statistics are refreshed.</returns>
     /// <remarks>
-    /// Jellyfin 12.4 calls this after every library scan. <c>ANALYZE</c> only samples the tables and
+    /// <para>
+    /// <c>IJellyfinDatabaseProvider.RefreshStatistics</c> exists from Jellyfin 12.2 on, with an empty default body.
+    /// The provider is compiled against 12.1, where the member does not exist yet, so this method cannot be an explicit
+    /// implementation: it is public and virtual, which is what lets the 12.2+ runtime map the interface member to it.
+    /// On 12.1 nothing calls it.
+    /// </para>
+    /// <para>
+    /// Jellyfin 12.2+ calls this after every library scan. <c>ANALYZE</c> only samples the tables and
     /// reclaims nothing, so it stays cheap next to <see cref="RunScheduledOptimisation"/>. Only Jellyfin's
     /// own tables are listed: other plugins sharing the database keep their own schedule. PostgreSQL
     /// scales stale row estimates by the current table size, so analyzing a still-empty library does not
     /// mislead the planner the way it does on SQLite, and no empty-library guard is needed.
+    /// </para>
     /// </remarks>
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Table names come from Jellyfin's own EF model and every identifier is validated and quoted by QuoteQualifiedTableName. No user input.")]
-    public async Task RefreshStatistics(CancellationToken cancellationToken)
+    public virtual async Task RefreshStatistics(CancellationToken cancellationToken)
     {
         if (DbContextFactory is null)
         {
@@ -979,6 +994,25 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         {
             logger.LogDebug(ex, "Could not activate pg_stat_statements — skipping.");
         }
+    }
+
+    /// <summary>
+    /// Lets a target-less <c>Database.Migrate()</c> run on a Jellyfin release newer than the one the provider is built for.
+    /// </summary>
+    /// <remarks>
+    /// EF Core refuses it while the runtime model has changes no migration covers (<c>PendingModelChangesWarning</c>),
+    /// which is the normal state of this provider on every release after the one it is compiled against. Jellyfin
+    /// applies migrations one by one and never hits it; the plugin's own callers (the SQLite import) do. The schema drift
+    /// guard brings the schema up to the model at the next start.
+    /// </remarks>
+    /// <typeparam name="TContext">Context type.</typeparam>
+    /// <param name="builder">Options builder.</param>
+    /// <returns>The same builder.</returns>
+    internal static DbContextOptionsBuilder<TContext> AllowModelOfNewerJellyfin<TContext>(DbContextOptionsBuilder<TContext> builder)
+        where TContext : DbContext
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        return builder.ConfigureWarnings(w => w.Ignore(RelationalEventId.PendingModelChangesWarning));
     }
 
     /// <summary>

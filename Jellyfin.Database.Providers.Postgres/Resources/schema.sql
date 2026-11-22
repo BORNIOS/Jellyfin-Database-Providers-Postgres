@@ -565,7 +565,7 @@ CREATE UNIQUE INDEX "IX_Users_NormalizedUsername" ON "Users" ("NormalizedUsernam
 CREATE UNIQUE INDEX "IX_Users_Username" ON "Users" ("Username");
 
 INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
-VALUES ('00000000000000_InitialCreate', '10.0.14');
+VALUES ('00000000000000_InitialCreate', '10.0.11');
 
 COMMIT;
 
@@ -712,7 +712,7 @@ WHERE "OwnerId" IS NOT NULL AND "OwnerId" NOT IN (SELECT "Id" FROM "BaseItems");
 ALTER TABLE "BaseItems" ADD CONSTRAINT "FK_BaseItems_BaseItems_OwnerId" FOREIGN KEY ("OwnerId") REFERENCES "BaseItems" ("Id");
 
 INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
-VALUES ('20260915211546_Jellyfin121', '10.0.14');
+VALUES ('20260915211546_Jellyfin121', '10.0.11');
 
 COMMIT;
 
@@ -723,21 +723,7 @@ WHERE NOT isfinite("DateCreated")
    OR "DateCreated" = TIMESTAMPTZ '0001-01-01 00:00:00+00';
 
 INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
-VALUES ('20261015234720_NormalizeInvalidBaseItemDates', '10.0.14');
-
-COMMIT;
-
-START TRANSACTION;
-DROP INDEX "IX_BaseItems_ExtraType_OwnerId";
-
-DROP INDEX "IX_BaseItems_OwnerId";
-
-CREATE INDEX "IX_BaseItems_ExtraType_OwnerId" ON "BaseItems" ("ExtraType", "OwnerId") WHERE "ExtraType" IS NOT NULL;
-
-CREATE INDEX "IX_BaseItems_OwnerId" ON "BaseItems" ("OwnerId") WHERE "OwnerId" IS NOT NULL;
-
-INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
-VALUES ('20261121114849_Jellyfin124', '10.0.14');
+VALUES ('20261015234720_NormalizeInvalidBaseItemDates', '10.0.11');
 
 COMMIT;
 
