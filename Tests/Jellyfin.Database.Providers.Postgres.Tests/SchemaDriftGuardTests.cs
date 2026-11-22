@@ -117,9 +117,24 @@ public sealed class SchemaDriftGuardTests
     public void PredicatesMatchTheFormPostgreSqlStores(string? model, string? stored)
         => Assert.Equal(SchemaFacts.NormalizePredicate(model), SchemaFacts.NormalizePredicate(stored));
 
+    [Theory]
+    [InlineData("\"OwnerId\" IS NOT NULL", "(\"OwnerId\" IS NULL)")]
+    [InlineData("\"Type\" = 'movie'", "((\"Type\")::text = 'Movie'::text)")]
+    [InlineData("\"Name\" = 'a b'", "((\"Name\")::text = 'ab'::text)")]
+    public void DifferentPredicatesDoNotMatch(string model, string stored)
+        => Assert.NotEqual(SchemaFacts.NormalizePredicate(model), SchemaFacts.NormalizePredicate(stored));
+
     [Fact]
-    public void DifferentPredicatesDoNotMatch()
-        => Assert.NotEqual(SchemaFacts.NormalizePredicate("\"OwnerId\" IS NOT NULL"), SchemaFacts.NormalizePredicate("(\"OwnerId\" IS NULL)"));
+    public void IncludedColumnsAreComparedApartFromTheKey()
+    {
+        var plain = new CreateIndexOperation { Name = "IX_T_c", Table = "T", Columns = ["c"] };
+        var covering = new CreateIndexOperation { Name = "IX_T_c", Table = "T", Columns = ["c"] };
+        covering["Npgsql:IndexInclude"] = new[] { "d" };
+        var facts = SchemaFacts.Create(["T"], ["T.c", "T.d"], new Dictionary<string, SchemaFacts.IndexFact> { ["IX_T_c"] = new("T", false, ["c"], null, true, ["d"]) });
+
+        Assert.True(facts.Matches(covering));
+        Assert.False(facts.Matches(plain));
+    }
 
     [Fact]
     public void IndexNamesAreLookedUpAsPostgreSqlTruncatesThem()
@@ -171,6 +186,8 @@ public sealed class SchemaDriftGuardTests
     [InlineData("<PluginConfiguration><SchemaDriftMode>Off</SchemaDriftMode></PluginConfiguration>", SchemaDriftMode.Off)]
     [InlineData("<PluginConfiguration><Schema>public</Schema></PluginConfiguration>", null)]
     [InlineData("not xml", null)]
+    [InlineData("<PluginConfiguration><SchemaDriftMode>5</SchemaDriftMode></PluginConfiguration>", null)]
+    [InlineData("<PluginConfiguration><SchemaDriftMode>-1</SchemaDriftMode></PluginConfiguration>", null)]
     public void TheEarlyCheckReadsTheModeFromThePluginConfigurationFile(string xml, SchemaDriftMode? expected)
     {
         var directory = Directory.CreateTempSubdirectory("schema-drift-config-");
@@ -243,11 +260,13 @@ public sealed class SchemaDriftGuardTests
         Assert.All(healed.Operations, o => Assert.True(o.Safe && o.Applied));
         Assert.Equal(2, await PartialOwnerIndexesAsync(connectionString));
         Assert.Equal(0, await ScalarAsync(connectionString, "SELECT COUNT(*) FROM pg_index WHERE NOT indisvalid;"));
-        Assert.Equal(4, await ScalarAsync(connectionString, $"SELECT COUNT(*) FROM \"{SchemaDriftGuard.RecordTable}\";"));
+
+        // One record per replaced index: each drop is part of its create's swap.
+        Assert.Equal(2, await ScalarAsync(connectionString, $"SELECT COUNT(*) FROM \"{SchemaDriftGuard.RecordTable}\";"));
 
         var again = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal);
         Assert.Equal(SchemaDriftOutcome.AlreadyHealed, again.Outcome);
-        Assert.Equal(4, await ScalarAsync(connectionString, $"SELECT COUNT(*) FROM \"{SchemaDriftGuard.RecordTable}\";"));
+        Assert.Equal(2, await ScalarAsync(connectionString, $"SELECT COUNT(*) FROM \"{SchemaDriftGuard.RecordTable}\";"));
 
         // A provider build for this release would ship the same changes as a migration; through the provider's SQL
         // generator it runs over the objects the guard already created.
@@ -314,6 +333,7 @@ public sealed class SchemaDriftGuardTests
         Assert.True(report.Outcome == SchemaDriftOutcome.Healed, report.Message);
         Assert.Contains(report.Operations, o => o.Description.StartsWith("CreateIndex IX_BaseItems_ParentId", StringComparison.Ordinal));
         Assert.Equal(1, await PlainValidParentIdIndexAsync(connectionString));
+        Assert.Equal(0, await ScalarAsync(connectionString, "SELECT COUNT(*) FROM pg_class WHERE relname LIKE 'IX\\_drift\\_%';"));
         var again = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal);
         Assert.True(again.Outcome is SchemaDriftOutcome.InSync or SchemaDriftOutcome.AlreadyHealed, again.Message);
     }
@@ -336,11 +356,11 @@ public sealed class SchemaDriftGuardTests
     }
 
     /// <summary>
-    /// What is in place is read from the catalog, not from the guard's records: a recorded change that the database
-    /// no longer reflects is not reported as healed (and is not rebuilt again in the same version).
+    /// What is in place is read from the catalog, not from the guard's records: a change undone after it was applied (a
+    /// rollback to an older Jellyfin rebuilds the index, someone alters it) is applied again, even in the same version.
     /// </summary>
     [SkippableFact]
-    public async Task ARecordedChangeIsNotReportedAsHealedWhenTheDatabaseDiffers()
+    public async Task AChangeUndoneAfterItWasAppliedIsAppliedAgain()
     {
         RequirePostgres();
         await using var scratch = await TestEnvironment.ScratchDatabaseScope.CreateAsync();
@@ -352,9 +372,109 @@ public sealed class SchemaDriftGuardTests
         await RedefineParentIdIndexAsync(connectionString);
         var report = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal);
 
+        Assert.True(report.Outcome == SchemaDriftOutcome.Healed, report.Message);
+        Assert.Equal(1, await PlainValidParentIdIndexAsync(connectionString));
+    }
+
+    /// <summary>
+    /// A change the guard applied that still does not produce the model's definition (the database looks exactly as the
+    /// guard left it) is reported instead of being rebuilt on every start; and the index it would replace is kept: the
+    /// drop of a replacement never runs without its create.
+    /// </summary>
+    [SkippableFact]
+    public async Task AChangeThatDoesNotTakeIsReportedAndTheIndexIsKept()
+    {
+        RequirePostgres();
+        await using var scratch = await TestEnvironment.ScratchDatabaseScope.CreateAsync();
+        var connectionString = scratch.Database.ConnectionString;
+        using var context = await MigratedContextAsync(connectionString);
+        await RedefineParentIdIndexAsync(connectionString);
+        Assert.Equal(SchemaDriftOutcome.Healed, (await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal)).Outcome);
+
+        // Simulate an apply that did not take: the index is back to the other definition, and the record says that is
+        // what the guard's own change left behind.
+        await RedefineParentIdIndexAsync(connectionString);
+        var facts = await SchemaFacts.LoadAsync(context, CancellationToken.None);
+        var result = facts.Fingerprint(new CreateIndexOperation { Name = "IX_BaseItems_ParentId", Table = "BaseItems", Columns = ["ParentId"] });
+        await ExecuteAsync(connectionString, $"UPDATE \"{SchemaDriftGuard.RecordTable}\" SET \"Result\" = '{result.Replace("'", "''", StringComparison.Ordinal)}' WHERE \"Description\" LIKE '%IX_BaseItems_ParentId%';");
+
+        var report = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal);
+
         Assert.True(report.Outcome == SchemaDriftOutcome.Detected, report.Message);
         Assert.Contains(report.Operations, o => !o.Applied && o.Description.Contains("ya aplicado en esta versión", StringComparison.Ordinal));
+        Assert.Equal(1, await ScalarAsync(connectionString, "SELECT COUNT(*) FROM pg_indexes WHERE indexname = 'IX_BaseItems_ParentId' AND indexdef LIKE '%WHERE%';"));
+    }
+
+    /// <summary>
+    /// On Jellyfin's startup path index changes are left for the background pass (a concurrent build can wait for other
+    /// sessions indefinitely); the next run applies them.
+    /// </summary>
+    [SkippableFact]
+    public async Task IndexChangesCanBeDeferredAndAreAppliedOnTheNextRun()
+    {
+        RequirePostgres();
+        await using var scratch = await TestEnvironment.ScratchDatabaseScope.CreateAsync();
+        var connectionString = scratch.Database.ConnectionString;
+        using var context = await MigratedContextAsync(connectionString);
+        await RedefineParentIdIndexAsync(connectionString);
+
+        var early = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal, deferIndexes: true);
+
+        Assert.True(early.Outcome == SchemaDriftOutcome.Deferred, early.Message);
         Assert.Equal(0, await PlainValidParentIdIndexAsync(connectionString));
+
+        var later = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal);
+        Assert.True(later.Outcome == SchemaDriftOutcome.Healed, later.Message);
+        Assert.Equal(1, await PlainValidParentIdIndexAsync(connectionString));
+    }
+
+    /// <summary>
+    /// A replacement is built under a temporary name and swapped in; what an interrupted earlier attempt left (an invalid
+    /// temporary index) is removed first, and nothing temporary remains afterwards.
+    /// </summary>
+    [SkippableFact]
+    public async Task AReplacementIsSwappedInAndLeftoversOfAnInterruptedOneAreRemoved()
+    {
+        RequirePostgres();
+        await using var scratch = await TestEnvironment.ScratchDatabaseScope.CreateAsync();
+        var connectionString = scratch.Database.ConnectionString;
+        using var context = await MigratedContextAsync(connectionString);
+        await RedefineParentIdIndexAsync(connectionString);
+        var temporary = SchemaDriftGuard.TemporaryIndexName("IX_BaseItems_ParentId");
+        await ExecuteAsync(
+            connectionString,
+            $"""
+            CREATE INDEX "{temporary}" ON "BaseItems" ("ParentId");
+            UPDATE pg_index SET indisvalid = false WHERE indexrelid = '"{temporary}"'::regclass;
+            """);
+
+        var report = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal);
+
+        Assert.True(report.Outcome == SchemaDriftOutcome.Healed, report.Message);
+        Assert.Equal(1, await PlainValidParentIdIndexAsync(connectionString));
+        Assert.Equal(0, await ScalarAsync(connectionString, "SELECT COUNT(*) FROM pg_class WHERE relname LIKE 'IX\\_drift\\_%';"));
+    }
+
+    /// <summary>INCLUDE columns are not key columns: an index that has them where the model has none is rebuilt.</summary>
+    [SkippableFact]
+    public async Task AnIndexWithExtraIncludedColumnsIsRebuilt()
+    {
+        RequirePostgres();
+        await using var scratch = await TestEnvironment.ScratchDatabaseScope.CreateAsync();
+        var connectionString = scratch.Database.ConnectionString;
+        using var context = await MigratedContextAsync(connectionString);
+        await ExecuteAsync(
+            connectionString,
+            """
+            DROP INDEX "IX_BaseItems_ParentId";
+            CREATE INDEX "IX_BaseItems_ParentId" ON "BaseItems" ("ParentId") INCLUDE ("Name");
+            """);
+
+        var report = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal);
+
+        Assert.True(report.Outcome == SchemaDriftOutcome.Healed, report.Message);
+        Assert.Equal(0, await ScalarAsync(connectionString, "SELECT COUNT(*) FROM pg_indexes WHERE indexname = 'IX_BaseItems_ParentId' AND indexdef LIKE '%INCLUDE%';"));
+        Assert.Equal(1, await PlainValidParentIdIndexAsync(connectionString));
     }
 
     [SkippableFact]

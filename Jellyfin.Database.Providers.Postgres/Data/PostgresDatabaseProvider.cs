@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
@@ -463,7 +463,9 @@ public class PostgresDatabaseProvider : IJellyfinDatabaseProvider
                     NullLogger<JellyfinDbContext>.Instance,
                     this,
                     new NoLockBehavior(NullLogger<NoLockBehavior>.Instance));
-                await SchemaDriftGuard.RunAsync(context, mode, logger: _logger).ConfigureAwait(false);
+                // Indexes are left to SchemaDriftStartupService: a concurrent build can wait indefinitely for other
+                // sessions' transactions, and this call holds up the whole server start.
+                await SchemaDriftGuard.RunAsync(context, mode, deferIndexes: true, logger: _logger).ConfigureAwait(false);
             }).GetAwaiter().GetResult();
         }
         catch (Exception ex)

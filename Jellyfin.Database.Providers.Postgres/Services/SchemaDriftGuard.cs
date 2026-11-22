@@ -147,8 +147,13 @@ internal static partial class SchemaDriftGuard
                 return null;
             }
 
-            var value = XDocument.Load(file).Root?.Element(nameof(PluginConfiguration.SchemaDriftMode))?.Value;
-            return Enum.TryParse<SchemaDriftMode>(value, ignoreCase: true, out var mode) ? mode : null;
+            var value = XDocument.Load(file).Root?.Element(nameof(PluginConfiguration.SchemaDriftMode))?.Value?.Trim();
+
+            // Names only: Enum.TryParse also accepts any number ("5"), which no check below would treat as Off or ReportOnly.
+            return !string.IsNullOrEmpty(value) && !char.IsAsciiDigit(value[0]) && value[0] != '-'
+                && Enum.TryParse<SchemaDriftMode>(value, ignoreCase: true, out var mode) && Enum.IsDefined(mode)
+                ? mode
+                : null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Xml.XmlException)
         {
@@ -164,6 +169,11 @@ internal static partial class SchemaDriftGuard
     /// Model the database is assumed to have. <see langword="null"/> uses the provider's model snapshot, which is what the
     /// database has once every provider migration is applied; tests pass an older migration's target model.
     /// </param>
+    /// <param name="deferIndexes">
+    /// Leaves index changes for later (outcome <see cref="SchemaDriftOutcome.Deferred"/>) and only applies table and column
+    /// changes. Used on Jellyfin's startup path: a concurrent index build waits for every older transaction in the
+    /// database, with no upper bound, and Jellyfin's migrations do not need the indexes.
+    /// </param>
     /// <param name="logger">Optional logger; the report also goes to Jellyfin's own log through it.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The report, also available afterwards through <see cref="LastReport"/>.</returns>
@@ -171,6 +181,7 @@ internal static partial class SchemaDriftGuard
         DbContext context,
         SchemaDriftMode mode,
         IModel? baseline = null,
+        bool deferIndexes = false,
         ILogger? logger = null,
         CancellationToken cancellationToken = default)
     {
@@ -229,13 +240,26 @@ internal static partial class SchemaDriftGuard
                     $"Jellyfin {JellyfinVersion} tiene {pendingOps.Count} cambio(s) de esquema sin aplicar. Modo ReportOnly: no se aplican.");
             }
 
+            var deferred = deferIndexes ? pendingOps.Where(p => p.Migration is CreateIndexOperation or DropIndexOperation).ToList() : [];
+            var applyNow = pendingOps.Except(deferred).ToList();
             var applied = 0;
-            if (pendingOps.Count > 0)
+            if (applyNow.Count > 0)
             {
-                applied = await ApplyAsync(context, pendingOps, cancellationToken).ConfigureAwait(false);
+                applied = await ApplyAsync(context, plan, applyNow, cancellationToken).ConfigureAwait(false);
                 facts = await SchemaFacts.LoadAsync(context, cancellationToken).ConfigureAwait(false);
                 recorded = await ReadRecordedAsync(context, cancellationToken).ConfigureAwait(false);
                 states = Evaluate(plan, facts, recorded);
+            }
+
+            if (deferred.Count > 0)
+            {
+                return Publish(
+                    logger,
+                    mode,
+                    SchemaDriftOutcome.Deferred,
+                    Report(plan, states),
+                    $"{deferred.Count} cambio(s) de índices de Jellyfin {JellyfinVersion} se aplican en segundo plano cuando termine el arranque"
+                    + (applied > 0 ? $"; ya se aplicaron {applied} cambio(s) de tablas y columnas." : "."));
             }
 
             var unresolved = plan.Where(p => states[p] != OperationState.Satisfied).ToList();
@@ -399,8 +423,11 @@ internal static partial class SchemaDriftGuard
         void AddUnsafe(string description)
             => plan.Add(new PlannedOperation(new SchemaDriftOperation(description, string.Empty, Safe: false, Applied: false), null, Key(description)));
 
+        // What the diff already explains, per object: a column added to a table does not exempt the table's other
+        // columns and indexes from the catalog check.
         var coveredIndexes = new HashSet<string>(StringComparer.Ordinal);
         var coveredTables = new HashSet<string>(StringComparer.Ordinal);
+        var coveredColumns = new HashSet<string>(StringComparer.Ordinal);
         foreach (var operation in differences)
         {
             Add(operation);
@@ -410,7 +437,11 @@ internal static partial class SchemaDriftGuard
                 case DropIndexOperation d: coveredIndexes.Add(d.Name); break;
                 case RenameIndexOperation r: coveredIndexes.Add(r.Name); coveredIndexes.Add(r.NewName); break;
                 case CreateTableOperation t: coveredTables.Add(t.Name); break;
-                case ITableMigrationOperation t: coveredTables.Add(t.Table); break;
+                case DropTableOperation t: coveredTables.Add(t.Name); break;
+                case RenameTableOperation t: coveredTables.Add(t.Name); coveredTables.Add(t.NewName ?? t.Name); break;
+                case RenameColumnOperation c: coveredColumns.Add($"{c.Table}.{c.Name}"); coveredColumns.Add($"{c.Table}.{c.NewName}"); break;
+                case ColumnOperation c: coveredColumns.Add($"{c.Table}.{c.Name}"); break;
+                case DropColumnOperation c: coveredColumns.Add($"{c.Table}.{c.Name}"); break;
             }
         }
 
@@ -429,7 +460,8 @@ internal static partial class SchemaDriftGuard
 
             foreach (var column in table.Columns)
             {
-                if (!facts.Columns.Contains(string.Concat(table.Name, ".", column.Name)))
+                var key = string.Concat(table.Name, ".", column.Name);
+                if (!coveredColumns.Contains(key) && !facts.Columns.Contains(key))
                 {
                     AddUnsafe($"MissingColumn {table.Name}.{column.Name} (falta en la base y ninguna migración la crea)");
                 }
@@ -462,19 +494,36 @@ internal static partial class SchemaDriftGuard
     }
 
     /// <summary>Whether each planned operation is already reflected in the database.</summary>
-    private static Dictionary<PlannedOperation, OperationState> Evaluate(List<PlannedOperation> plan, SchemaFacts facts, HashSet<string> recorded)
+    /// <remarks>
+    /// An operation not reflected yet counts as <see cref="OperationState.Retried"/> only when the guard already applied
+    /// it for this Jellyfin and provider version and the object still looks exactly as the guard left it: applying it
+    /// again would end the same way. If the object changed since (a rollback to an older Jellyfin rebuilt it, someone
+    /// altered it), it is pending again. A drop paired with a create of the same name is part of replacing that index and
+    /// takes the create's state.
+    /// </remarks>
+    private static Dictionary<PlannedOperation, OperationState> Evaluate(List<PlannedOperation> plan, SchemaFacts facts, Dictionary<string, string?> recorded)
     {
+        var creates = new Dictionary<string, PlannedOperation>(StringComparer.Ordinal);
+        foreach (var step in plan)
+        {
+            if (step.Migration is CreateIndexOperation create)
+            {
+                creates.TryAdd(create.Name, step);
+            }
+        }
+
         var states = new Dictionary<PlannedOperation, OperationState>();
         foreach (var step in plan)
         {
+            if (step.Migration is DropIndexOperation drop && creates.ContainsKey(drop.Name))
+            {
+                continue;
+            }
+
             var satisfied = step.Migration switch
             {
                 CreateIndexOperation c => facts.Matches(c),
-
-                // A drop that precedes a create of the same name is done once that create is in place.
-                DropIndexOperation d => plan.Any(p => p.Migration is CreateIndexOperation c && c.Name == d.Name)
-                    ? facts.Matches(plan.Select(p => p.Migration).OfType<CreateIndexOperation>().First(c => c.Name == d.Name))
-                    : !facts.TryGetIndex(d.Name, out _),
+                DropIndexOperation d => !facts.TryGetIndex(d.Name, out _),
                 CreateTableOperation t => facts.Tables.Contains(t.Name),
                 AddColumnOperation a => facts.Columns.Contains(string.Concat(a.Table, ".", a.Name)),
                 EnsureSchemaOperation => true,
@@ -483,7 +532,19 @@ internal static partial class SchemaDriftGuard
 
             states[step] = satisfied
                 ? OperationState.Satisfied
-                : step.Operation.Safe && recorded.Contains(step.Key) ? OperationState.Retried : OperationState.Pending;
+                : step.Operation.Safe && step.Migration is not null
+                    && recorded.TryGetValue(step.Key, out var result)
+                    && string.Equals(result, facts.Fingerprint(step.Migration), StringComparison.Ordinal)
+                    ? OperationState.Retried
+                    : OperationState.Pending;
+        }
+
+        foreach (var step in plan)
+        {
+            if (step.Migration is DropIndexOperation drop && creates.TryGetValue(drop.Name, out var create))
+            {
+                states[step] = states[create];
+            }
         }
 
         return states;
@@ -502,9 +563,9 @@ internal static partial class SchemaDriftGuard
     private static string Key(string sql)
         => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\n', JellyfinVersion, ProviderVersion, sql))))[..32];
 
-    private static async Task<HashSet<string>> ReadRecordedAsync(DbContext context, CancellationToken cancellationToken)
+    private static async Task<Dictionary<string, string?>> ReadRecordedAsync(DbContext context, CancellationToken cancellationToken)
     {
-        var result = new HashSet<string>(StringComparer.Ordinal);
+        var result = new Dictionary<string, string?>(StringComparer.Ordinal);
         var connection = context.Database.GetDbConnection();
         var opened = await OpenAsync(context, connection, cancellationToken).ConfigureAwait(false);
         try
@@ -518,11 +579,12 @@ internal static partial class SchemaDriftGuard
             }
 
             using var read = connection.CreateCommand();
-            read.CommandText = $"SELECT \"OperationHash\" FROM \"{RecordTable}\";";
+            // Through to_jsonb: tables created before the Result column existed have no such column yet.
+            read.CommandText = $"SELECT \"OperationHash\", to_jsonb(r) ->> 'Result' FROM \"{RecordTable}\" r;";
             using var reader = await read.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                result.Add(reader.GetString(0));
+                result[reader.GetString(0)] = await reader.IsDBNullAsync(1, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(1);
             }
 
             return result;
@@ -537,7 +599,7 @@ internal static partial class SchemaDriftGuard
     }
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The SQL is generated by EF Core from Jellyfin's own model, never from user input.")]
-    private static async Task<int> ApplyAsync(DbContext context, List<PlannedOperation> pending, CancellationToken cancellationToken)
+    private static async Task<int> ApplyAsync(DbContext context, List<PlannedOperation> plan, List<PlannedOperation> steps, CancellationToken cancellationToken)
     {
         var connection = context.Database.GetDbConnection();
         var opened = await OpenAsync(context, connection, cancellationToken).ConfigureAwait(false);
@@ -557,41 +619,53 @@ internal static partial class SchemaDriftGuard
                         "JellyfinVersion" text NOT NULL,
                         "ProviderVersion" text NOT NULL,
                         "AppliedAt" timestamptz NOT NULL DEFAULT now());
+                    ALTER TABLE "{RecordTable}" ADD COLUMN IF NOT EXISTS "Result" text;
                     """,
                     cancellationToken).ConfigureAwait(false);
 
                 // Another server may have applied some of the changes while this one waited for the lock.
                 var facts = await SchemaFacts.LoadAsync(context, cancellationToken).ConfigureAwait(false);
-                var states = Evaluate(pending, facts, []);
-                var applied = 0;
-                foreach (var step in pending.Where(p => states[p] != OperationState.Satisfied))
+                var states = Evaluate(plan, facts, await ReadRecordedAsync(context, cancellationToken).ConfigureAwait(false));
+                var done = new List<PlannedOperation>();
+                var replacedDrops = 0;
+                foreach (var step in steps.Where(p => states[p] == OperationState.Pending))
                 {
-                    PostgresLog.Info($"[SchemaDrift] Aplicando {step.Operation.Description}");
-                    if (step.Migration is CreateIndexOperation or DropIndexOperation)
+                    switch (step.Migration)
                     {
-                        // CONCURRENTLY cannot run in a transaction, so each statement commits on its own. CREATE INDEX IF
-                        // NOT EXISTS would keep an index of the same name with another definition, or an invalid one
-                        // left by an interrupted build: drop it first.
-                        if (step.Migration is CreateIndexOperation create && facts.TryGetIndex(create.Name, out _))
-                        {
-                            await ExecuteAsync(connection, null, $"DROP INDEX CONCURRENTLY IF EXISTS {Quote(SchemaFacts.StoredName(create.Name))};", cancellationToken, noTimeout: true).ConfigureAwait(false);
-                        }
+                        // Part of replacing the index: the CreateIndex of the same name builds the new definition first.
+                        case DropIndexOperation drop when plan.Any(p => p.Migration is CreateIndexOperation c && c.Name == drop.Name):
+                            replacedDrops++;
+                            continue;
+                        case CreateIndexOperation create:
+                            PostgresLog.Info($"[SchemaDrift] Aplicando {step.Operation.Description}");
+                            await BuildIndexAsync(connection, create, step.Operation.Sql, facts.TryGetIndex(create.Name, out _), cancellationToken).ConfigureAwait(false);
+                            break;
+                        case DropIndexOperation:
+                            PostgresLog.Info($"[SchemaDrift] Aplicando {step.Operation.Description}");
+                            await ExecuteAsync(connection, null, Concurrently(step.Operation.Sql), cancellationToken, noTimeout: true).ConfigureAwait(false);
+                            break;
+                        default:
+                            PostgresLog.Info($"[SchemaDrift] Aplicando {step.Operation.Description}");
+                            using (var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false))
+                            {
+                                await ExecuteAsync(connection, transaction, step.Operation.Sql, cancellationToken).ConfigureAwait(false);
+                                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                            }
 
-                        await ExecuteAsync(connection, null, Concurrently(step.Operation.Sql), cancellationToken, noTimeout: true).ConfigureAwait(false);
-                        await RecordAsync(connection, null, step, cancellationToken).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-                        await ExecuteAsync(connection, transaction, step.Operation.Sql, cancellationToken).ConfigureAwait(false);
-                        await RecordAsync(connection, transaction, step, cancellationToken).ConfigureAwait(false);
-                        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                            break;
                     }
 
-                    applied++;
+                    done.Add(step);
                 }
 
-                return applied;
+                // What each change left in the catalog: a later check retries it only if that has changed since.
+                facts = await SchemaFacts.LoadAsync(context, cancellationToken).ConfigureAwait(false);
+                foreach (var step in done)
+                {
+                    await RecordAsync(connection, step, facts.Fingerprint(step.Migration!), CancellationToken.None).ConfigureAwait(false);
+                }
+
+                return done.Count + replacedDrops;
             }
             finally
             {
@@ -606,6 +680,44 @@ internal static partial class SchemaDriftGuard
             }
         }
     }
+
+    /// <summary>Builds an index of the model without blocking writes on its table.</summary>
+    /// <remarks>
+    /// An index that exists with another definition is replaced by building the new one under a temporary name and
+    /// swapping it in, so whatever interrupts the build (a cancelled request, a shutdown, an error) the table keeps its
+    /// old index: an interrupted <c>CONCURRENTLY</c> build only leaves an invalid temporary index, which the next attempt
+    /// drops first.
+    /// </remarks>
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The SQL is generated by EF Core from Jellyfin's own model; names are quoted identifiers from the same model.")]
+    private static async Task BuildIndexAsync(DbConnection connection, CreateIndexOperation create, string sql, bool replacing, CancellationToken cancellationToken)
+    {
+        var temporary = Quote(TemporaryIndexName(create.Name));
+        await ExecuteAsync(connection, null, $"DROP INDEX CONCURRENTLY IF EXISTS {temporary};", cancellationToken, noTimeout: true).ConfigureAwait(false);
+        if (!replacing)
+        {
+            await ExecuteAsync(connection, null, Concurrently(sql), cancellationToken, noTimeout: true).ConfigureAwait(false);
+            return;
+        }
+
+        var modelName = Quote(create.Name);
+        var at = sql.IndexOf(modelName, StringComparison.Ordinal);
+        if (at < 0)
+        {
+            throw new InvalidOperationException($"El SQL del índice no contiene su nombre {modelName}: {sql}");
+        }
+
+        await ExecuteAsync(connection, null, Concurrently(string.Concat(sql.AsSpan(0, at), temporary, sql.AsSpan(at + modelName.Length))), cancellationToken, noTimeout: true).ConfigureAwait(false);
+
+        // The swap itself must not stop halfway: after the drop, the index only exists under its temporary name.
+        await ExecuteAsync(connection, null, $"DROP INDEX CONCURRENTLY IF EXISTS {Quote(SchemaFacts.StoredName(create.Name))};", CancellationToken.None, noTimeout: true).ConfigureAwait(false);
+        await ExecuteAsync(connection, null, $"ALTER INDEX {temporary} RENAME TO {Quote(SchemaFacts.StoredName(create.Name))};", CancellationToken.None).ConfigureAwait(false);
+    }
+
+    /// <summary>Name under which a replacement index is built: short, and the same on every attempt for that index.</summary>
+    /// <param name="name">Index name in the model.</param>
+    /// <returns>The temporary name.</returns>
+    internal static string TemporaryIndexName(string name)
+        => "IX_drift_" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(name)))[..16];
 
     /// <summary>Takes the session lock that lets one server at a time apply changes.</summary>
     /// <remarks>
@@ -638,19 +750,20 @@ internal static partial class SchemaDriftGuard
         }
     }
 
-    private static async Task RecordAsync(DbConnection connection, DbTransaction? transaction, PlannedOperation step, CancellationToken cancellationToken)
+    private static async Task RecordAsync(DbConnection connection, PlannedOperation step, string result, CancellationToken cancellationToken)
     {
         using var record = connection.CreateCommand();
-        record.Transaction = transaction;
         record.CommandText = $"""
-            INSERT INTO "{RecordTable}" ("OperationHash", "Description", "Sql", "JellyfinVersion", "ProviderVersion")
-            VALUES (@hash, @description, @sql, @jellyfin, @provider) ON CONFLICT DO NOTHING;
+            INSERT INTO "{RecordTable}" ("OperationHash", "Description", "Sql", "JellyfinVersion", "ProviderVersion", "Result")
+            VALUES (@hash, @description, @sql, @jellyfin, @provider, @result)
+            ON CONFLICT ("OperationHash") DO UPDATE SET "Result" = EXCLUDED."Result", "AppliedAt" = now();
             """;
         AddParameter(record, "hash", step.Key);
         AddParameter(record, "description", step.Operation.Description);
         AddParameter(record, "sql", step.Operation.Sql);
         AddParameter(record, "jellyfin", JellyfinVersion);
         AddParameter(record, "provider", ProviderVersion);
+        AddParameter(record, "result", result);
         await record.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 

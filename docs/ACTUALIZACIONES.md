@@ -32,30 +32,38 @@ Detalles de la aplicación:
 - Las operaciones aditivas solo se aplican si **todas** las que faltan lo son.
 - Los índices se crean y eliminan con **`CONCURRENTLY`**, así que `BaseItems` sigue aceptando escrituras mientras
   tanto, también en bibliotecas grandes. Como `CONCURRENTLY` no admite transacciones, cada sentencia se confirma
-  por separado; tablas y columnas se aplican cada una en su transacción. Una construcción interrumpida deja un
-  índice inválido (`indisvalid = false`): cuenta como pendiente y se reconstruye en la comprobación siguiente.
+  por separado; tablas y columnas se aplican cada una en su transacción.
+- **Un índice con otra definición se sustituye sin quedarse nunca sin él:** el nuevo se construye con un nombre
+  temporal (`IX_drift_<hash>`), después se elimina el antiguo y el nuevo toma su nombre. Si algo interrumpe la
+  construcción (una petición cancelada, el apagado del servidor, un error), la tabla conserva el índice antiguo y
+  solo queda un índice temporal inválido, que el intento siguiente elimina. Un índice inválido (`indisvalid =
+  false`) cuenta como pendiente y se reconstruye.
 - Un bloqueo consultivo de sesión (`pg_try_advisory_lock`, sondeado cada segundo) deja aplicar cambios a un único
   servidor a la vez. No se espera con `pg_advisory_lock`: una sesión esperando dentro de una sentencia retiene una
   instantánea, y `CREATE INDEX CONCURRENTLY` espera a que terminen todas las anteriores. Con el bloqueo tomado se
   vuelve a leer el catálogo, por si otro servidor ya aplicó parte de los cambios.
 - **Qué está hecho se lee siempre del catálogo** (`pg_index`, `pg_attribute`), nunca de un registro propio: un
-  índice cuenta como aplicado solo si existe con el mismo nombre, tabla, unicidad, columnas y filtro. En los
+  índice cuenta como aplicado solo si existe, es válido y tiene el mismo nombre, tabla, unicidad, columnas clave,
+  columnas `INCLUDE` y filtro (los literales del filtro se comparan tal cual). En los
   arranques siguientes el informe dice `AlreadyHealed` y no se repite nada.
 - Además de la diferencia snapshot/modelo, **cada índice del modelo se compara con su definición en la base**. Así
   se detecta un índice que quedó con otra definición, por ejemplo porque una migración idempotente lo encontró ya
-  creado. Se reconstruye (`DROP` + `CREATE`). Una tabla o columna del modelo que falta sin que ninguna migración la
-  explique se informa como error.
-- Cada operación aplicada queda anotada en `__PostgresSchemaDrift`, con su SQL y las versiones de Jellyfin y del
-  proveedor. Es un registro de auditoría. También evita reconstruir en bucle: si una operación ya se aplicó en esta
-  misma versión de Jellyfin y del proveedor y la base sigue sin coincidir, se informa (`Detected`) en lugar de
-  repetirse en cada arranque.
+  creado. Se reconstruye. Una tabla o columna del modelo que falta sin que ninguna migración la explique se informa
+  como error. Lo que la diferencia ya explica se excluye por objeto (esa columna, ese índice), no por tabla.
+- Cada operación aplicada queda anotada en `__PostgresSchemaDrift`, con su SQL, las versiones de Jellyfin y del
+  proveedor y cómo quedó el objeto en el catálogo. Es un registro de auditoría. También evita reconstruir en bucle:
+  si una operación ya se aplicó en esta misma versión y el objeto sigue exactamente como lo dejó, pero no coincide
+  con el modelo, se informa (`Detected`) en lugar de repetirse en cada arranque. Si el objeto cambió desde entonces
+  (por ejemplo, al volver a una versión anterior de Jellyfin y regresar después), se aplica de nuevo.
 
 **Cuándo se ejecuta:**
-1. **En `Initialise`, antes de las migraciones de Jellyfin.** Una migración de código nueva de Jellyfin puede
-   necesitar ya la columna. Si el proveedor tiene migraciones propias pendientes, la comprobación se aplaza
-   (`Deferred`).
-2. **Al arrancar los servicios** (`SchemaDriftStartupService`), cuando Jellyfin ya aplicó todas las migraciones.
-   Solo se ejecuta si la primera se aplazó o falló.
+1. **En `Initialise`, antes de las migraciones de Jellyfin.** Aplica tablas y columnas, porque una migración de
+   código nueva de Jellyfin puede necesitarlas. Los índices los deja para el paso 2 (`Deferred`): una construcción
+   con `CONCURRENTLY` espera a todas las transacciones anteriores de la base, sin límite, y aquí retendría el
+   arranque del servidor. Si el proveedor tiene migraciones propias pendientes, toda la comprobación se aplaza.
+2. **En segundo plano al arrancar los servicios** (`SchemaDriftStartupService`), cuando Jellyfin ya aplicó todas
+   las migraciones. Solo se ejecuta si la primera se aplazó o falló, y no retrasa el arranque. Al detener el
+   servidor se cancela sin dejar ninguna tabla sin sus índices.
 
 **Si una versión futura del proveedor trae la migración real** (por ejemplo, al subir la versión base): la
 migración repite operaciones que ya están hechas. Para que no falle con "ya existe", el proveedor genera el SQL de migraciones en forma idempotente

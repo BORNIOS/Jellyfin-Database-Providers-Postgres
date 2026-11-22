@@ -29,7 +29,7 @@ Los dos cambios llegan en **12.2**; 12.3 y 12.4 no cambian nada más que afecte 
 
 | Cambio en Jellyfin | Efecto en PostgreSQL |
 | --- | --- |
-| `BaseItemConfiguration`: los índices `IX_BaseItems_OwnerId` e `IX_BaseItems_ExtraType_OwnerId` pasan a ser parciales (`MakeOwnerIdIndexesPartial`, solo SQLite en el núcleo) | La comprobación de deriva del esquema los recrea con `WHERE ... IS NOT NULL` (con `CONCURRENTLY`) en el primer arranque con 12.2+. No hay migración EF: en 12.1 el modelo no los espera parciales. |
+| `BaseItemConfiguration`: los índices `IX_BaseItems_OwnerId` e `IX_BaseItems_ExtraType_OwnerId` pasan a ser parciales (`MakeOwnerIdIndexesPartial`, solo SQLite en el núcleo) | La comprobación de deriva del esquema los recrea con `WHERE ... IS NOT NULL` (con `CONCURRENTLY`, en segundo plano) en el primer arranque con 12.2+. No hay migración EF: en 12.1 el modelo no los espera parciales. |
 | `IJellyfinDatabaseProvider.RefreshStatistics` (miembro nuevo con implementación vacía por defecto), invocado tras cada escaneo de biblioteca | Implementado con `ANALYZE` sobre las tablas del modelo de Jellyfin. Como el paquete se compila contra 12.1, donde el miembro no existe, es un método `public virtual` y la clase no es `sealed`: así el runtime de 12.2+ lo asocia al miembro de la interfaz. En 12.1 nadie lo llama. |
 | Migraciones de código de 12.4 `HarmonizeConflictingUserData`, `FixNullEncoderPreset` y `MigrateRatingLevels` (renombrada, se vuelve a ejecutar) | Funcionan sin cambios: usan EF/LINQ o XML. Las dos marcadas con `JellyfinMigrationBackup` disparan `MigrationBackupFast`, es decir `pg_dump`: configurar `PgBinPath` o tener las herramientas en PATH. |
 | `EnsureExistingDatabaseAsync`: el servidor se niega a arrancar si la base no existe o no tiene historial | No afecta a una base PostgreSQL ya activa. Activar PostgreSQL sobre una base vacía sigue sin ser válido: importar primero. |
@@ -44,8 +44,9 @@ comprobación de deriva completa el esquema en el arranque siguiente a la activa
 1. `pg_dump` de la base y copia de la configuración de Jellyfin.
 2. Sustituir las tres DLL del plugin juntas por las de 3.2.0.0. Se puede hacer antes o después de actualizar
    Jellyfin: el mismo paquete funciona en las dos versiones.
-3. Al primer arranque con 12.2 o posterior, la comprobación de deriva del esquema deja los dos índices parciales
-   (`Schema drift check (Healed)` en el log; en los arranques siguientes, `AlreadyHealed`). Con 12.4, Jellyfin
+3. Al primer arranque con 12.2 o posterior, la comprobación de deriva del esquema deja los dos índices parciales,
+   en segundo plano en cuanto termina el arranque (`Schema drift check (Deferred)` y después `(Healed)` en el log;
+   en los arranques siguientes, `AlreadyHealed`). Con 12.4, Jellyfin
    además hace el respaldo `pg_dump` en `{DataPath}/postgres-migration-backups` y aplica sus tres migraciones de
    código. En una base de ~110 000 elementos el arranque completo tarda unos segundos.
 

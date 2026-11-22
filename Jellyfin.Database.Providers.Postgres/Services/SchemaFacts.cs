@@ -21,6 +21,9 @@ internal sealed partial class SchemaFacts
     // PostgreSQL truncates identifiers to NAMEDATALEN - 1 bytes; Jellyfin has index names longer than that.
     private const int MaxIdentifierBytes = 63;
 
+    // Npgsql's annotation for the INCLUDE columns of an index (NpgsqlAnnotationNames.IndexInclude, internal API).
+    private const string IncludeAnnotation = "Npgsql:IndexInclude";
+
     private SchemaFacts(HashSet<string> tables, HashSet<string> columns, Dictionary<string, IndexFact> indexes)
     {
         Tables = tables;
@@ -81,9 +84,15 @@ internal sealed partial class SchemaFacts
             {
                 command.CommandText = """
                     SELECT i.relname, t.relname, x.indisunique, pg_get_expr(x.indpred, x.indrelid), x.indisvalid,
+                           ARRAY(SELECT COALESCE(a.attname, '(expr)')
+                                 FROM unnest(x.indkey) WITH ORDINALITY AS k(attnum, ord)
+                                 LEFT JOIN pg_attribute a ON a.attrelid = x.indrelid AND a.attnum = k.attnum AND k.attnum > 0
+                                 WHERE k.ord <= x.indnkeyatts
+                                 ORDER BY k.ord)::text[],
                            ARRAY(SELECT a.attname
                                  FROM unnest(x.indkey) WITH ORDINALITY AS k(attnum, ord)
                                  JOIN pg_attribute a ON a.attrelid = x.indrelid AND a.attnum = k.attnum
+                                 WHERE k.ord > x.indnkeyatts
                                  ORDER BY k.ord)::text[]
                     FROM pg_index x
                     JOIN pg_class i ON i.oid = x.indexrelid
@@ -96,7 +105,8 @@ internal sealed partial class SchemaFacts
                 {
                     var predicate = await reader.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(3);
                     var keyColumns = await reader.GetFieldValueAsync<string[]>(5, cancellationToken).ConfigureAwait(false);
-                    indexes[reader.GetString(0)] = new IndexFact(reader.GetString(1), reader.GetBoolean(2), keyColumns, predicate, reader.GetBoolean(4));
+                    var included = await reader.GetFieldValueAsync<string[]>(6, cancellationToken).ConfigureAwait(false);
+                    indexes[reader.GetString(0)] = new IndexFact(reader.GetString(1), reader.GetBoolean(2), keyColumns, predicate, reader.GetBoolean(4), included);
                 }
             }
         }
@@ -142,6 +152,7 @@ internal sealed partial class SchemaFacts
     }
 
     /// <summary>Normalizes an index predicate for comparison: PostgreSQL adds parentheses and casts to what it stores.</summary>
+    /// <remarks>String literals are kept as they are: <c>'Movie'</c> and <c>'movie'</c> are different filters.</remarks>
     /// <param name="predicate">Predicate as written in the model or as returned by <c>pg_get_expr</c>.</param>
     /// <returns>The normalized text.</returns>
     internal static string NormalizePredicate(string? predicate)
@@ -151,9 +162,45 @@ internal sealed partial class SchemaFacts
             return string.Empty;
         }
 
-        var text = Cast().Replace(predicate, string.Empty);
-        text = Noise().Replace(text, string.Empty);
-        return text.ToUpperInvariant();
+        var result = new StringBuilder(predicate.Length);
+        var position = 0;
+        foreach (Match literal in StringLiteral().Matches(predicate))
+        {
+            result.Append(NormalizeOutsideLiterals(predicate[position..literal.Index])).Append(literal.Value);
+            position = literal.Index + literal.Length;
+        }
+
+        return result.Append(NormalizeOutsideLiterals(predicate[position..])).ToString();
+    }
+
+    /// <summary>
+    /// What the catalog shows for the object an operation targets. The guard records it after applying the operation,
+    /// so it can tell "applied, and the database still looks as the guard left it" (not worth retrying) from "changed
+    /// since", for example by a rollback to an older Jellyfin.
+    /// </summary>
+    /// <param name="operation">Operation.</param>
+    /// <returns>A short description of the object's current state.</returns>
+    internal string Fingerprint(MigrationOperation operation)
+    {
+        var indexName = operation switch
+        {
+            CreateIndexOperation c => c.Name,
+            DropIndexOperation d => d.Name,
+            _ => null,
+        };
+        if (indexName is not null)
+        {
+            return TryGetIndex(indexName, out var index)
+                ? string.Join('|', index.Table, index.IsUnique, string.Join(',', index.Columns), string.Join(',', index.Included ?? []), NormalizePredicate(index.Predicate), index.IsValid)
+                : "-";
+        }
+
+        return operation switch
+        {
+            CreateTableOperation t => Tables.Contains(t.Name) ? "+" : "-",
+            AddColumnOperation a => Columns.Contains(string.Concat(a.Table, ".", a.Name)) ? "+" : "-",
+            _ => string.Empty,
+        };
     }
 
     /// <summary>Finds an index by its model name.</summary>
@@ -172,7 +219,11 @@ internal sealed partial class SchemaFacts
             && string.Equals(index.Table, operation.Table, StringComparison.Ordinal)
             && index.IsUnique == operation.IsUnique
             && index.Columns.SequenceEqual(operation.Columns, StringComparer.Ordinal)
+            && (index.Included ?? []).SequenceEqual(operation[IncludeAnnotation] as string[] ?? [], StringComparer.Ordinal)
             && string.Equals(NormalizePredicate(index.Predicate), NormalizePredicate(operation.Filter), StringComparison.Ordinal);
+
+    private static string NormalizeOutsideLiterals(string text)
+        => Noise().Replace(Cast().Replace(text, string.Empty), string.Empty).ToUpperInvariant();
 
     // Casts PostgreSQL adds when it stores an expression: 'x'::text, 0::bigint, NULL::character varying.
     [GeneratedRegex("""::(?:"[^"]+"|[a-z_][a-z0-9_]*(?: [a-z_][a-z0-9_]*)*)(?:\[\])?""", RegexOptions.CultureInvariant)]
@@ -181,14 +232,18 @@ internal sealed partial class SchemaFacts
     [GeneratedRegex(@"[\s()]+", RegexOptions.CultureInvariant)]
     private static partial Regex Noise();
 
+    [GeneratedRegex("'(?:[^']|'')*'", RegexOptions.CultureInvariant)]
+    private static partial Regex StringLiteral();
+
     /// <summary>An index as the catalog describes it.</summary>
     /// <param name="Table">Table it belongs to.</param>
     /// <param name="IsUnique">Whether it is unique.</param>
-    /// <param name="Columns">Key columns in order (empty for expression indexes).</param>
+    /// <param name="Columns">Key columns in order; an expression shows as <c>(expr)</c>, which no model column matches.</param>
     /// <param name="Predicate">Partial index predicate, or <see langword="null"/>.</param>
     /// <param name="IsValid">
     /// <see langword="false"/> for an index the planner ignores: what a failed or interrupted
     /// <c>CREATE INDEX CONCURRENTLY</c> leaves behind.
     /// </param>
-    internal sealed record IndexFact(string Table, bool IsUnique, IReadOnlyList<string> Columns, string? Predicate, bool IsValid = true);
+    /// <param name="Included">Non-key <c>INCLUDE</c> columns, or <see langword="null"/> for none.</param>
+    internal sealed record IndexFact(string Table, bool IsUnique, IReadOnlyList<string> Columns, string? Predicate, bool IsValid = true, IReadOnlyList<string>? Included = null);
 }
