@@ -38,6 +38,7 @@ automatic health check, scheduled maintenance and optional JellyTrend integratio
 | [What is new in 3.0.0](docs/whats-new-3.0.0.en.md) · [ES](docs/novedades-3.0.0.md) | Every change in 3.0.0 vs 2.0.1 |
 | [Jellyfin 12.1 adaptation](docs/JELLYFIN-12.1.md) | Technical notes and how to run the test suite |
 | [Jellyfin 12.4](docs/JELLYFIN-12.4.md) | What changes in 12.4 and how to upgrade from 12.1 (Spanish) |
+| [Upgrading Jellyfin before the provider](docs/ACTUALIZACIONES.md) | Server-side schema drift repair and an automatic PR for every new Jellyfin release (Spanish) |
 | [Automated verification](docs/VERIFICACION-RESUMEN.md) | Executive summary generated from the real suite |
 | [Developer integration](docs/developer-integration.en.md) · [ES](docs/integracion-desarrolladores.md) | Public contract, private schemas, migrations and managed maintenance |
 

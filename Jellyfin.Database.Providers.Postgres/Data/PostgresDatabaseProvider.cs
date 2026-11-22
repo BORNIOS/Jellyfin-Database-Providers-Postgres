@@ -4,17 +4,20 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.DbConfiguration;
+using Jellyfin.Database.Implementations.Locking;
 using Jellyfin.Database.Providers.Postgres.Logging;
 using Jellyfin.Database.Providers.Postgres.Services;
 using Jellyfin.Database.Providers.Postgres.Services.Models;
 using MediaBrowser.Common.Configuration;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
@@ -101,6 +104,9 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
     // Ensures the unobserved task handler is attached only once.
     private static int _unobservedHandlerRegistered;
 
+    // Set once the early schema drift check has run in this process (Initialise runs several times).
+    private static int _schemaDriftChecked;
+
     // ── Constructor ───────────────────────────────────────────────────────────
 
     /// <summary>
@@ -183,11 +189,17 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
                 EfCoreDatabaseDiagnostics.Write,
                 (eventId, level) => level >= LogLevel.Information
                     && !(eventId.Name?.Contains("Command", StringComparison.Ordinal) ?? false))
-            .AddInterceptors(BuildInterceptors());
+            .AddInterceptors(BuildInterceptors())
+            // Lets a provider migration run over objects SchemaDriftGuard already created for a newer Jellyfin.
+            .ReplaceService<IMigrationsSqlGenerator, IdempotentMigrationsSqlGenerator>();
 
         // SQLite-compatibility objects (min/max over uuid) have to exist before Jellyfin runs its
         // first query, otherwise home-page queries fail with 'no existe la función min(uuid)'.
         SqliteCompatibilityBootstrap.Ensure(tunedConnStr);
+
+        // Before Jellyfin runs its own migrations: a code migration of a newer Jellyfin may already need a column the
+        // provider has no migration for yet.
+        CheckSchemaDriftOnce(tunedConnStr, commandTimeout, config);
 
         // Run the health check in background exactly once, even if Initialise is called
         // multiple times (EF Core can call it more than once during startup).
@@ -422,6 +434,40 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         }
     }
 
+    private void CheckSchemaDriftOnce(string connectionString, int commandTimeout, PluginConfiguration? config)
+    {
+        if (Interlocked.CompareExchange(ref _schemaDriftChecked, 1, 0) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var mode = SchemaDriftGuard.ResolveMode(
+                config?.SchemaDriftMode ?? SchemaDriftGuard.ReadConfiguredMode(_applicationPaths?.PluginConfigurationsPath));
+            var options = new DbContextOptionsBuilder<JellyfinDbContext>()
+                .UseNpgsql(connectionString, npgsql => ConfigureNpgsql(npgsql, commandTimeout))
+                .ReplaceService<IMigrationsSqlGenerator, IdempotentMigrationsSqlGenerator>()
+                .Options;
+
+            // Initialise is synchronous; Task.Run keeps the async EF calls off any captured context.
+            Task.Run(async () =>
+            {
+                using var context = new JellyfinDbContext(
+                    options,
+                    NullLogger<JellyfinDbContext>.Instance,
+                    this,
+                    new NoLockBehavior(NullLogger<NoLockBehavior>.Instance));
+                await SchemaDriftGuard.RunAsync(context, mode, logger: _logger).ConfigureAwait(false);
+            }).GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            // Never block startup on the check itself.
+            Logging.PostgresLog.Error("[SchemaDrift] No se pudo comprobar el esquema al iniciar", ex);
+        }
+    }
+
     private IInterceptor[] BuildInterceptors()
     {
         var interceptors = new List<IInterceptor>
@@ -506,6 +552,19 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
                 }
             }
 
+            // A table of the model can be missing (schema drift reported but not applied): one missing relation would
+            // fail the whole ANALYZE statement after every library scan, so only existing tables are analyzed.
+            var requested = tables.ToArray();
+            var existing = await context.Database
+                .SqlQuery<string>($"SELECT t AS \"Value\" FROM unnest({requested}) AS t WHERE to_regclass(t) IS NOT NULL")
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (existing.Count < requested.Length)
+            {
+                Logging.PostgresLog.Warn($"[Analyze] Tablas del modelo que no existen en la base (deriva del esquema sin aplicar): {string.Join(", ", requested.Except(existing, StringComparer.Ordinal))}");
+            }
+
+            tables = new SortedSet<string>(existing, StringComparer.Ordinal);
             if (tables.Count == 0)
             {
                 return;

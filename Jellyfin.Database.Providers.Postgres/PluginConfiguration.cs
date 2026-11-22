@@ -1,3 +1,4 @@
+using Jellyfin.Database.Providers.Postgres.Services.Models;
 using MediaBrowser.Model.Plugins;
 
 namespace Jellyfin.Database.Providers.Postgres;
@@ -121,4 +122,12 @@ public class PluginConfiguration : BasePluginConfiguration
     /// while diagnosing a specific failure (mostly unique/PK violations).
     /// </summary>
     public bool LogCommandParameters { get; set; }
+
+    /// <summary>
+    /// Gets or sets what the provider does at startup when the running Jellyfin has schema changes the provider has
+    /// no migration for (Jellyfin upgraded before the provider). <see cref="SchemaDriftMode.Heal"/> applies them when
+    /// every change is additive (indexes, new tables, nullable columns); anything else is only reported. The
+    /// environment variable <c>JELLYFIN_PG_SCHEMA_DRIFT</c> (<c>heal</c>, <c>report</c>, <c>off</c>) overrides it.
+    /// </summary>
+    public SchemaDriftMode SchemaDriftMode { get; set; } = SchemaDriftMode.Heal;
 }
