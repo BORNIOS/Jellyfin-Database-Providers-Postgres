@@ -284,6 +284,7 @@ public sealed class SchemaDriftGuardTests
         await using var scratch = await TestEnvironment.ScratchDatabaseScope.CreateAsync();
         var connectionString = scratch.Database.ConnectionString;
         using var context = await MigratedContextAsync(connectionString);
+        var indexesBefore = await IndexDefinitionsAsync(connectionString);
 
         var report = await SchemaDriftGuard.RunAsync(context, SchemaDriftMode.Heal, TargetModelOf(context, "_InitialCreate"));
 
@@ -291,7 +292,7 @@ public sealed class SchemaDriftGuardTests
         Assert.Contains(report.Operations, o => !o.Safe);
 
         // "Applied" reports what the catalog shows; what matters is that the guard changed nothing.
-        Assert.Equal(0, await PartialOwnerIndexesAsync(connectionString));
+        Assert.Equal(indexesBefore, await IndexDefinitionsAsync(connectionString));
         Assert.Equal(0, await ScalarAsync(connectionString, $"SELECT COUNT(*) FROM pg_class WHERE relname = '{SchemaDriftGuard.RecordTable}';"));
     }
 
@@ -415,6 +416,14 @@ public sealed class SchemaDriftGuardTests
             DROP INDEX "IX_BaseItems_ParentId";
             CREATE INDEX "IX_BaseItems_ParentId" ON "BaseItems" ("ParentId") WHERE "ParentId" IS NULL;
             """);
+
+    private static async Task<string> IndexDefinitionsAsync(string connectionString)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand("SELECT string_agg(indexdef, E'\\n' ORDER BY indexname) FROM pg_indexes WHERE schemaname = 'public';", connection);
+        return (string)(await command.ExecuteScalarAsync() ?? string.Empty);
+    }
 
     private static Task<long> PlainValidParentIdIndexAsync(string connectionString)
         => ScalarAsync(
