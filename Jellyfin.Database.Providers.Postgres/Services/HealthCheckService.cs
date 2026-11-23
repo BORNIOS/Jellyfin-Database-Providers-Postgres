@@ -85,6 +85,7 @@ public sealed partial class HealthCheckService
         findings.AddRange(await analyzeTask.ConfigureAwait(false));
         findings.AddRange(await unusedIndexesTask.ConfigureAwait(false));
         findings.AddRange(await slowQueriesTask.ConfigureAwait(false));
+        findings.AddRange(SchemaDriftGuard.ToFindings());
 
         var overall = WorstSeverity(findings);
         sw.Stop();

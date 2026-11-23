@@ -136,7 +136,7 @@ public sealed class MigrationCodeMigrationsTests
 
     private static JellyfinDbContext CreateContext(string connectionString)
         => new(
-            new DbContextOptionsBuilder<JellyfinDbContext>()
+            PostgresDatabaseProvider.AllowModelOfNewerJellyfin(new DbContextOptionsBuilder<JellyfinDbContext>())
                 .UseNpgsql(connectionString, pg => pg.MigrationsAssembly(typeof(PostgresDatabaseProvider).Assembly.FullName))
                 .Options,
             NullLogger<JellyfinDbContext>.Instance,

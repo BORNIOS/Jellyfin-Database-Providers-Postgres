@@ -32,6 +32,21 @@ internal static class TestEnvironment
 
     internal static string PluginSourceDirectory => Path.Combine(RepositoryRoot, "Jellyfin.Database.Providers.Postgres");
 
+    /// <summary>Gets the Jellyfin release the provider is compiled against.</summary>
+    internal static Version JellyfinBuildVersion
+        => typeof(PostgresDatabaseProvider).Assembly.GetReferencedAssemblies()
+            .Single(a => a.Name == typeof(JellyfinDbContext).Assembly.GetName().Name)
+            .Version ?? new Version();
+
+    /// <summary>Gets the Jellyfin release the tests run on (<c>JellyfinTestVersion</c> in the test project).</summary>
+    internal static Version JellyfinRuntimeVersion => typeof(JellyfinDbContext).Assembly.GetName().Version ?? new Version();
+
+    /// <summary>
+    /// Gets a value indicating whether the tests run on a newer Jellyfin than the provider is built for: the situation
+    /// of every server after 12.1, where model changes without a provider migration reach the schema drift guard.
+    /// </summary>
+    internal static bool RuntimeIsNewerThanBuild => JellyfinRuntimeVersion > JellyfinBuildVersion;
+
     /// <summary>
     /// Builds the context Jellyfin itself uses, so the model under test is the server's own one.
     /// </summary>
@@ -39,7 +54,7 @@ internal static class TestEnvironment
     /// <returns>The context.</returns>
     internal static JellyfinDbContext CreateModelContext(string connectionString = "Host=localhost;Database=unused;Username=unused")
         => new(
-            new DbContextOptionsBuilder<JellyfinDbContext>()
+            PostgresDatabaseProvider.AllowModelOfNewerJellyfin(new DbContextOptionsBuilder<JellyfinDbContext>())
                 .UseNpgsql(connectionString, pg => pg.MigrationsAssembly(typeof(PostgresDatabaseProvider).Assembly.FullName))
                 .Options,
             NullLogger<JellyfinDbContext>.Instance,

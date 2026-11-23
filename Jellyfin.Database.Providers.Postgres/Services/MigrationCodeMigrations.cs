@@ -30,7 +30,7 @@ internal static class MigrationCodeMigrations
                 if (!columns.Contains(column.Name, StringComparer.OrdinalIgnoreCase))
                 {
                     throw new InvalidOperationException(
-                        $"SQLite no tiene {table.Name}.{column.Name}. Actualiza y arranca Jellyfin 12.1 con SQLite antes de importar a PostgreSQL.");
+                        $"SQLite no tiene {table.Name}.{column.Name}. Actualiza y arranca Jellyfin 12 con SQLite antes de importar a PostgreSQL.");
                 }
             }
         }

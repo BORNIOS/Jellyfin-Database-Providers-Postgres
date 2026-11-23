@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Jellyfin.Database.Providers.Postgres.Services;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
 
@@ -11,7 +12,7 @@ namespace Jellyfin.Database.Providers.Postgres.Tests;
 public sealed partial class SchemaAuditTests
 {
     // Objects the plugin uses that are not part of Jellyfin's EF model (EF Core bookkeeping).
-    private static readonly string[] BookkeepingTables = ["__EFMigrationsHistory", "__EFMigrationsLock"];
+    private static readonly string[] BookkeepingTables = ["__EFMigrationsHistory", "__EFMigrationsLock", "__PostgresSchemaDrift"];
 
     // Directories of the plugin whose raw SQL does not target the live schema. Paths use forward
     // slashes and the file path is normalised before comparing, so Windows and Linux behave the same.
@@ -69,14 +70,24 @@ public sealed partial class SchemaAuditTests
     }
 
     /// <summary>
-    /// The EF snapshot has to describe the model Jellyfin 12.1 ships, otherwise the next migration
-    /// generates SQL for a schema the server does not have.
+    /// The EF snapshot has to describe the model of the Jellyfin release the plugin is built for, otherwise the next
+    /// migration generates SQL for a schema the server does not have. On a newer release the provider has no migration
+    /// for that release's model changes and relies on the schema drift guard, so every difference has to be one the
+    /// guard applies on its own; a failure here means the newer release needs a provider build with a migration.
     /// </summary>
     [Fact]
     public void SnapshotMatchesTheJellyfinModel()
     {
         using var context = TestEnvironment.CreateModelContext();
-        Assert.False(context.Database.HasPendingModelChanges());
+        if (!TestEnvironment.RuntimeIsNewerThanBuild)
+        {
+            Assert.False(context.Database.HasPendingModelChanges());
+            return;
+        }
+
+        Assert.All(
+            SchemaDriftGuard.ComputeDifferences(context),
+            operation => Assert.True(SchemaDriftGuard.IsSafe(operation), $"Jellyfin {TestEnvironment.JellyfinRuntimeVersion}: {SchemaDriftGuard.Describe(operation)}"));
     }
 
     /// <summary>

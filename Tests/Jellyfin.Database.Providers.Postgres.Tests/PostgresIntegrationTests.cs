@@ -388,12 +388,46 @@ public sealed class PostgresIntegrationTests
             CancellationToken.None));
     }
 
+    /// <summary>
+    /// From Jellyfin 12.2 on the server asks the provider to refresh the planner statistics after every library scan.
+    /// The method is called directly here, so it is covered whatever Jellyfin release the tests run on.
+    /// </summary>
+    [SkippableFact]
+    public async Task StatisticsRefreshAnalyzesJellyfinTables()
+    {
+        RequirePostgres();
+        await using var scratch = await Scratch.CreateAsync();
+
+        using (var context = CreateContext(scratch.Database.ConnectionString, new Jellyfin121MigrationInterceptor()))
+        {
+            await context.Database.MigrateAsync();
+        }
+
+        await using var pg = new NpgsqlConnection(scratch.Database.ConnectionString);
+        await pg.OpenAsync();
+
+        var provider = new PostgresDatabaseProvider(null, null)
+        {
+            DbContextFactory = new ContextFactory(() => CreateContext(scratch.Database.ConnectionString)),
+        };
+        await provider.RefreshStatistics(CancellationToken.None);
+
+        Assert.Equal(
+            0,
+            await ScalarAsync(
+                pg,
+                """
+                SELECT COUNT(*) FROM pg_stat_user_tables
+                WHERE relname IN ('BaseItems', 'UserData', 'ItemValues', 'Users') AND last_analyze IS NULL;
+                """));
+    }
+
     private static void RequirePostgres()
         => Skip.IfNot(TestEnvironment.PostgresAvailable, $"{TestEnvironment.ConnectionVariable} is not set; skipping PostgreSQL integration tests.");
 
     private static JellyfinDbContext CreateContext(string connectionString, params IInterceptor[] interceptors)
     {
-        var builder = new DbContextOptionsBuilder<JellyfinDbContext>()
+        var builder = PostgresDatabaseProvider.AllowModelOfNewerJellyfin(new DbContextOptionsBuilder<JellyfinDbContext>())
             .UseNpgsql(connectionString, pg => pg.MigrationsAssembly(typeof(PostgresDatabaseProvider).Assembly.FullName));
         if (interceptors.Length > 0)
         {
@@ -467,5 +501,11 @@ public sealed class PostgresIntegrationTests
             await using var drop = new NpgsqlCommand($"DROP DATABASE IF EXISTS \"{Database.Name}\" WITH (FORCE)", admin);
             await drop.ExecuteNonQueryAsync();
         }
+    }
+
+    /// <summary>Hands out a fresh context per call, the way Jellyfin's pooled factory does.</summary>
+    private sealed class ContextFactory(Func<JellyfinDbContext> create) : IDbContextFactory<JellyfinDbContext>
+    {
+        public JellyfinDbContext CreateDbContext() => create();
     }
 }

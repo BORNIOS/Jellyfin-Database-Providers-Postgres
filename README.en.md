@@ -16,7 +16,7 @@ automatic health check, scheduled maintenance and optional JellyTrend integratio
 
 [![Last Commit](https://img.shields.io/github/last-commit/BORNIOS/Jellyfin-Database-Providers-Postgres?style=flat-square&color=00A4DC)](https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/commits/main)
 [![CI Build](https://img.shields.io/github/actions/workflow/status/BORNIOS/Jellyfin-Database-Providers-Postgres/build.yaml?style=flat-square&color=00A4DC&label=CI)](https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/actions)
-[![Jellyfin](https://img.shields.io/badge/Jellyfin-12.1.x-00A4DC?style=flat-square&logo=jellyfin&logoColor=white)](https://jellyfin.org)
+[![Jellyfin](https://img.shields.io/badge/Jellyfin-12.1--12.4-00A4DC?style=flat-square&logo=jellyfin&logoColor=white)](https://jellyfin.org)
 [![Release](https://img.shields.io/github/v/release/BORNIOS/Jellyfin-Database-Providers-Postgres?style=flat-square&color=00A4DC)](https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/BORNIOS/Jellyfin-Database-Providers-Postgres/total?style=flat-square&color=00A4DC&label=downloads)](https://github.com/BORNIOS/Jellyfin-Database-Providers-Postgres/releases)
 [![Discord](https://img.shields.io/badge/Discord-Jellyfin_Community-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.jellyfin.org)
@@ -24,7 +24,7 @@ automatic health check, scheduled maintenance and optional JellyTrend integratio
 
 </div>
 
-> **v3 / Jellyfin 12.1:** requires .NET 10 and PostgreSQL 16+. Read the [upgrade and test guide (Spanish)](docs/JELLYFIN-12.1.md) before replacing the provider.
+> **v3 / Jellyfin 12.x:** requires .NET 10 and PostgreSQL 16+. **3.2.0** runs on Jellyfin 12.1, 12.2, 12.3 and 12.4 with the same package ([changes, Spanish](docs/JELLYFIN-12.4.md)). Read the [upgrade and test guide (Spanish)](docs/JELLYFIN-12.1.md) before replacing the provider.
 >
 > **Coming from Jellyfin 10.11.x on PostgreSQL?** Follow the [10.11.x → 12.x migration manual](docs/migration-10.11-to-12.en.md): you need plugin **2.0.1** to export PostgreSQL to SQLite before upgrading the server, and plugin **3.0.0** to import back into PostgreSQL.
 
@@ -37,6 +37,8 @@ automatic health check, scheduled maintenance and optional JellyTrend integratio
 | [Migration 10.11.x → 12.x](docs/migration-10.11-to-12.en.md) · [ES](docs/migracion-10.11-a-12.md) | Step-by-step manual with diagram and contingency plan |
 | [What is new in 3.0.0](docs/whats-new-3.0.0.en.md) · [ES](docs/novedades-3.0.0.md) | Every change in 3.0.0 vs 2.0.1 |
 | [Jellyfin 12.1 adaptation](docs/JELLYFIN-12.1.md) | Technical notes and how to run the test suite |
+| [Jellyfin 12.2 – 12.4](docs/JELLYFIN-12.4.md) | What changes since 12.1 and how one package covers every 12 release (Spanish) |
+| [Upgrading Jellyfin before the provider](docs/ACTUALIZACIONES.md) | Server-side schema drift repair and a compatibility check for every new Jellyfin release (Spanish) |
 | [Automated verification](docs/VERIFICACION-RESUMEN.md) | Executive summary generated from the real suite |
 | [Developer integration](docs/developer-integration.en.md) · [ES](docs/integracion-desarrolladores.md) | Public contract, private schemas, migrations and managed maintenance |
 
@@ -68,12 +70,12 @@ Read the [developer integration guide](docs/developer-integration.en.md) for the
 
 | Component | Version |
 |---|---|
-| Jellyfin | **12.1.x** — for Jellyfin 10.11.x use plugin **2.0.1** |
+| Jellyfin | **12.1.x – 12.4.x** — for 10.11.x use plugin **2.0.1** |
 | PostgreSQL | **16 +** (17 recommended) |
 | .NET | **10.0** |
 
 > ℹ️ The plugin implements `IJellyfinDatabaseProvider`, the same contract as the SQLite provider
-> shipped with Jellyfin 12.1. No Jellyfin source modifications required.
+> shipped with Jellyfin 12. No Jellyfin source modifications required.
 
 ---
 

@@ -4,17 +4,20 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.DbConfiguration;
+using Jellyfin.Database.Implementations.Locking;
 using Jellyfin.Database.Providers.Postgres.Logging;
 using Jellyfin.Database.Providers.Postgres.Services;
 using Jellyfin.Database.Providers.Postgres.Services.Models;
 using MediaBrowser.Common.Configuration;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
@@ -26,7 +29,12 @@ namespace Jellyfin.Database.Providers.Postgres;
 /// Configures Jellyfin to use PostgreSQL through EF Core and provides
 /// static optimization helpers shared across the plugin.
 /// </summary>
-public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
+/// <remarks>
+/// Not sealed on purpose: the provider is compiled against Jellyfin 12.1 so one package runs on every 12.x server, and
+/// members that later releases add to <see cref="IJellyfinDatabaseProvider"/> with a default body (such as
+/// <see cref="RefreshStatistics"/> in 12.2) are bound by the runtime only to a matching public <em>virtual</em> method.
+/// </remarks>
+public class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 {
     // ── Fields: readonly first (SA1214), then mutable (SA1201: fields before constructor) ───
     // 10 GIN trigram indexes for sub-15ms instant search (pg_trgm required)
@@ -100,6 +108,9 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 
     // Ensures the unobserved task handler is attached only once.
     private static int _unobservedHandlerRegistered;
+
+    // Set once the early schema drift check has run in this process (Initialise runs several times).
+    private static int _schemaDriftChecked;
 
     // ── Constructor ───────────────────────────────────────────────────────────
 
@@ -183,11 +194,17 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
                 EfCoreDatabaseDiagnostics.Write,
                 (eventId, level) => level >= LogLevel.Information
                     && !(eventId.Name?.Contains("Command", StringComparison.Ordinal) ?? false))
-            .AddInterceptors(BuildInterceptors());
+            .AddInterceptors(BuildInterceptors())
+            // Lets a provider migration run over objects SchemaDriftGuard already created for a newer Jellyfin.
+            .ReplaceService<IMigrationsSqlGenerator, IdempotentMigrationsSqlGenerator>();
 
         // SQLite-compatibility objects (min/max over uuid) have to exist before Jellyfin runs its
         // first query, otherwise home-page queries fail with 'no existe la función min(uuid)'.
         SqliteCompatibilityBootstrap.Ensure(tunedConnStr);
+
+        // Before Jellyfin runs its own migrations: a code migration of a newer Jellyfin may already need a column the
+        // provider has no migration for yet.
+        CheckSchemaDriftOnce(tunedConnStr, commandTimeout, config);
 
         // Run the health check in background exactly once, even if Initialise is called
         // multiple times (EF Core can call it more than once during startup).
@@ -422,6 +439,42 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         }
     }
 
+    private void CheckSchemaDriftOnce(string connectionString, int commandTimeout, PluginConfiguration? config)
+    {
+        if (Interlocked.CompareExchange(ref _schemaDriftChecked, 1, 0) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var mode = SchemaDriftGuard.ResolveMode(
+                config?.SchemaDriftMode ?? SchemaDriftGuard.ReadConfiguredMode(_applicationPaths?.PluginConfigurationsPath));
+            var options = new DbContextOptionsBuilder<JellyfinDbContext>()
+                .UseNpgsql(connectionString, npgsql => ConfigureNpgsql(npgsql, commandTimeout))
+                .ReplaceService<IMigrationsSqlGenerator, IdempotentMigrationsSqlGenerator>()
+                .Options;
+
+            // Initialise is synchronous; Task.Run keeps the async EF calls off any captured context.
+            Task.Run(async () =>
+            {
+                using var context = new JellyfinDbContext(
+                    options,
+                    NullLogger<JellyfinDbContext>.Instance,
+                    this,
+                    new NoLockBehavior(NullLogger<NoLockBehavior>.Instance));
+                // Indexes are left to SchemaDriftStartupService: a concurrent build can wait indefinitely for other
+                // sessions' transactions, and this call holds up the whole server start.
+                await SchemaDriftGuard.RunAsync(context, mode, deferIndexes: true, logger: _logger).ConfigureAwait(false);
+            }).GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            // Never block startup on the check itself.
+            Logging.PostgresLog.Error("[SchemaDrift] No se pudo comprobar el esquema al iniciar", ex);
+        }
+    }
+
     private IInterceptor[] BuildInterceptors()
     {
         var interceptors = new List<IInterceptor>
@@ -475,6 +528,79 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
 
         await RunOptimizationsAsync(connStr, enableSearch: true, enableVacuum: true, _logger, cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    /// <summary>Refreshes the PostgreSQL planner statistics of Jellyfin's tables (<c>ANALYZE</c>).</summary>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task that completes when the statistics are refreshed.</returns>
+    /// <remarks>
+    /// <para>
+    /// <c>IJellyfinDatabaseProvider.RefreshStatistics</c> exists from Jellyfin 12.2 on, with an empty default body.
+    /// The provider is compiled against 12.1, where the member does not exist yet, so this method cannot be an explicit
+    /// implementation: it is public and virtual, which is what lets the 12.2+ runtime map the interface member to it.
+    /// On 12.1 nothing calls it.
+    /// </para>
+    /// <para>
+    /// Jellyfin 12.2+ calls this after every library scan. <c>ANALYZE</c> only samples the tables and
+    /// reclaims nothing, so it stays cheap next to <see cref="RunScheduledOptimisation"/>. Only Jellyfin's
+    /// own tables are listed: other plugins sharing the database keep their own schedule. PostgreSQL
+    /// scales stale row estimates by the current table size, so analyzing a still-empty library does not
+    /// mislead the planner the way it does on SQLite, and no empty-library guard is needed.
+    /// </para>
+    /// </remarks>
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Table names come from Jellyfin's own EF model and every identifier is validated and quoted by QuoteQualifiedTableName. No user input.")]
+    public virtual async Task RefreshStatistics(CancellationToken cancellationToken)
+    {
+        if (DbContextFactory is null)
+        {
+            return;
+        }
+
+        var context = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using (context.ConfigureAwait(false))
+        {
+            var tables = new SortedSet<string>(StringComparer.Ordinal);
+            foreach (var entityType in context.Model.GetEntityTypes())
+            {
+                var tableName = entityType.GetSchemaQualifiedTableName();
+                if (!string.IsNullOrWhiteSpace(tableName))
+                {
+                    tables.Add(QuoteQualifiedTableName(tableName));
+                }
+            }
+
+            // A table of the model can be missing (schema drift reported but not applied): one missing relation would
+            // fail the whole ANALYZE statement after every library scan, so only existing tables are analyzed.
+            var requested = tables.ToArray();
+            var existing = await context.Database
+                .SqlQuery<string>($"SELECT t AS \"Value\" FROM unnest({requested}) AS t WHERE to_regclass(t) IS NOT NULL")
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (existing.Count < requested.Length)
+            {
+                Logging.PostgresLog.Warn($"[Analyze] Tablas del modelo que no existen en la base (deriva del esquema sin aplicar): {string.Join(", ", requested.Except(existing, StringComparer.Ordinal))}");
+            }
+
+            tables = new SortedSet<string>(existing, StringComparer.Ordinal);
+            if (tables.Count == 0)
+            {
+                return;
+            }
+
+            var stopwatch = Stopwatch.StartNew();
+            await context.Database
+                .ExecuteSqlRawAsync(string.Concat("ANALYZE ", string.Join(", ", tables), ";"), cancellationToken)
+                .ConfigureAwait(false);
+            // Jellyfin's own log as well: the server calls this instance from its own code paths, where
+            // the plugin log file is not always the one configured at plugin start.
+            var seconds = stopwatch.Elapsed.TotalSeconds;
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Refreshed PostgreSQL planner statistics for {Count} tables in {Elapsed:F1}s", tables.Count, seconds);
+            }
+
+            Logging.PostgresLog.Info($"[Analyze] Estadísticas del planificador actualizadas: {tables.Count} tablas en {seconds:F1}s.");
+        }
     }
 
     /// <inheritdoc/>
@@ -870,6 +996,25 @@ public sealed class PostgresDatabaseProvider : IJellyfinDatabaseProvider
         {
             logger.LogDebug(ex, "Could not activate pg_stat_statements — skipping.");
         }
+    }
+
+    /// <summary>
+    /// Lets a target-less <c>Database.Migrate()</c> run on a Jellyfin release newer than the one the provider is built for.
+    /// </summary>
+    /// <remarks>
+    /// EF Core refuses it while the runtime model has changes no migration covers (<c>PendingModelChangesWarning</c>),
+    /// which is the normal state of this provider on every release after the one it is compiled against. Jellyfin
+    /// applies migrations one by one and never hits it; the plugin's own callers (the SQLite import) do. The schema drift
+    /// guard brings the schema up to the model at the next start.
+    /// </remarks>
+    /// <typeparam name="TContext">Context type.</typeparam>
+    /// <param name="builder">Options builder.</param>
+    /// <returns>The same builder.</returns>
+    internal static DbContextOptionsBuilder<TContext> AllowModelOfNewerJellyfin<TContext>(DbContextOptionsBuilder<TContext> builder)
+        where TContext : DbContext
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        return builder.ConfigureWarnings(w => w.Ignore(RelationalEventId.PendingModelChangesWarning));
     }
 
     /// <summary>
